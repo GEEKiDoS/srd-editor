@@ -1,6 +1,8 @@
 use std::fmt;
 
+use crate::csli::{add_color_saturating_game, multiply_color_game};
 use crate::scene::{Project, ReferenceTarget};
+use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceLayerParent {
@@ -14,6 +16,67 @@ pub struct ReferenceLayerInstance {
     pub reference_node_index: usize,
     pub target: ReferenceTarget,
     pub is_2d: bool,
+    pub flip_y: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeWorldState {
+    pub matrix: Affine3x4,
+    pub multiply_color: [u8; 4],
+    pub additive_color: [u8; 4],
+    pub visible: bool,
+    pub render_gate: bool,
+}
+
+impl Default for RuntimeWorldState {
+    fn default() -> Self {
+        Self {
+            matrix: Affine3x4::IDENTITY,
+            multiply_color: [255; 4],
+            additive_color: [0; 4],
+            visible: true,
+            render_gate: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReferenceLayerLocalState {
+    pub transform: SpatialTransform,
+    pub enabled: bool,
+}
+
+impl Default for ReferenceLayerLocalState {
+    fn default() -> Self {
+        Self {
+            transform: SpatialTransform::default(),
+            enabled: true,
+        }
+    }
+}
+
+impl ReferenceLayerInstance {
+    pub fn compose_world_state(
+        &self,
+        parent_cast: RuntimeWorldState,
+        local: ReferenceLayerLocalState,
+    ) -> RuntimeWorldState {
+        let local_matrix =
+            build_local_matrix(&local.transform, self.is_2d, self.flip_y, [0.0, 0.0]);
+        RuntimeWorldState {
+            matrix: parent_cast.matrix.mul_game(local_matrix),
+            multiply_color: multiply_color_game(
+                parent_cast.multiply_color,
+                local.transform.multiply_color,
+            ),
+            additive_color: add_color_saturating_game(
+                parent_cast.additive_color,
+                local.transform.additive_color,
+            ),
+            visible: parent_cast.visible && local.enabled,
+            render_gate: parent_cast.render_gate && local.enabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +199,7 @@ fn append_layer_references(
             reference_node_index,
             target,
             is_2d,
+            flip_y: project.scenes[target.scene_index].layers[target.layer_index].is_2d() && !is_2d,
         });
         let mut child_lineage = lineage.to_vec();
         child_lineage.push(target);
@@ -218,7 +282,7 @@ mod tests {
                 false,
                 vec![Some(reference(b"scene", b"leaf", 0))],
             ),
-            layer(b"leaf", false, Vec::new()),
+            layer(b"leaf", true, Vec::new()),
         ]);
 
         let plan = project.build_reference_runtime_plan().unwrap();
@@ -247,6 +311,11 @@ mod tests {
         assert!(!plan.instances[2].is_2d);
         assert!(plan.instances[3].is_2d);
         assert!(plan.instances[4].is_2d);
+        assert!(!plan.instances[0].flip_y);
+        assert!(!plan.instances[1].flip_y);
+        assert!(plan.instances[2].flip_y);
+        assert!(!plan.instances[3].flip_y);
+        assert!(!plan.instances[4].flip_y);
     }
 
     #[test]
@@ -282,5 +351,62 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn copied_layer_world_state_uses_the_owning_refcast_as_parent() {
+        let instance = ReferenceLayerInstance {
+            parent: ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                scene_index: 0,
+                layer_index: 0,
+            }),
+            reference_node_index: 0,
+            target: ReferenceTarget {
+                scene_index: 0,
+                layer_index: 1,
+            },
+            is_2d: true,
+            flip_y: false,
+        };
+        let parent = RuntimeWorldState {
+            matrix: Affine3x4 {
+                rows: [
+                    [1.0, 0.0, 0.0, 10.0],
+                    [0.0, 1.0, 0.0, 20.0],
+                    [0.0, 0.0, 1.0, 30.0],
+                ],
+            },
+            multiply_color: [200, 100, 50, 255],
+            additive_color: [250, 20, 30, 40],
+            visible: true,
+            render_gate: true,
+        };
+        let mut local = ReferenceLayerLocalState::default();
+        local.transform.translation = [2.0, 3.0, 4.0];
+        local.transform.multiply_color = [128, 255, 0, 200];
+        local.transform.additive_color = [10, 240, 20, 220];
+
+        let world = instance.compose_world_state(parent, local);
+        assert_eq!(world.matrix.rows[0][3], 12.0);
+        assert_eq!(world.matrix.rows[1][3], 23.0);
+        assert_eq!(world.matrix.rows[2][3], 34.0);
+        assert_eq!(world.multiply_color, [100, 100, 0, 200]);
+        assert_eq!(world.additive_color, [255, 255, 50, 255]);
+        assert!(world.visible);
+        assert!(world.render_gate);
+
+        local.enabled = false;
+        let disabled = instance.compose_world_state(parent, local);
+        assert!(!disabled.visible);
+        assert!(!disabled.render_gate);
+
+        local.enabled = true;
+        let gated_parent = RuntimeWorldState {
+            render_gate: false,
+            ..parent
+        };
+        let gated = instance.compose_world_state(gated_parent, local);
+        assert!(gated.visible);
+        assert!(!gated.render_gate);
     }
 }

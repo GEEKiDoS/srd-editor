@@ -5,7 +5,7 @@
 分析对象：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`5E2AE9BC9200FDE7A6E2610AB67E6D76F453070DFE8010A5FD872B827E6580FE`。
+- 保存后的 IDB SHA-256：`5ACFF2969D10D0840FEA516DCB20699324E2286DDB00E6C404E862F77B695074`。
 
 ## 文件内项目和场景表
 
@@ -59,4 +59,4 @@ Rust 现在实现：
 
 本地 53 个 SRD 共解析出 192 个 `SCN `；1090 个 CRFD 全部在其所属文件的项目场景表内解析到 SCN 和 LAYR，未使用任何外部路径回退。
 
-独立引用层的构造、嵌套解析和递归更新/绘制入口见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。复制层的完整动画对象、运行时 gate/颜色求值和最终 D3D9 draw submission 仍待后续闭环。
+独立引用层的构造、嵌套解析、世界状态和递归更新/绘制入口见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。复制层的完整动画对象和最终 D3D9 draw submission 仍待后续闭环。

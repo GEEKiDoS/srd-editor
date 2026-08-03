@@ -25,6 +25,8 @@ pub struct SpatialTransform {
     pub translation: [f32; 3],
     pub rotation: [i32; 3],
     pub scale: [f32; 3],
+    pub multiply_color: [u8; 4],
+    pub additive_color: [u8; 4],
     pub visibility_word: u32,
 }
 
@@ -34,6 +36,8 @@ impl Default for SpatialTransform {
             translation: [0.0; 3],
             rotation: [0; 3],
             scale: [1.0; 3],
+            multiply_color: [255; 4],
+            additive_color: [0; 4],
             visibility_word: 1,
         }
     }
@@ -41,15 +45,46 @@ impl Default for SpatialTransform {
 
 impl SpatialTransform {
     pub fn apply_common_track(&mut self, target: u16, evaluation: Evaluation) -> bool {
-        let Evaluation::Value(value) = evaluation else {
-            return false;
-        };
-        let bits = scalar_bits(value);
         match target {
-            0..=2 => self.translation[usize::from(target)] = f32::from_bits(bits),
-            3..=5 => self.rotation[usize::from(target - 3)] = bits as i32,
-            6..=8 => self.scale[usize::from(target - 6)] = f32::from_bits(bits),
-            10 => self.visibility_word = bits,
+            0..=8 | 10 => {
+                let Evaluation::Value(value) = evaluation else {
+                    return false;
+                };
+                let bits = scalar_bits(value);
+                match target {
+                    0..=2 => self.translation[usize::from(target)] = f32::from_bits(bits),
+                    3..=5 => self.rotation[usize::from(target - 3)] = bits as i32,
+                    6..=8 => self.scale[usize::from(target - 6)] = f32::from_bits(bits),
+                    10 => self.visibility_word = bits,
+                    _ => unreachable!(),
+                }
+            }
+            9 | 19 => {
+                let Evaluation::Value(value) = evaluation else {
+                    return false;
+                };
+                let bytes = scalar_bits(value).to_le_bytes();
+                let color = if target == 9 {
+                    &mut self.multiply_color
+                } else {
+                    &mut self.additive_color
+                };
+                color[0] = bytes[2];
+                color[1] = bytes[1];
+                color[2] = bytes[0];
+            }
+            21 | 22 => {
+                let value = match evaluation {
+                    Evaluation::Value(value) => f32::from_bits(scalar_bits(value)),
+                    Evaluation::Unchanged | Evaluation::Unsupported => 1.0,
+                };
+                let alpha = normalized_alpha_to_u8(value);
+                if target == 21 {
+                    self.multiply_color[3] = alpha;
+                } else {
+                    self.additive_color[3] = alpha;
+                }
+            }
             _ => return false,
         }
         true
@@ -58,6 +93,17 @@ impl SpatialTransform {
     pub fn is_visible(&self) -> bool {
         self.visibility_word & 0xff != 0
     }
+}
+
+fn normalized_alpha_to_u8(value: f32) -> u8 {
+    let clamped = if value > 1.0 {
+        1.0
+    } else if value.is_nan() {
+        0.0
+    } else {
+        value.max(0.0)
+    };
+    (clamped * 255.0) as u8
 }
 
 fn scalar_bits(value: ScalarValue) -> u32 {
@@ -309,6 +355,8 @@ mod tests {
             translation: [10.0, 20.0, 30.0],
             rotation: [0, 0, 16_384],
             scale: [2.0, 3.0, 4.0],
+            multiply_color: [255; 4],
+            additive_color: [0; 4],
             visibility_word: 1,
         };
         let matrix = build_local_matrix(&transform, true, true, [5.0, 7.0]);
@@ -358,5 +406,25 @@ mod tests {
                 .apply_common_track(3, Evaluation::Value(ScalarValue::F32(f32::from_bits(25))))
         );
         assert_eq!(transform.rotation[0], 25);
+    }
+
+    #[test]
+    fn color_channels_follow_the_binary_component_setters() {
+        let mut transform = SpatialTransform::default();
+        assert!(transform.apply_common_track(
+            9,
+            Evaluation::Value(ScalarValue::Bytes4([0x11, 0x22, 0x33, 0x44]))
+        ));
+        assert_eq!(transform.multiply_color, [0x33, 0x22, 0x11, 0xff]);
+
+        assert!(transform.apply_common_track(19, Evaluation::Value(ScalarValue::I32(0x1020_3040))));
+        assert_eq!(transform.additive_color, [0x20, 0x30, 0x40, 0]);
+
+        assert!(transform.apply_common_track(21, Evaluation::Value(ScalarValue::F32(0.5))));
+        assert_eq!(transform.multiply_color[3], 127);
+        assert!(transform.apply_common_track(22, Evaluation::Value(ScalarValue::F32(f32::NAN))));
+        assert_eq!(transform.additive_color[3], 0);
+        assert!(transform.apply_common_track(21, Evaluation::Unchanged));
+        assert_eq!(transform.multiply_color[3], 255);
     }
 }

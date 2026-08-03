@@ -603,6 +603,8 @@ fn parse_trs2(file: &SrdFile, properties: &[&Property]) -> Result<SpatialTransfo
             }
             0x35 => transform.rotation[2] = signed_scalar(file, property, "TRS2 0x35")?,
             0x36 => transform.scale[..2].copy_from_slice(&read_f32_vector::<2>(file, property)?),
+            0x3a => transform.multiply_color = read_runtime_color(file, property, "TRS2 0x3a")?,
+            0x33 => transform.additive_color = read_runtime_color(file, property, "TRS2 0x33")?,
             0x3b => {
                 transform.visibility_word =
                     u32::from(signed_scalar(file, property, "TRS2 0x3b")? != 0)
@@ -620,6 +622,8 @@ fn parse_trs3(file: &SrdFile, properties: &[&Property]) -> Result<SpatialTransfo
             0x37 => transform.translation = read_f32_vector::<3>(file, property)?,
             0x38 => transform.rotation = read_i32_vector::<3>(file, property)?,
             0x39 => transform.scale = read_f32_vector::<3>(file, property)?,
+            0x3a => transform.multiply_color = read_runtime_color(file, property, "TRS3 0x3a")?,
+            0x33 => transform.additive_color = read_runtime_color(file, property, "TRS3 0x33")?,
             0x3b => {
                 transform.visibility_word =
                     u32::from(signed_scalar(file, property, "TRS3 0x3b")? != 0)
@@ -628,6 +632,18 @@ fn parse_trs3(file: &SrdFile, properties: &[&Property]) -> Result<SpatialTransfo
         }
     }
     Ok(transform)
+}
+
+fn read_runtime_color(
+    file: &SrdFile,
+    property: &Property,
+    label: &str,
+) -> Result<[u8; 4], SceneError> {
+    let bytes = property.value_bytes(file);
+    if bytes.len() < 4 {
+        return Err(SceneError(format!("{label} has fewer than four bytes")));
+    }
+    Ok([bytes[3], bytes[2], bytes[1], bytes[0]])
 }
 
 fn read_f32_vector<const N: usize>(

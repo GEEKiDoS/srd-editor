@@ -3,7 +3,7 @@
 本页只记录从游戏二进制闭环得到的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`EF9E8FE7957CD8055B3AD9CB91982FB70C2B2B8D7B9DBB660B4B925404BC7F3C`
+- 本轮保存后的 IDB SHA-256：`5ACFF2969D10D0840FEA516DCB20699324E2286DDB00E6C404E862F77B695074`
 
 ## 原始记录
 
@@ -82,8 +82,8 @@ CAST 基类构造器 `0xAD3020` 把公共局部变换放在 CAST `+0x5C`，世�
 +0x18 scale.x f32
 +0x1C scale.y f32
 +0x20 scale.z f32
-+0x24 packed field (颜色语义尚未闭环)
-+0x28 packed field (颜色语义尚未闭环)
++0x24 multiplicative color，内部四分量字节
++0x28 additive color，内部四分量字节
 +0x2C visibility low byte；动画求值器可向此处写完整 4 字节
 ```
 
@@ -102,7 +102,20 @@ TRS2 复制把二维位置放入 X/Y、旋转放入 Z、缩放放入 X/Y，其�
 | `6..8` | scale X/Y/Z |
 | `10` | visibility 的 4 字节存储 |
 
-标量求值函数直接向目标地址写入 4 字节；它不会按目标字段类型转换。因此 Rust 的公共通道应用也保留 `f32`、`i32` 或四字节结果的原始位型。通道 `9`、`19`、`21`、`22` 会进入打包字段的分量 setter，但颜色/alpha 的确切命名尚未闭环，当前不实现。CAST 专属通道 `11..17` 与 `20` 已闭环到尺寸、顶点色和双坐标描述符，详见 [`image-coordinate-animation.md`](image-coordinate-animation.md)；`23` 已闭环为 SrRefCast 的引用动画帧请求，详见 [`crfd-reference-cast.md`](crfd-reference-cast.md)。
+标量求值函数直接向目标地址写入 4 字节；它不会按目标字段类型转换。因此 Rust 的公共位置、旋转、缩放和 visibility 通道应用保留 `f32`、`i32` 或四字节结果的原始位型。
+
+`srd_copy_trs2_to_runtime_transform` (`0xAD6E10`) 和 `srd_copy_trs3_to_runtime_transform` (`0xAD6EA0`) 将 parsed `0x3A/0x33` 交给 `srd_unpack_packed_color`，分别写入 runtime transform `+0x24/+0x28`。随后 `srd_compose_cast_world_state` 对 `+0x24` 调用 `srd_multiply_color_u8`，对 `+0x28` 调用 `srd_add_color_saturating_u8`；最终图像、切片和数字 CAST 也把两条结果分别作为 primary multiplicative tint 与 secondary additive tint 消费。因此两字段语义已经由解析、运行时组合和最终顶点颜色三端闭环。
+
+其余公共通道为：
+
+| target | 目标与转换 |
+| ---: | --- |
+| `9` | 求值结果内存字节 `2,1,0` 写入 multiplicative color 分量 `0,1,2`；分量 3 不变 |
+| `19` | 同样写入 additive color 分量 `0,1,2` |
+| `21` | f32 从 `1.0` 初值求值，按 SSE 比较/max 路径限制到 `[0,1]`，NaN 变为 `0`，乘 `255` 后 `cvttss2si`，写 multiplicative 分量 3 |
+| `22` | 同样写 additive 分量 3 |
+
+Rust 已复现上述字段默认值、属性字节顺序和四条动画通道。53 个样本包含 7224 个非全 `255` multiplicative transform color、22595 个非零 additive transform color；通道 `9/19/21/22` 分别出现 `3541/4153/14995/609` 条。CAST 专属通道 `11..17` 与 `20` 详见 [`image-coordinate-animation.md`](image-coordinate-animation.md)；`23` 详见 [`crfd-reference-cast.md`](crfd-reference-cast.md)。
 
 本地 avatar 样本已闭环验证：`001_Default_loop` 的 MOT target `61` 选择第 61 个 CAST，target `5` 在 frame `50` 求值得到 `349`，并写入该 CAST 公共变换的 rotation Z。
 
@@ -138,5 +151,5 @@ Rust `Layer::build_hierarchy` 已按该首子/同级链构建 parents、children
 ## 尚未闭环
 
 - `srd_compute_parent_csli_cell_offset` 的 SrSliceCast 尺寸、origin、显式单元累计、2D flags 分支与公式均已闭环并由 Rust 从 SRD 数据自行计算。
-- 两个 packed 字段及通道 `9/19/21/22` 的精确颜色分量语义未实现。
-- CAST 专属动画通道 `11..17/20/23` 与投影、视口映射已闭环；引用资源递归实例化及公共 packed color/alpha 通道仍未实现。
+- TRS packed color、公共通道 `9/19/21/22` 及父子颜色组合已经实现。
+- CAST 专属动画通道 `11..17/20/23`、引用资源递归实例化及投影/视口映射已闭环；剩余工作是完整 layer animation 对象、特殊矩阵 flags 和最终 D3D9 状态提交。

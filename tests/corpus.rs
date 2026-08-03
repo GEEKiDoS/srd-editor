@@ -275,6 +275,73 @@ fn parses_binary_selected_layer_transform_records() {
 }
 
 #[test]
+fn parses_and_animates_common_transform_colors() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut non_identity_multiply = 0usize;
+    let mut nonzero_additive = 0usize;
+    let mut channel_counts = [0usize; 4];
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file
+            .blocks_depth_first()
+            .filter(|block| block.is_tag(b"LAYR"))
+        {
+            let layer = Layer::from_block(&file, block).unwrap();
+            for transform in layer.transforms.iter().copied().map(|raw| raw.spatial()) {
+                non_identity_multiply += usize::from(transform.multiply_color != [255; 4]);
+                nonzero_additive += usize::from(transform.additive_color != [0; 4]);
+            }
+
+            for animation in block.children.iter().filter(|child| child.is_tag(b"ANIM")) {
+                for motion_block in animation
+                    .children
+                    .iter()
+                    .filter(|child| child.is_tag(b"MOT "))
+                {
+                    let motion = Motion::from_block(&file, motion_block).unwrap();
+                    let Ok(node_index) = usize::try_from(motion.target) else {
+                        continue;
+                    };
+                    let Some(base) = layer.transforms.get(node_index).copied() else {
+                        continue;
+                    };
+                    for track in &motion.tracks {
+                        let channel_index = match track.target {
+                            9 => 0,
+                            19 => 1,
+                            21 => 2,
+                            22 => 3,
+                            _ => continue,
+                        };
+                        let mut transform = base.spatial();
+                        assert!(transform.apply_common_track(
+                            track.target,
+                            track.evaluate(track.range_start as f32)
+                        ));
+                        channel_counts[channel_index] += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(non_identity_multiply > 0);
+    assert!(nonzero_additive > 0);
+    assert!(channel_counts.iter().all(|count| *count > 0));
+    eprintln!(
+        "non-identity multiply colors={non_identity_multiply}, nonzero additive colors={nonzero_additive}, channels 9/19/21/22={channel_counts:?}"
+    );
+}
+
+#[test]
 fn parses_and_links_binary_proven_csli_grids() {
     let root = corpus_root();
     if !root.exists() {
