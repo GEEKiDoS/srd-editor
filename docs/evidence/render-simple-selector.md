@@ -2,7 +2,7 @@
 
 本页记录 SRD/Ceylon ShapeEnv 实际选择的 selector、Simple 键的字节编码、完整 71 项 descriptor，以及已经闭环的 ShapeEnv 模块参数映射。结论来自游戏二进制调用链，并以完整游戏 data 目录中的 shader collection 作独立语料校验。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `68D5ED2D3D018DAFB0A142866F8FA9D21C7A9457927F47D88469EC16921BB175`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `9092CDA6828CD0B6C5B9BD3CA1AD3993FEEABF92A429252C32D1664948AF9C37`。
 
 ## selector 槽位 9
 
@@ -144,7 +144,7 @@ Simple 构造函数建立 parameter ID 到 position vector 的精确映射：
 
 完整游戏数据 `D:\sdhd\assets\data\A000\shader\shadercollect.xml` 包含 `SimpleShaderVSSimpleShaderPS_-382718031` 组。该组有 82 个键，全部严格为 18 字节；Rust 对每个键执行二进制同构解码再编码，82 个均逐字节回到原值。
 
-按 positions `47..50` 解码，82 个 Simple shader key 的 MultiTex0 variant 分布为：`0:58`、`6:1`、`9:1`、`10:1`、`11:10`、`12:11`。其中键 `EAEBABBAADIIEAAAAA` 的 `I/E` 位型精确得到 variant `9`。这份 XML 只作为完整资源语料对二进制算法的独立校验；selector 选择、position 语义和编码规则仍由上述 executable 调用链决定。
+按 positions `47..50` 解码，82 个 Simple shader key 的 MultiTex0 variant 分布为：`0:58`、`6:1`、`9:1`、`10:1`、`11:10`、`12:11`。其中唯一的 variant `9` 键是 `AAEBABBAADIIEAAAAA`，其 `I/E` 位型精确得到数值 `9`。这份 XML 只作为完整资源语料对二进制算法的独立校验；selector 选择、position 语义和编码规则仍由上述 executable 调用链决定。
 
 ## 当前实现边界
 
@@ -157,4 +157,4 @@ Rust 已实现：
 - ShapeEnv parameter `6/7/8` 到 positions `41..53` 的映射；
 - 完整 data 中 82 个 Simple key 的回归。
 
-`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包和双 UV/顶点色公式现已闭环，见 [`render-shader-source.md`](render-shader-source.md)。尚未闭环的是其余 shape/context 与全局 feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及最终不依赖 D3DX 的 D3D9 bytecode。实现不会在这些证据完成前补写推测值。
+`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context 与全局 feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。

@@ -427,8 +427,8 @@ mod tests {
     }
 
     #[test]
-    fn shadercollect_simple_key_decodes_variant_nine_and_emits_exact_define() {
-        let key = *b"EAEBABBAADIIEAAAAA";
+    fn shadercollect_variant_nine_key_decodes_and_emits_exact_define() {
+        let key = *b"AAEBABBAADIIEAAAAA";
         let bits = CeylonSimpleShaderBits::from_compact_key(key);
         assert_eq!(bits.compact_key(), key);
         let prefix = bits.define_prefix();

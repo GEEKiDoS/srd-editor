@@ -2,7 +2,7 @@
 
 本页记录 SRD 绘制包如何选择 Ceylon `sea::ShapeEnv*` 模块组合。它闭环的是 shader cache key 和模块索引，不把尚未还原的生成源码或像素公式写成结论。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `68D5ED2D3D018DAFB0A142866F8FA9D21C7A9457927F47D88469EC16921BB175`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `9092CDA6828CD0B6C5B9BD3CA1AD3993FEEABF92A429252C32D1664948AF9C37`。
 
 ## 绘制包默认值与 SRD vertex format
 
@@ -97,4 +97,4 @@ ShaderSelector 的注册顺序和 SRD 对 Simple 槽位 9 的选择已经闭环�
 
 已经闭环：所有 shader-key 输入位、CREF/CRE1 到 slot 0/1 的映射、纹理槽计数、SRD vertex format、cache 查找、ShapeEnv 模块族/variant 索引，以及完整语料初始化状态的实际 key 集合统计。
 
-仍需闭环：动画遍历后的完整运行时 ShapeEnv key 集合、ShapeEnv 的其余 base/context 输入到完整 18 字节 Simple key 的映射，以及最终不依赖 D3DX 的 D3D9 bytecode。原始 Cg source、include 闭包以及 COLOR0/COLOR1、TEXCOORD0/TEXCOORD1 的像素公式已经闭环，见 [`render-shader-source.md`](render-shader-source.md)。
+仍需闭环：动画遍历后的完整运行时 ShapeEnv key 集合，以及 ShapeEnv 的其余 base/context 输入到完整 18 字节 Simple key 的映射。原始 Cg source、像素公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。

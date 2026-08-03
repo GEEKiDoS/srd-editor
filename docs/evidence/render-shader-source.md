@@ -2,7 +2,7 @@
 
 本页记录 Ceylon 如何把紧凑 shader 选择键变成 Cg `#define` 前缀、取得并展开原始 source、组合 vertex/pixel Shader 输入，以及 SRD 双 UV/双顶点色在 Simple shader 中的真实消费顺序。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `68D5ED2D3D018DAFB0A142866F8FA9D21C7A9457927F47D88469EC16921BB175`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `9092CDA6828CD0B6C5B9BD3CA1AD3993FEEABF92A429252C32D1664948AF9C37`。
 
 ## ShaderSelector 对象与双阶段缓存
 
@@ -84,10 +84,10 @@ Simple 主 source 与专属 include 的记录为：
 - stage `1` -> `IDirect3DDevice9::CreateVertexShader`，vtable `+0x16C`；
 - stage `0` -> `IDirect3DDevice9::CreatePixelShader`，vtable `+0x1A8`。
 
-这条 D3DX 路径只用于还原原游戏。编辑器不链接、加载或调用 D3DX。当前宿主的 ARM64X 与 x86 系统 `D3DCompiler_47.dll` 均已由导出表验证提供 `D3DAssemble`；它只是后续无 D3DX 汇编验证的候选入口，是否采用必须以 Cg assembly 和最终 bytecode 的逐字节对照为准。
+这条 D3DX 路径只用于还原原游戏。编辑器不链接、加载或调用 D3DX。离线工具现已用原版 Cg 参数生成完整 Simple collection 的 assembly，并由系统 `D3DCompiler_47!D3DAssemble` 无失败地产生确定性 D3D9 bytecode，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
 
 ## 当前边界
 
 已经闭环：selector、前缀格式与拼接、嵌入 source 解码、全部 Simple include、双 UV/双顶点色消费顺序、MultiTex 公式、Cg 到 D3D assembly 的原游戏链，以及最终 D3D9 stage 创建。
 
-仍需闭环：64 位 ShapeEnv key 的其余 base/context 输入如何生成每一种完整 18 字节 Simple 键，以及从精确 Cg assembly 得到、且不依赖 D3DX 的最终 D3D9 bytecode。
+仍需闭环：64 位 ShapeEnv key 的其余 base/context 输入如何生成每一种完整 18 字节 Simple 键，以及 bytecode 表的发布期封装与真实 D3D9 device 接入。
