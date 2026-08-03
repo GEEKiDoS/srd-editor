@@ -2,7 +2,7 @@
 
 本页记录 SRD/Ceylon ShapeEnv 实际选择的 selector、Simple 键的字节编码、完整 71 项 descriptor，以及已经闭环的 ShapeEnv 模块参数映射。结论来自游戏二进制调用链，并以完整游戏 data 目录中的 shader collection 作独立语料校验。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `63CFC0D28318D936CF0F134B0C7328047D21C3488565C0E97F6CFED1DEFEA187`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `FAEA68422D3C7C60646BBADBDD5C878F73CF4796143750B1A2A023C192306D6A`。
 
 ## selector 槽位 9
 
@@ -151,6 +151,8 @@ Simple selector 的 virtual `+0x10` 先由 `sea_simple_shader_decode_compact_key
 
 `sea_simple_shader_apply_parameter_positions` (`0x65E950`) 对每个 parameter value 从 bit 0 开始检查；置位的 value bit 设置对应 vector 元素指向的 feature position。Rust 的 `CEYLON_SIMPLE_SELECTOR_PARAMETERS` 与 `set_selector_parameter_value` 保存这张完整映射，但不自行假定 provider 激活。此前 ShapeEnv 模块调用链已经证明 Blend、MultiTex0、MultiTex1 分别写 parameter ID `6/7/8`，base SoftEdge/Refraction/DepthWrite 写 `23/24/66`，可选 ShapeEnv2D 写 `1`；其余 ID 的 SRD context 可达性继续单独取证。
 
+parameter ID `10` 是这张表之外的特殊分支。`sea_simple_shader_selector_build_compact_key` (`0x660120`) 在 ID `10` 非零且 shape alpha blend 关闭时直接设置 position `18` (`SSF_OutDistance_Color0A`)。唯一注册类 RTTI 为 `sea::AppendParamWriteDistanceTarget`；`sea::PassEnvWriteDistance` 的应用方法把该值提升为 `1`。其构造函数唯一调用点位于 `sea::FilterSrcMsaa` 的内嵌 pass 对象，因此它不是 ShapeEnv 64-bit cache key 的直接贡献，而是特定 render-pass context。Rust 以 `set_write_distance_target_contribution` 显式暴露该分支，但 SRD direct-key 方法不默认启用它。
+
 例如 MultiTex0 variant `9` 的二进制值为 `1001b`，因此设置 positions `47` 与 `50`。在紧凑键中 position 47 是第 12 个字符的 bit 3，position 50 是第 13 个字符的 bit 2，局部编码恰为 `I`、`E`。
 
 ## 两套参数表与 `ShapeEnv2D` 的 position 2 来源
@@ -191,6 +193,7 @@ Rust 已实现：
 - 18 字节键的逐位编解码；
 - 所有 uppercase define 的清零、累加和有序前缀输出；
 - 全部 16 个 integer selector parameter ID 到 Simple positions 的映射 API；
+- parameter `10` 的 non-blended write-distance pass 特殊分支；
 - base environment `0..4` 与 low bit `3` 的 `ShapeEnv2D -> SSF_2DTransform` 映射，并拒绝未构造的 base `5..7`；
 - 完整 data 中 82 个 Simple key 的回归。
 

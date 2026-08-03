@@ -356,6 +356,20 @@ impl CeylonSimpleShaderBits {
         Ok(())
     }
 
+    /// Reproduces the special parameter-10 branch in
+    /// `sea_simple_shader_selector_build_compact_key`: an active
+    /// `PassEnvWriteDistance` sets `SSF_OutDistance_Color0A` only when shape
+    /// alpha blending is disabled. Parameter 10 is intentionally not part of
+    /// `CEYLON_SIMPLE_SELECTOR_PARAMETERS` because the selector handles it
+    /// directly instead of through the registered position vectors.
+    pub fn set_write_distance_target_contribution(
+        &mut self,
+        parameter_10_value: u32,
+        alpha_blend_enabled: bool,
+    ) {
+        self.set(18, parameter_10_value != 0 && !alpha_blend_enabled);
+    }
+
     /// Applies the vertex inputs produced by Ceylon vertex format 14:
     /// COLOR0/COLOR1 and TEXCOORD0/TEXCOORD1. The selector records each pair
     /// as a two-bit count with value 2.
@@ -587,6 +601,19 @@ mod tests {
             Err(UnsupportedCeylonSimpleSelectorParameter { parameter_id: 67 })
         );
         assert_eq!(bits, CeylonSimpleShaderBits::default());
+    }
+
+    #[test]
+    fn write_distance_target_is_a_separate_non_blended_context_branch() {
+        let mut bits = CeylonSimpleShaderBits::default();
+        bits.set_write_distance_target_contribution(1, false);
+        assert!(bits.contains(18));
+
+        bits.set_write_distance_target_contribution(1, true);
+        assert!(!bits.contains(18));
+
+        bits.set_write_distance_target_contribution(0, false);
+        assert!(!bits.contains(18));
     }
 
     #[test]
