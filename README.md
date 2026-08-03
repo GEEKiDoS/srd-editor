@@ -39,6 +39,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - avatar 样本 MOT target、公共 rotation Z 通道和游戏三次曲线结果回归。
 - 36 字节 D3D9 顶点声明、四顶点非索引 triangle strip、混合、alpha/depth/stencil 与 scissor 状态提交。
 - 绘制包到 64 位 ShapeEnv shader cache key 的全部位来源、CREF/CRE1 到 D3D9 texture stage 0/1 的映射、vertex-format/blend/multi-texture 模块索引，以及完整 `surfboard` 语料 19,484 个初始 image node 的实际 key 回归。
+- ShaderSelector 的 46 字节紧凑键到 180 位 feature 的解码、`#define name value` 前缀生成、前缀与原始 Cg source 的字节级拼接，以及 stage 0/1 到 pixel/vertex Shader resource 的映射。
 
 尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request/设备丢失生命周期、ShapeEnv 生成源码/最终 bytecode 与双 UV 像素公式、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
 
