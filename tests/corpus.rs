@@ -72,6 +72,65 @@ fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
 }
 
 #[test]
+fn parses_complete_game_dds_corpus_with_binary_resource_rules() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_dds_files(&root, &mut files);
+    files.sort();
+
+    let mut format_counts = std::collections::BTreeMap::new();
+    let mut mip_counts = std::collections::BTreeMap::new();
+    let mut cube_counts = std::collections::BTreeMap::new();
+    let mut plan_counts = std::collections::BTreeMap::new();
+    for path in &files {
+        let bytes = fs::read(path).unwrap();
+        let descriptor = DdsDescriptor::parse(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        descriptor
+            .validate_data_len(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(descriptor.required_data_len().unwrap(), bytes.len());
+        *format_counts.entry(descriptor.format.0).or_insert(0usize) += 1;
+        *mip_counts.entry(descriptor.mip_count).or_insert(0usize) += 1;
+        *cube_counts.entry(descriptor.is_cube).or_insert(0usize) += 1;
+        let plan = match descriptor.creation_plan(DdsLoadPolicy::default()) {
+            D3d9TextureCreation::Direct2d { .. } => "direct_2d",
+            D3d9TextureCreation::DirectCube { .. } => "direct_cube",
+            D3d9TextureCreation::D3dx2d { .. } => "game_d3dx_2d",
+            D3d9TextureCreation::D3dxCube { .. } => "game_d3dx_cube",
+        };
+        *plan_counts.entry(plan).or_insert(0usize) += 1;
+    }
+
+    eprintln!(
+        "complete game DDS files={}, formats={format_counts:?}, mips={mip_counts:?}, cubes={cube_counts:?}, plans={plan_counts:?}",
+        files.len()
+    );
+    assert_eq!(files.len(), 14_694);
+    assert_eq!(
+        format_counts,
+        [
+            (GameTextureFormat::A8_R8_G8_B8.0, 17),
+            (GameTextureFormat::DXT1.0, 1_830),
+            (GameTextureFormat::DXT5.0, 12_847),
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(mip_counts, [(1, 14_690), (8, 4)].into_iter().collect());
+    assert_eq!(cube_counts, [(false, 14_694)].into_iter().collect());
+    assert_eq!(
+        plan_counts,
+        [("direct_2d", 7_490), ("game_d3dx_2d", 7_204)]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[test]
 fn parses_local_dds_corpus_with_the_binary_resource_rules() {
     let root = corpus_root();
     if !root.exists() {
