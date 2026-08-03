@@ -88,6 +88,12 @@ LAYR flags 位 0、NODE/TRS2/TRS3 记录、公共运行时变换、游戏三角�
 
 NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现。NODE `0x32` 在父节点 `surfride::SrSliceCast` 时索引父级 CSLI 生成单元；尺寸、origin mode、自定义 origin、显式单元累计、越界、active、2D/3D 分支和中心偏移均已闭环并实现。
 
+## 投影与视口
+
+`surfride::SrPlayer -> SrPlayer::Impl -> SrRenderer` 的运行时对象链、`SrRenderer+0x48` 屏幕矩阵、Width/Height 属性、D3D 风格视口矩阵、精确 row-major 4x4 乘法以及 CAST 四角的二维直通/三维透视除法已经完成二进制闭环并实现，详见 [`evidence/projection.md`](evidence/projection.md)。
+
+游戏在构造 `SrRenderer+0x48` 时已经乘入 `[0,width] x [0,height]` 的像素视口映射和 Y 反转，因此三维 CAST 在除以 W 后得到最终屏幕 X/Y，不存在另一个尚未执行的 NDC-to-viewport 步骤。上游 camera/backend 两个输入矩阵的类方法语义仍待继续命名和追踪。
+
 ## 图像与特殊 CAST（待验证线索）
 
 - CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成与父级偏移已经闭环。其 CREF 资源选择和最终顶点/UV 生成仍未闭环。
@@ -99,6 +105,6 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 1. VTBF/SRFF 文件头、块长度、子块布局和全部属性编码。
 2. 各标签的构造/解析分派函数及运行时对象类型。
 3. 颜色和 CAST 专属动画通道。
-4. 投影、视口和最终屏幕映射逻辑。
+4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
 5. CIMG/CREF/CRE1/CROP 的资源与图集选择流程。
 6. CNUM 和 CSLI/CREF 的最终 D3D9 顶点、UV 与绘制语义。
