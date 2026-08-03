@@ -630,11 +630,15 @@ impl CeylonShaderKey {
             2 => bits.set(39, true),
             3 => bits.set(40, true),
             4 => bits.set(69, true),
-            5 => bits.set(2, true),
             variant => {
                 return Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(variant));
             }
         }
+        // `ceylon_environment_manager_construct` stores `sea::ShapeEnv2D`
+        // only at manager+0x180. `ceylon_create_shape_environment` applies
+        // that module exactly when key low bit 3 is set; its virtual apply
+        // method raises integer selector parameter 1 to value 1, which the
+        // Simple selector maps to position 2 (`SSF_2DTransform`).
         if self.low & (1 << 3) != 0 {
             bits.set(2, true);
         }
@@ -1091,14 +1095,37 @@ mod tests {
                 13
             ))
         );
-        assert_eq!(
-            CeylonShaderKey {
-                low: 6 | (14 << 15),
-                high: 0,
-            }
-            .srd_simple_shader_direct_contributions(),
-            Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(6))
-        );
+        for variant in 5..=7 {
+            assert_eq!(
+                CeylonShaderKey {
+                    low: variant | (14 << 15),
+                    high: 0,
+                }
+                .srd_simple_shader_direct_contributions(),
+                Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(variant))
+            );
+        }
+    }
+
+    #[test]
+    fn shape_env_2d_is_the_optional_low_bit_3_module_not_a_base_variant() {
+        let base_depth_write = CeylonShaderKey {
+            low: 4 | (14 << 15),
+            high: 0,
+        }
+        .srd_simple_shader_direct_contributions()
+        .unwrap();
+        assert!(base_depth_write.contains(69));
+        assert!(!base_depth_write.contains(2));
+
+        let optional_2d = CeylonShaderKey {
+            low: (1 << 3) | (14 << 15),
+            high: 0,
+        }
+        .srd_simple_shader_direct_contributions()
+        .unwrap();
+        assert!(optional_2d.contains(2));
+        assert!(!optional_2d.contains(69));
     }
 
     #[test]

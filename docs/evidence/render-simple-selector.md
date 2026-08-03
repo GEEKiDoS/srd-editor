@@ -2,7 +2,7 @@
 
 本页记录 SRD/Ceylon ShapeEnv 实际选择的 selector、Simple 键的字节编码、完整 71 项 descriptor，以及已经闭环的 ShapeEnv 模块参数映射。结论来自游戏二进制调用链，并以完整游戏 data 目录中的 shader collection 作独立语料校验。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `9092CDA6828CD0B6C5B9BD3CA1AD3993FEEABF92A429252C32D1664948AF9C37`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `893CD6866DAE3C958988FAA9F3D2AA32405CD6E5927819D8310BC5AE080C11CE`。
 
 ## selector 槽位 9
 
@@ -140,15 +140,28 @@ Simple 构造函数建立 parameter ID 到 position vector 的精确映射：
 
 例如 MultiTex0 variant `9` 的二进制值为 `1001b`，因此设置 positions `47` 与 `50`。在紧凑键中 position 47 是第 12 个字符的 bit 3，position 50 是第 13 个字符的 bit 2，局部编码恰为 `I`、`E`。
 
-## SRD ShapeEnv 的直接贡献与场景全局贡献边界
+## 两套参数表与 `ShapeEnv2D` 的 position 2 来源
 
 `sea_simple_shader_selector_construct` (`0x65ED50`) 还精确注册了 parameter ID `1` 到 position `2`，即 `SSF_2DTransform`。这是 selector 自身的静态映射，不依赖 shader collection XML。
 
-SRD quad 的 ShapeEnv cache key 能直接证明的 Simple contributions 已单独实现：format 14 的 color/texcoord 位、实际 texture slot 数、alpha blend、反向的 `NoUpdateDistance`、base environment variant，以及 ShapeEnv parameter `6/7/8`。这个 64-bit key 不包含场景全局 provider，因此实现刻意不把 `SSF_2DTransform` 等全局位混入 direct key。
+游戏的 parameter manager 与 parameter set 各自维护两套互不混用的表：
 
-场景链的另一侧已经确认：每个 `sea::ChainScene` 在构造时都把嵌入的 `sea::AllEnvBasic` 注册为 all-pass provider；`AllEnvBasic` 的 append 方法 (`0x6E1800`) 无条件提交前 5 个参数句柄，并在 parameter `2` 存在时再提交 2 个矩阵句柄。其注册方法 (`0x6E0D80`) 给出 7 个逻辑名称：`systemParam`、`eyePosition`、`mtxPrjView`、`mtxView`、`mtxInvView`、`mtxDepthToWorld`、`mtxWorldToScreen`。
+- named resource parameter registry 位于 manager `+0xB4`，parameter set 的资源指针 vector 位于 `+0xC0`。`sea_shader_parameter_registry_intern` (`0x630FD0`)、`sea_append_param_util_register_slot` 与 `sea_append_param_util_append_slot` 操作这套表；
+- integer selector parameter registry 位于 manager `+0xC0`，parameter set 的整数 value vector 位于 `+0xCC`。`sub_65CAC0(local_slot, integer_id)` 把 utility local slot 映射到指定的固定整数 ID，`sea_shader_parameter_set_get` (`0x6BBF10`) 与 `sub_6BC540` 读取/写入这套表。
 
-目前仍不能仅凭这些名称断言其中哪一个在最终全局注册表中取得 parameter ID `1`，也不能把 shader collection 中“只差 position 2”的键当作运行时选择证据。后续必须继续闭合注册顺序和 parameter value 的形成链，再把场景 context contribution 加入 Rust。
+因此 named 参数的注册顺序不会产生 integer selector parameter ID。此前把 `AllEnvBasic` 的名称与 parameter ID `1` 联系起来的解释不成立；它的 7 个逻辑名称全部属于 named resource 表，不能直接设置 Simple feature position。
+
+对 executable 中所有 `sub_65CAC0` 调用点的完整枚举显示，固定整数 ID `1` 只有一个注册点：`sea_shape_env_2d_register_selector_parameter` (`0x6CF4B0`) 将 `sea::ShapeEnv2D` 的 local slot `0` 映射到 ID `1`。其 RTTI、构造和应用链进一步闭环为：
+
+1. `ceylon_environment_manager_construct` (`0x66E4D0`) 构造 RTTI 为 `sea::ShapeEnv2D` 的对象并保存到 manager `+0x180`；
+2. `ceylon_create_shape_environment` (`0x670680`) 仅在 cache key low bit `3` 非零时把 `manager+0x180` 应用到 shape；
+3. `sea_shape_apply_environment_module` (`0x6AFD10`) 调用模块 virtual `+0x18`，落到 `sea_shape_env_2d_apply` (`0x6CF560`)；
+4. 该方法通过 `sea_append_param_util_raise_selector_value` (`0x65D320`) 写 local slot `0` 的值 `1`。后者先读取当前整数 selector value，再写入 `max(current, 1)`；最终目标就是 parameter set `+0xCC` 的 ID `1` 项；
+5. Simple selector 将 ID `1` 的 value bit `0` 映射到 position `2`，得到 `SSF_2DTransform`。
+
+base environment vector 是另一条独立路径。构造器只按顺序加入 `null/SoftEdge/Refraction/Refraction2/DepthWrite` 五项，对应 variants `0..4`；不存在 base variant `5 = ShapeEnv2D`。因此 Rust 已删除旧的 variant `5 -> position 2` 映射，并拒绝 base variants `5..7`。position `2` 的已证直接 key 来源只有 low bit `3` 的可选 `ShapeEnv2D` 模块。
+
+SRD quad 的 ShapeEnv cache key 能直接证明的 Simple contributions 已单独实现：format 14 的 color/texcoord 位、实际 texture slot 数、alpha blend、反向的 `NoUpdateDistance`、base environment `0..4`、low bit `3` 的 `ShapeEnv2D`，以及 ShapeEnv parameter `6/7/8`。shader collection 中“只差 position 2”的键仍只作语料诊断，不能反向证明某次运行时 draw 启用了 `ShapeEnv2D`。
 
 ## 完整 data 目录的独立校验
 
@@ -165,6 +178,7 @@ Rust 已实现：
 - 18 字节键的逐位编解码；
 - 所有 uppercase define 的清零、累加和有序前缀输出；
 - ShapeEnv parameter `6/7/8` 到 positions `41..53` 的映射；
+- base environment `0..4` 与 low bit `3` 的 `ShapeEnv2D -> SSF_2DTransform` 映射，并拒绝未构造的 base `5..7`；
 - 完整 data 中 82 个 Simple key 的回归。
 
-`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context 与全局 feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。
+`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。

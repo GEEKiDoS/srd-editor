@@ -2,7 +2,7 @@
 
 本页记录 SRD 绘制包如何选择 Ceylon `sea::ShapeEnv*` 模块组合。它闭环的是 shader cache key 和模块索引，不把尚未还原的生成源码或像素公式写成结论。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `9092CDA6828CD0B6C5B9BD3CA1AD3993FEEABF92A429252C32D1664948AF9C37`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `893CD6866DAE3C958988FAA9F3D2AA32405CD6E5927819D8310BC5AE080C11CE`。
 
 ## 绘制包默认值与 SRD vertex format
 
@@ -61,13 +61,13 @@ SRD packet texture slot 2 remains null
 cache miss 进入 `sub_670680`，建立 328 字节组合资源并按 key 选择：
 
 - `this + 3 + ((low >> 15) & 0x1F)`：内建 vertex-format/environment 资源；SRD 对应 format 14；
-- manager `+0x150` vector：`low & 7`；
-- manager `+0x180` 模块：low bit 3 非零时附加；
+- manager `+0x150` vector：`low & 7`，实际只构造 5 项：`0 = null`、`1 = sea::ShapeEnvSoftEdge`、`2 = sea::ShapeEnvRefraction`、`3 = sea::ShapeEnvRefraction2`、`4 = sea::ShapeEnvDepthWrite`；
+- manager `+0x180` 模块：RTTI 为 `sea::ShapeEnv2D`，low bit 3 非零时附加；
 - manager `+0x15C` 的 62 项 `sea::ShapeEnvBlendMode`：`(low >> 20) & 0x3F`；
 - manager `+0x168` 的 13 项 `sea::ShapeEnvMultiTex0BlendMode`：`(low >> 26) & 0x0F`；
 - manager `+0x174` 的 8 项 `sea::ShapeEnvMultiTex1BlendMode`：`high & 7`。
 
-构造函数 `sub_66E4D0` 的循环数量、各对象 RTTI/vtable 和每个对象保存的 variant index 共同证明上述模块类型及数量。`ShapeEnvBlendMode`、`MultiTex0`、`MultiTex1` 分别通过参数描述符 `0x1CAF86C/0x1CAF87C/0x1CAF88C` 把 variant 请求送入组合器。
+构造函数 `ceylon_environment_manager_construct` (`0x66E4D0`) 的 push 顺序、各对象 RTTI/vtable 和每个对象保存的 variant index 共同证明上述模块类型及数量。`ceylon_create_shape_environment` 对 base vector 使用未经取模或边界检查的 `low & 7` 原始索引；因为构造器只建立 5 项，所以 `5..7` 不是可接受的已构造 variant，Rust 明确拒绝它们，而不虚构映射。`ShapeEnvBlendMode`、`MultiTex0`、`MultiTex1` 分别通过参数描述符 `0x1CAF86C/0x1CAF87C/0x1CAF88C` 把 variant 请求送入组合器。
 
 ## 完整游戏数据的初始 key 回归
 
@@ -97,4 +97,4 @@ ShaderSelector 的注册顺序和 SRD 对 Simple 槽位 9 的选择已经闭环�
 
 已经闭环：所有 shader-key 输入位、CREF/CRE1 到 slot 0/1 的映射、纹理槽计数、SRD vertex format、cache 查找、ShapeEnv 模块族/variant 索引，以及完整语料初始化状态的实际 key 集合统计。
 
-仍需闭环：动画遍历后的完整运行时 ShapeEnv key 集合，以及 ShapeEnv 的其余 base/context 输入到完整 18 字节 Simple key 的映射。原始 Cg source、像素公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
+仍需闭环：动画遍历后的完整运行时 ShapeEnv key 集合，以及其余 context 输入到完整 18 字节 Simple key 的映射。base vector `0..4` 与可选 `ShapeEnv2D` 模块已经闭环。原始 Cg source、像素公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。

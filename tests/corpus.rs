@@ -566,7 +566,7 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
     let mut texture_presence_counts = std::collections::BTreeMap::new();
     let mut shader_keys = std::collections::BTreeMap::new();
     let mut direct_simple_keys = std::collections::BTreeMap::new();
-    let mut global_2d_only_simple_keys = std::collections::BTreeMap::new();
+    let mut position_2_only_simple_keys = std::collections::BTreeMap::new();
     let mut uncovered_simple_keys = std::collections::BTreeMap::new();
     let mut base_variants = std::collections::BTreeMap::new();
     let mut optional_modules = std::collections::BTreeMap::new();
@@ -662,15 +662,15 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
                 // The collection is an asset inventory, not proof that this
                 // draw reaches a particular runtime context. Keep membership
                 // differences diagnostic-only until the executable provider
-                // chain has established every global contribution.
+                // chain has established every runtime contribution.
                 if let Some(shader_collection) = &shader_collection {
                     if !shader_collection.contains(&direct_simple_key) {
-                        let mut global_2d_bits =
+                        let mut position_2_bits =
                             CeylonSimpleShaderBits::from_compact_key(direct_simple_key);
-                        global_2d_bits.set(2, true);
-                        let global_2d_key = global_2d_bits.compact_key();
-                        let target = if shader_collection.contains(&global_2d_key) {
-                            &mut global_2d_only_simple_keys
+                        position_2_bits.set(2, true);
+                        let position_2_key = position_2_bits.compact_key();
+                        let target = if shader_collection.contains(&position_2_key) {
+                            &mut position_2_only_simple_keys
                         } else {
                             &mut uncovered_simple_keys
                         };
@@ -734,10 +734,10 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
         [(0, image_count)].into_iter().collect()
     );
     eprintln!(
-        "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct ShapeEnv keys={}, distinct direct Simple keys={}, XML keys represented only by a global-2D counterpart={}, XML-unrepresented direct keys={}, MultiTex0={multi_tex0_variants:?}",
+        "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct ShapeEnv keys={}, distinct direct Simple keys={}, XML keys represented only by a position-2 counterpart={}, XML-unrepresented direct keys={}, MultiTex0={multi_tex0_variants:?}",
         shader_keys.len(),
         direct_simple_keys.len(),
-        global_2d_only_simple_keys.len(),
+        position_2_only_simple_keys.len(),
         uncovered_simple_keys.len(),
     );
 }
