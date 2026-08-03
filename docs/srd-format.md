@@ -9,7 +9,13 @@
 - **待验证线索**：仅来自旧实现、旧文档、字符串、标签名或样本相关性。
 - **未知**：没有足够证据，不赋予语义。
 
-已完成证据闭环的 VTBF 读取逻辑见 [`evidence/vtbf-reader.md`](evidence/vtbf-reader.md)。下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
+已完成证据闭环的内容：
+
+- VTBF 读取逻辑：[`evidence/vtbf-reader.md`](evidence/vtbf-reader.md)
+- 标签分派图：[`evidence/tag-dispatch.md`](evidence/tag-dispatch.md)
+- 动画记录布局：[`evidence/animation-records.md`](evidence/animation-records.md)
+
+下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 
 ## 容器（待验证线索）
 
@@ -52,7 +58,7 @@ children...
 
 ## 动画（待验证线索）
 
-旧调查记录给出的候选解析链如下，必须在当前 IDA 数据库中重新核对调用点、参数、读取偏移和对象布局：
+当前二进制已经重新证明解析链：
 
 ```text
 sub_A9FD60              Animation
@@ -62,7 +68,7 @@ sub_A9FD60              Animation
   -> sub_AA3FF0         KEY
 ```
 
-旧调查认为 KEY 候选记录大小为 20 字节：
+但 KEY 记录不是固定 20 字节；游戏根据 TRK format 分派为 8 或 20 字节。20 字节分支之一的布局为：
 
 ```text
 +0x00 frame
@@ -72,7 +78,7 @@ sub_A9FD60              Animation
 +0x10 tangent_out
 ```
 
-通道含义、插值方式、`start_frame`/`end_frame` 语义及关键帧字段均需重新从运行时代码证明。旧实现中的 Hermite、线性回退与 2% 限幅不得移植。
+具体分派见证据文档。通道含义、插值方式、区间语义及后三字段用途仍需从运行时代码证明。旧实现中的 Hermite、线性回退与 2% 限幅不得移植。
 
 ## 图像与特殊 CAST（待验证线索）
 
