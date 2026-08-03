@@ -3,7 +3,7 @@
 分析对象：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`5ACFF2969D10D0840FEA516DCB20699324E2286DDB00E6C404E862F77B695074`。
+- 保存后的 IDB SHA-256：`CDADC82B2932CF09122A1C73E7753446F7AAA3F7176A2DEE4F43902BBE725E7F`。
 
 ## 独立层的构造和双向绑定
 
@@ -77,8 +77,9 @@ Rust 已实现：
 - owning RefCast 2D 模式向所有嵌套复制层传播；
 - 2D 目标嵌入 3D RefCast 时的 Y 翻转；
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
+- 每个 copied layer 独立的 CAST transform、ANIM frame/duration/flags，以及首次同名动画的公共通道立即应用；
 - 未解析引用不创建层，以及无截断猜测的循环诊断。
 
 53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；按文件统计共有 186 个目标 SCN/LAYR 被两个或更多实例引用。全部文件均收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
 
-后续仍需实现 copied layer 的完整动画对象、源目标层对根 CAST 的附加抑制条件，以及最终 D3D9 draw submission。本页不把已完成的运行时世界状态组合表述为已经完成像素渲染。
+后续仍需把 CAST 类型专属动画通道全部接入 `ReferenceLayerRuntimeState`，实现源目标层对根 CAST 的附加抑制条件，以及最终 D3D9 draw submission。本页不把已完成的公共动画和世界状态组合表述为已经完成像素渲染。

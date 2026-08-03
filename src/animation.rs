@@ -4,6 +4,22 @@ use crate::transform::SpatialTransform;
 use crate::vtbf::{Block, Property, SrdFile};
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AnimationDefinition {
+    pub name: Vec<u8>,
+    pub flags: u32,
+    pub declared_motion_count: u32,
+    pub duration: i32,
+    pub motions: Vec<Motion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeAnimationState {
+    pub frame: f32,
+    pub duration: f32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Motion {
     pub target: i32,
     pub tracks: Vec<Track>,
@@ -162,12 +178,100 @@ impl Track {
     }
 }
 
+impl AnimationDefinition {
+    pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, AnimationError> {
+        if !block.is_tag(b"ANIM") {
+            return Err(AnimationError("block is not ANIM".into()));
+        }
+        let name = block
+            .last_property(0x03)
+            .and_then(|property| property.string_bytes(file))
+            .ok_or_else(|| AnimationError("missing/invalid ANIM 0x03".into()))?
+            .iter()
+            .copied()
+            .take(64)
+            .collect();
+        let flags = read_unsigned(file, block, 0x5f)?;
+        let declared_motion_count = read_unsigned(file, block, 0x50)?;
+        let duration = read_signed(file, block, 0x56)?;
+        let mut motions = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"MOT "))
+            .map(|child| Motion::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        let motion_slots = usize::try_from(declared_motion_count)
+            .map_err(|_| AnimationError("ANIM 0x50 does not fit usize".into()))?;
+        if motions.len() > motion_slots {
+            return Err(AnimationError(format!(
+                "ANIM has {} MOT blocks but only {declared_motion_count} motion slots",
+                motions.len()
+            )));
+        }
+        motions.resize_with(motion_slots, || Motion {
+            target: -1,
+            tracks: Vec::new(),
+        });
+        Ok(Self {
+            name,
+            flags,
+            declared_motion_count,
+            duration,
+            motions,
+        })
+    }
+
+    pub fn runtime_duration(&self) -> f32 {
+        if self.duration >= 0 {
+            return self.duration as f32;
+        }
+        self.motions
+            .iter()
+            .flat_map(|motion| &motion.tracks)
+            .fold(0.0f32, |duration, track| {
+                duration.max(track.range_end as f32)
+            })
+    }
+
+    pub fn initial_runtime_state(&self) -> RuntimeAnimationState {
+        RuntimeAnimationState {
+            frame: 0.0,
+            duration: self.runtime_duration(),
+            flags: 9 | ((self.flags & 1) << 1),
+        }
+    }
+
+    pub fn apply_common_channels(
+        &self,
+        transforms: &mut [SpatialTransform],
+        frame: f32,
+    ) -> Result<usize, AnimationError> {
+        let mut applied = 0usize;
+        let transform_count = transforms.len();
+        for motion in &self.motions {
+            if motion.target < 0 {
+                continue;
+            }
+            let index = usize::try_from(motion.target)
+                .map_err(|_| AnimationError("MOT target does not fit usize".into()))?;
+            let transform = transforms.get_mut(index).ok_or_else(|| {
+                AnimationError(format!(
+                    "MOT target {index} is outside {} runtime CASTs",
+                    transform_count
+                ))
+            })?;
+            applied += motion.apply_proven_common_channels(transform, frame);
+        }
+        Ok(applied)
+    }
+}
+
 impl Motion {
     pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, AnimationError> {
         if !block.is_tag(b"MOT ") {
             return Err(AnimationError("block is not MOT ".into()));
         }
-        let target = read_signed(file, block, 0x51)?;
+        let target = i32::from(read_signed(file, block, 0x51)? as i16);
         let tracks = block
             .children
             .iter()
@@ -505,6 +609,7 @@ fn segment8<T: Copy>(keys: &[Key8<T>], frame: f32) -> Segment8<'_, T> {
     match keys {
         [] => Segment8::Empty,
         [key] => Segment8::Value(key.value),
+        _ if frame.is_nan() => Segment8::Value(keys[0].value),
         _ if frame <= keys[0].frame as f32 => Segment8::Value(keys[0].value),
         _ if frame >= keys[keys.len() - 1].frame as f32 => {
             Segment8::Value(keys[keys.len() - 1].value)
@@ -526,6 +631,7 @@ fn segment20<T: Copy>(keys: &[Key20<T>], frame: f32) -> Segment20<'_, T> {
     match keys {
         [] => Segment20::Empty,
         [key] => Segment20::Value(key.value),
+        _ if frame.is_nan() => Segment20::Value(keys[0].value),
         _ if frame <= keys[0].frame as f32 => Segment20::Value(keys[0].value),
         _ if frame >= keys[keys.len() - 1].frame as f32 => {
             Segment20::Value(keys[keys.len() - 1].value)
@@ -548,6 +654,64 @@ pub(crate) fn cvtt_f32_to_i32(value: f32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_animation_uses_explicit_or_track_derived_duration_and_binary_flags() {
+        let track = Track {
+            target: 0,
+            key_count: 0,
+            format: 0,
+            range_start: 0,
+            range_end: 42,
+            keys: KeyData::Unsupported,
+        };
+        let mut animation = AnimationDefinition {
+            name: b"animation".to_vec(),
+            flags: 1,
+            declared_motion_count: 1,
+            duration: -1,
+            motions: vec![Motion {
+                target: 0,
+                tracks: vec![track],
+            }],
+        };
+        assert_eq!(animation.runtime_duration(), 42.0);
+        assert_eq!(
+            animation.initial_runtime_state(),
+            RuntimeAnimationState {
+                frame: 0.0,
+                duration: 42.0,
+                flags: 11,
+            }
+        );
+        animation.duration = 12;
+        assert_eq!(animation.runtime_duration(), 12.0);
+    }
+
+    #[test]
+    fn nan_frames_select_the_first_key_like_the_binary_comparison() {
+        let track = Track {
+            target: 0,
+            key_count: 2,
+            format: 0x10,
+            range_start: 0,
+            range_end: 10,
+            keys: KeyData::Key8F32(vec![
+                Key8 {
+                    frame: 0,
+                    value: 3.0,
+                },
+                Key8 {
+                    frame: 10,
+                    value: 9.0,
+                },
+            ]),
+        };
+        assert_eq!(
+            track.evaluate(f32::NAN),
+            Evaluation::Value(ScalarValue::F32(3.0))
+        );
+    }
 
     #[test]
     fn byte4_keys_use_the_binary_normalize_lerp_and_truncate_chain() {

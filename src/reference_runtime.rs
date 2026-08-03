@@ -1,6 +1,8 @@
 use std::fmt;
 
+use crate::animation::RuntimeAnimationState;
 use crate::csli::{add_color_saturating_game, multiply_color_game};
+use crate::reference::ReferenceAnimationRequest;
 use crate::scene::{Project, ReferenceTarget};
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
@@ -93,6 +95,14 @@ pub struct ReferenceRuntimePlan {
     pub unresolved: Vec<UnresolvedReference>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceLayerRuntimeState {
+    pub instance_index: usize,
+    pub local: ReferenceLayerLocalState,
+    pub cast_transforms: Vec<SpatialTransform>,
+    pub animations: Vec<RuntimeAnimationState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceRuntimeError {
     pub repeating_layers: Vec<ReferenceTarget>,
@@ -163,6 +173,61 @@ impl Project {
     }
 }
 
+impl ReferenceLayerRuntimeState {
+    pub fn new(
+        project: &Project,
+        plan: &ReferenceRuntimePlan,
+        instance_index: usize,
+    ) -> Option<Self> {
+        let instance = plan.instances.get(instance_index)?;
+        let layer =
+            &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
+        Some(Self {
+            instance_index,
+            local: ReferenceLayerLocalState::default(),
+            cast_transforms: layer
+                .transforms
+                .iter()
+                .copied()
+                .map(|transform| transform.spatial())
+                .collect(),
+            animations: layer
+                .animations
+                .iter()
+                .map(|animation| animation.initial_runtime_state())
+                .collect(),
+        })
+    }
+
+    pub fn apply_animation_common_channels(
+        &mut self,
+        project: &Project,
+        plan: &ReferenceRuntimePlan,
+        animation_name: &[u8],
+        frame: f32,
+    ) -> Result<Option<usize>, crate::animation::AnimationError> {
+        let instance = &plan.instances[self.instance_index];
+        let layer =
+            &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
+        let Some((animation_index, animation)) = layer.find_animation(animation_name) else {
+            return Ok(None);
+        };
+        self.animations[animation_index].frame = frame;
+        animation
+            .apply_common_channels(&mut self.cast_transforms, frame)
+            .map(Some)
+    }
+
+    pub fn apply_reference_request_common_channels(
+        &mut self,
+        project: &Project,
+        plan: &ReferenceRuntimePlan,
+        request: ReferenceAnimationRequest<'_>,
+    ) -> Result<Option<usize>, crate::animation::AnimationError> {
+        self.apply_animation_common_channels(project, plan, request.animation_name, request.frame)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_layer_references(
     project: &Project,
@@ -210,6 +275,7 @@ fn append_layer_references(
 
 #[cfg(test)]
 mod tests {
+    use crate::animation::{AnimationDefinition, Key8, KeyData, Motion, Track};
     use crate::reference::ReferenceDefinition;
     use crate::scene::{Layer, NodeRecord, RawTransform, Scene};
     use crate::transform::SpatialTransform;
@@ -233,6 +299,7 @@ mod tests {
             name: name.to_vec(),
             flags: u32::from(!is_2d),
             animation_count: 0,
+            animations: Vec::new(),
             field_23: Vec::new(),
             nodes: vec![
                 NodeRecord {
@@ -408,5 +475,64 @@ mod tests {
         let gated = instance.compose_world_state(gated_parent, local);
         assert!(gated.visible);
         assert!(!gated.render_gate);
+    }
+
+    #[test]
+    fn copied_layers_keep_independent_animation_frames_and_cast_transforms() {
+        let mut project = project(vec![
+            layer(
+                b"root",
+                true,
+                vec![
+                    Some(reference(b"scene", b"target", 0)),
+                    Some(reference(b"scene", b"target", 1)),
+                ],
+            ),
+            layer(b"target", true, vec![None]),
+        ]);
+        let animation = AnimationDefinition {
+            name: b"move".to_vec(),
+            flags: 0,
+            declared_motion_count: 1,
+            duration: 10,
+            motions: vec![Motion {
+                target: 0,
+                tracks: vec![Track {
+                    target: 0,
+                    key_count: 1,
+                    format: 0x10,
+                    range_start: 0,
+                    range_end: 10,
+                    keys: KeyData::Key8F32(vec![Key8 {
+                        frame: 0,
+                        value: 25.0,
+                    }]),
+                }],
+            }],
+        };
+        project.scenes[0].layers[1].animation_count = 1;
+        project.scenes[0].layers[1].animations.push(animation);
+
+        let plan = project.build_reference_runtime_plan().unwrap();
+        let mut first = ReferenceLayerRuntimeState::new(&project, &plan, 0).unwrap();
+        let second = ReferenceLayerRuntimeState::new(&project, &plan, 1).unwrap();
+        assert_eq!(
+            first
+                .apply_animation_common_channels(&project, &plan, b"move", 7.0)
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(first.animations[0].frame, 7.0);
+        assert_eq!(first.animations[0].duration, 10.0);
+        assert_eq!(first.animations[0].flags, 9);
+        assert_eq!(first.cast_transforms[0].translation[0], 25.0);
+        assert_eq!(second.animations[0].frame, 0.0);
+        assert_eq!(second.cast_transforms[0].translation[0], 0.0);
+        assert_eq!(
+            first
+                .apply_animation_common_channels(&project, &plan, b"missing", 4.0)
+                .unwrap(),
+            None
+        );
     }
 }

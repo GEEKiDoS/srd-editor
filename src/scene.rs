@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::animation::AnimationDefinition;
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
 use crate::number::NumberDefinition;
@@ -183,6 +184,7 @@ pub struct Layer {
     pub name: Vec<u8>,
     pub flags: u32,
     pub animation_count: u32,
+    pub animations: Vec<AnimationDefinition>,
     pub field_23: Vec<u8>,
     pub nodes: Vec<NodeRecord>,
     pub transforms: Vec<RawTransform>,
@@ -205,6 +207,16 @@ impl Layer {
         let flags = read_unsigned(file, block, 0x20)?;
         let node_count = read_unsigned(file, block, 0x21)?;
         let animation_count = read_unsigned(file, block, 0x22)?;
+        let animations = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"ANIM"))
+            .map(|child| {
+                AnimationDefinition::from_block(file, child)
+                    .map_err(|error| SceneError(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_declared_count(animation_count, animations.len(), "LAYR ANIM", block.offset)?;
         let field_23 = block
             .properties_with_code(0x23)
             .map(|property| {
@@ -356,6 +368,7 @@ impl Layer {
             name,
             flags,
             animation_count,
+            animations,
             field_23,
             nodes,
             transforms,
@@ -368,6 +381,13 @@ impl Layer {
 
     pub fn is_2d(&self) -> bool {
         self.flags & 1 == 0
+    }
+
+    pub fn find_animation(&self, name: &[u8]) -> Option<(usize, &AnimationDefinition)> {
+        self.animations
+            .iter()
+            .enumerate()
+            .find(|(_, animation)| animation.name == name)
     }
 
     pub fn build_hierarchy(&self) -> Result<Hierarchy, SceneError> {

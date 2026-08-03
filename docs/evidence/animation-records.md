@@ -1,8 +1,11 @@
 # 动画记录读取证据
 
-状态：`ANIM → MOT → TRK → KEY` 的记录分配、字段偏移、format 分派、时间区间处理和标量关键帧求值公式已证明。轨道目标编号与 CAST 字段的高层语义仍未全部证明。
+状态：`ANIM → MOT → TRK → KEY` 的记录分配、运行时动画对象、名称查找、帧写入、format 分派、时间区间处理和公共标量通道求值已证明。CAST 类型专属通道仍在继续闭环。
 
 所列主要函数已与当前 `chusanApp.exe` 逐字节核对。
+
+- `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
+- 保存后的 IDB SHA-256：`CDADC82B2932CF09122A1C73E7753446F7AAA3F7176A2DEE4F43902BBE725E7F`
 
 ## 层级和记录大小
 
@@ -17,7 +20,15 @@
 | `0x56` | 有符号标量 | `+0x50` |
 | `0x5F` | 无符号标量 | `+0x44` |
 
-`+0x48` 非零时分配 `value * 8` 字节，并把指针存到 `+0x4C`；每个 `MOT ` 子块消耗一条 8 字节记录。
+`+0x48` 非零时分配 `value * 8` 字节，并把指针存到 `+0x4C`。游戏先把每个槽初始化为：
+
+```text
+target = -1
+track_count = 0
+track_pointer = null
+```
+
+随后每个直接 `MOT ` 子块顺序填充一个槽。`CATR` 写入 ANIM `+0x40` 的辅助属性表，不消耗 MOT 槽。若直接 MOT 数少于 `0x50`，尾部槽保持 target `-1`；运行时应用函数明确跳过这些槽。因此 `0x50` 是 MOT 槽数，不是必须与直接 MOT 子块数相等的结构校验字段。
 
 上述表只描述读取行为，不给 code 命名。
 
@@ -123,6 +134,30 @@ end   = track.+0x0C
 时间处于 `[start, end)` 时原样返回；区间外按长度 `end - start` 循环折返到该半开区间。该函数只判断两位是否有任一置位，没有区分 `0x100` 与 `0x200`。
 
 如果没有启用该区间循环，各关键帧求值器在首关键帧之前保持首值，在末关键帧及之后保持末值。没有“start 之前回退 CAST base 值”的逻辑。
+
+NaN 帧也由比较方向闭环：各 Key8/Key20 求值器先执行有序比较 `first_frame < frame`。NaN 使该比较为假，因此直接返回第一关键帧值；它不会进入区间搜索或产生越界下标。Rust 已复现该分支。
+
+## 运行时 ANIM 对象
+
+`srd_construct_runtime_animation` (`0xAD4D40`) 为每个 parsed ANIM 建立独立对象，并保存：
+
+| runtime 偏移 | 已证明内容 |
+| ---: | --- |
+| `+0x04` | ANIM 名称字符串 |
+| `+0x1C` | raw f32 frame，初始 `0.0` |
+| `+0x20` | runtime duration |
+| `+0x24/+0x28/+0x2C` | 初始均为 `1.0` 的播放因子 |
+| `+0x30` | 初始 flags `0x9`，parsed ANIM flags 位 0 非零时再置位 1 |
+| `+0x34` | parsed ANIM 指针 |
+| `+0x38` | owning runtime layer |
+
+parsed `0x56 >= 0` 时直接转换成 f32 duration；为负时，从 `0.0` 开始按 MOT/TRK 顺序对所有 TRK `range_end` 做 `fmaxf`，结果写入 `+0x20`。
+
+`srd_find_animation_by_name` (`0xABF940`) 从 runtime layer `+0x28..+0x2C` 的动画向量开头遍历，以完整长度、区分大小写比较，返回第一个同名对象。
+
+`srd_apply_reference_animation_frame` 找到对象后，`srd_set_animation_frame_raw` 将帧四字节原样写到 `+0x1C`，再调用 `srd_apply_animation_motion_set`。后者按 ANIM `0x50` 槽顺序遍历：target 为负时跳过；否则用 target 索引 runtime CAST 数组，先应用公共通道，再应用 CAST 类型专属通道。
+
+Rust 当前解析并保存全部 ANIM 槽，保留尾部 target `-1` 项；每个 `ReferenceLayerRuntimeState` 独立复制目标层 CAST transform 和 runtime animation state。同名动画查找、raw frame 保存、duration/flags 初始化以及公共通道立即应用均已实现。53 个样本共 3099 个 ANIM、7053 个空 MOT 槽、2468 个自动 duration，并在 frame 0 成功应用 101922 条公共通道。
 
 ## low 0/1：8 字节记录求值
 

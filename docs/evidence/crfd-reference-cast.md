@@ -3,7 +3,7 @@
 本页记录引用 CAST 的数据记录、运行时指针链和通道 `23` 的已闭环行为。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`5ACFF2969D10D0840FEA516DCB20699324E2286DDB00E6C404E862F77B695074`。
+- 保存后的 IDB SHA-256：`CDADC82B2932CF09122A1C73E7753446F7AAA3F7176A2DEE4F43902BBE725E7F`。
 
 ## CRFD 记录
 
@@ -60,4 +60,4 @@ Rust 当前已经实现：
 - CRFD 到 NODE 的连接及 NODE 类型回归；
 - 通道 `23` 的原始位求值、非零 gate、负值默认帧和动画名请求。
 
-`source_name/layer_name` 现在已经按游戏的同文件 `PROJ -> SCN  -> LAYR` 表解析，53 个样本中的 1090 个 CRFD 全部命中。独立引用层的建立顺序、父实例关系、世界矩阵、颜色和 gate 组合见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。尚未实现的是复制层的完整动画对象和最终 D3D9 draw submission；证据页不把运行时状态求值写成已经完成像素渲染。
+`source_name/layer_name` 现在已经按游戏的同文件 `PROJ -> SCN  -> LAYR` 表解析，53 个样本中的 1090 个 CRFD 全部命中。独立引用层的建立顺序、父实例关系、世界矩阵、颜色、gate 和独立 ANIM 状态见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。通道 `23` 请求现在能在目标实例中首次匹配动画、保存 raw frame 并立即应用公共通道；CAST 类型专属动画和最终 D3D9 draw submission 仍待接入。

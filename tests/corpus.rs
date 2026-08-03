@@ -342,6 +342,73 @@ fn parses_and_animates_common_transform_colors() {
 }
 
 #[test]
+fn parses_runtime_animation_slots_names_and_durations() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut animation_count = 0usize;
+    let mut empty_motion_slots = 0usize;
+    let mut automatic_durations = 0usize;
+    let mut applied_common_channels = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        for scene in &project.scenes {
+            for layer in &scene.layers {
+                assert_eq!(layer.animations.len(), layer.animation_count as usize);
+                for (animation_index, animation) in layer.animations.iter().enumerate() {
+                    assert_eq!(
+                        layer.find_animation(&animation.name).map(|entry| entry.0),
+                        layer
+                            .animations
+                            .iter()
+                            .position(|candidate| candidate.name == animation.name)
+                    );
+                    assert_eq!(
+                        animation.motions.len(),
+                        animation.declared_motion_count as usize
+                    );
+                    empty_motion_slots += animation
+                        .motions
+                        .iter()
+                        .filter(|motion| motion.target < 0)
+                        .count();
+                    automatic_durations += usize::from(animation.duration < 0);
+                    assert!(animation.runtime_duration() >= 0.0);
+
+                    let mut transforms = layer
+                        .transforms
+                        .iter()
+                        .copied()
+                        .map(|raw| raw.spatial())
+                        .collect::<Vec<_>>();
+                    applied_common_channels += animation
+                        .apply_common_channels(&mut transforms, 0.0)
+                        .unwrap_or_else(|error| {
+                            panic!("{} animation {animation_index}: {error}", path.display())
+                        });
+                    animation_count += 1;
+                }
+            }
+        }
+    }
+
+    assert!(animation_count > 0);
+    assert!(empty_motion_slots > 0);
+    assert!(automatic_durations > 0);
+    assert!(applied_common_channels > 0);
+    eprintln!(
+        "animations={animation_count}, empty MOT slots={empty_motion_slots}, automatic durations={automatic_durations}, applied common channels={applied_common_channels}"
+    );
+}
+
+#[test]
 fn parses_and_links_binary_proven_csli_grids() {
     let root = corpus_root();
     if !root.exists() {
