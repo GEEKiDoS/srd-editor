@@ -2,9 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
+use srd_editor::csli::CsliDefinition;
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
+use srd_editor::render::select_srd_image_render_preset;
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -26,6 +28,68 @@ fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
             output.push(path);
         }
     }
+}
+
+#[test]
+fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut cast_type_counts = [0usize; 3];
+    let mut normal_preset_counts = std::collections::BTreeMap::new();
+    let mut special_preset_counts = std::collections::BTreeMap::new();
+    let mut invalid_low_nibbles = std::collections::BTreeMap::new();
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file.blocks_depth_first() {
+            let (kind, flags, runtime) = if block.is_tag(b"CIMG") {
+                let definition = ImageDefinition::from_block(&file, block).unwrap();
+                (0, definition.flags, definition.initial_runtime_state())
+            } else if block.is_tag(b"CSLI") {
+                let definition = CsliDefinition::from_block(&file, block).unwrap();
+                let image = ImageDefinition::from_csli_runtime_base(&definition);
+                (1, image.flags, image.initial_runtime_state())
+            } else if block.is_tag(b"CNUM") {
+                let definition = NumberDefinition::from_block(&file, block).unwrap();
+                let image = definition.image_base();
+                (2, image.flags, image.initial_runtime_state())
+            } else {
+                continue;
+            };
+            cast_type_counts[kind] += 1;
+            assert_eq!(runtime.render_preset_override, -1);
+            assert_eq!(runtime.field_1c, -1);
+
+            match select_srd_image_render_preset(flags, runtime.render_preset_override, false) {
+                Some(preset) => *normal_preset_counts.entry(preset).or_insert(0usize) += 1,
+                None => *invalid_low_nibbles.entry(flags & 0x0f).or_insert(0usize) += 1,
+            }
+            if let Some(preset) =
+                select_srd_image_render_preset(flags, runtime.render_preset_override, true)
+            {
+                *special_preset_counts.entry(preset).or_insert(0usize) += 1;
+            }
+        }
+    }
+
+    assert_eq!(cast_type_counts, [13_773, 799, 552]);
+    assert_eq!(
+        normal_preset_counts,
+        [(3, 10_659), (4, 4_242), (5, 43), (9, 180)]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(special_preset_counts, normal_preset_counts);
+    assert!(invalid_low_nibbles.is_empty());
+    eprintln!(
+        "CIMG/CSLI/CNUM={cast_type_counts:?}, normal presets={normal_preset_counts:?}, special presets={special_preset_counts:?}, unchanged low nibbles={invalid_low_nibbles:?}"
+    );
 }
 
 #[test]

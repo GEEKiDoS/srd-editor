@@ -63,6 +63,8 @@ pub struct ImageGeometryState {
 pub struct RuntimeImageState {
     pub geometry: ImageGeometryState,
     pub coordinates: [ImageCoordinateState; 2],
+    pub render_preset_override: i32,
+    pub field_1c: i32,
 }
 
 impl RuntimeImageState {
@@ -210,6 +212,8 @@ impl ImageDefinition {
                 self.initial_coordinate_state(ImageReferenceChannel::Cref),
                 self.initial_coordinate_state(ImageReferenceChannel::Cre1),
             ],
+            render_preset_override: -1,
+            field_1c: -1,
         }
     }
 
@@ -1021,6 +1025,8 @@ mod tests {
         assert_eq!(constructor_state.coordinates[0].vertex_colors, [[0; 4]; 4]);
         assert_eq!(constructor_state.coordinates[0].reference_index, 0);
         assert_eq!(constructor_state.coordinates[1].reference_index, 0);
+        assert_eq!(constructor_state.render_preset_override, -1);
+        assert_eq!(constructor_state.field_1c, -1);
 
         let csli = CsliDefinition {
             field_80: 0x0100_0000,
