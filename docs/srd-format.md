@@ -18,6 +18,7 @@
 - CSLI/SLIC 网格、NODE `0x32` 与父级单元偏移：[`evidence/csli-layout.md`](evidence/csli-layout.md)
 - SrSliceCast active 单元局部顶点、CREF 选择与最终 UV：[`evidence/slice-geometry.md`](evidence/slice-geometry.md)
 - CIMG、CREF/CRE1 双通道与 SrImageCast：[`evidence/cimg-image-cast.md`](evidence/cimg-image-cast.md)
+- CNUM 解析、SrNumberCast 初值与 glyph 映射：[`evidence/cnum-number-cast.md`](evidence/cnum-number-cast.md)
 - TEX `0x62`、双采样包装对象、SrSliceCast 选择与 D3D9 采样状态：[`evidence/texture-binding.md`](evidence/texture-binding.md)
 - TEXL/TEX/CROP 记录、归一化矩形与外部 DDS 路径：[`evidence/texture-table.md`](evidence/texture-table.md)
 
@@ -104,7 +105,8 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 - CSLI CREF 每条记录的两个 signed i16、SLIC `0x46` 选择、运行时图像/矩形下标、flags flip/order 以及两个相同最终 UV 通道已经闭环。
 - CSLI/SLIC packed color 的零默认、双线性插值、逐通道乘法和饱和加法公式已经闭环；CAST 两种 tint 的来源仍未闭环。
 - TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；实际纹理对象和最终 draw call 状态仍未闭环。
-- CIMG 的 CREF/CRE1 双表保存、选择器、TEXL/CROP 坐标解析、坐标偏移、Point/Linear 选择与 Image/Text cast 分类已经闭环；TEXT 内部和 CNUM 仍未完成。
+- CIMG 的 CREF/CRE1 双表保存、选择器、TEXL/CROP 坐标解析、坐标偏移、Point/Linear 选择与 Image/Text cast 分类已经闭环；TEXT 内部仍未完成。
+- CNUM 的结构布局、CREF/CRE1 双表、NumberCast 初值、初始引用、数字及四种特殊字符的 glyph 映射和部分小数格式位已经闭环；完整 glyph 排版与最终绘制仍未完成。
 - DDS 图集裁剪、runtime-bound 资源、数字排版与 sliced sprite 均不得依据旧预览器的表现直接实现。
 
 ## 待验证问题
@@ -113,5 +115,5 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 2. 各标签的构造/解析分派函数及运行时对象类型。
 3. 颜色和 CAST 专属动画通道。
 4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
-5. CNUM、TEXT、图像动画描述符与 shader/固定管线中的双 UV 消费流程。
-6. CNUM、CAST tint/default color 与最终 D3D9 绘制语义。
+5. CNUM 完整 glyph 排版、TEXT、图像动画描述符与 shader/固定管线中的双 UV 消费流程。
+6. CNUM/NumberCast 动画通道、CAST tint/default color 与最终 D3D9 绘制语义。

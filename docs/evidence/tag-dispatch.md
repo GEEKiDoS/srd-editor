@@ -45,7 +45,7 @@
 - `CSLI` (`0xAA3320`) 处理 `CREF` → `0xAA1390`、`SLIC` → `0xAA37A0`。
 - `CATL` (`0xAA0380`) 处理 `CATR`。
 
-后续运行时证据已经证明两表同时保留，并由 UV 通道参数最低位分别选择；详见 [`cimg-image-cast.md`](cimg-image-cast.md)。
+后续运行时证据已经证明 CIMG 两表同时保留，并由 UV 通道参数最低位分别选择；详见 [`cimg-image-cast.md`](cimg-image-cast.md)。CNUM 的两表、SrNumberCast 建立和 glyph 映射见 [`cnum-number-cast.md`](cnum-number-cast.md)。
 
 ## 动画标签
 
@@ -72,6 +72,6 @@
 
 - 各标签名称对应的最终渲染业务语义。
 - `NODE`、`TRS2`、`TRS3` 的世界变换组合顺序。
-- TEXT 与 CNUM 的完整运行时消费。
-- CNUM、CSLI、TEXT 的最终绘制行为。
+- TEXT 的完整运行时消费。
+- CNUM 的完整 glyph 排版，以及 CNUM、CSLI、TEXT 的最终绘制行为。
 - 动画通道编号与 CAST 字段的绑定。

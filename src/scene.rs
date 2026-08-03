@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
+use crate::number::NumberDefinition;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -62,6 +63,7 @@ pub struct Layer {
     pub nodes: Vec<NodeRecord>,
     pub transforms: Vec<RawTransform>,
     pub image_by_node: Vec<Option<ImageDefinition>>,
+    pub number_by_node: Vec<Option<NumberDefinition>>,
     pub csli_by_node: Vec<Option<CsliDefinition>>,
 }
 
@@ -146,6 +148,7 @@ impl Layer {
             .filter(|child| child.is_tag(b"DATA"))
             .flat_map(|data| data.children.iter());
         let mut image_by_node = vec![None; node_count];
+        let mut number_by_node = vec![None; node_count];
         let mut csli_by_node = vec![None; node_count];
         for data_block in data_children {
             if data_block.is_tag(b"CIMG") {
@@ -164,6 +167,24 @@ impl Layer {
                     ))
                 })?;
                 *destination = Some(image);
+                continue;
+            }
+            if data_block.is_tag(b"CNUM") {
+                let number = NumberDefinition::from_block(file, data_block)
+                    .map_err(|error| SceneError(error.to_string()))?;
+                let index = usize::try_from(number.node_index).map_err(|_| {
+                    SceneError(format!(
+                        "CNUM at {:#x} has negative NODE index {}",
+                        data_block.offset, number.node_index
+                    ))
+                })?;
+                let destination = number_by_node.get_mut(index).ok_or_else(|| {
+                    SceneError(format!(
+                        "CNUM at {:#x} references NODE {index} outside {node_count} nodes",
+                        data_block.offset
+                    ))
+                })?;
+                *destination = Some(number);
                 continue;
             }
             if !data_block.is_tag(b"CSLI") {
@@ -195,6 +216,7 @@ impl Layer {
             nodes,
             transforms,
             image_by_node,
+            number_by_node,
             csli_by_node,
         })
     }
