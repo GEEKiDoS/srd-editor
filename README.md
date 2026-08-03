@@ -40,7 +40,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 36 字节 D3D9 顶点声明、四顶点非索引 triangle strip、混合、alpha/depth/stencil 与 scissor 状态提交。
 - 绘制包到 64 位 ShapeEnv shader cache key 的全部位来源、CREF/CRE1 到 D3D9 texture stage 0/1 的映射、vertex-format/blend/multi-texture 模块索引，以及完整 `surfboard` 语料 19,484 个初始 image node 的实际 key 回归。
 - ShaderSelector 注册顺序、SRD/ShapeEnv 对 Simple 槽位 9 的实际选择、Simple 的 18 字节键与 71 项表、Default 的 46 字节键机制、嵌入式 Cg source 的精确 dword 解码/include 闭包、format 14 的双 UV/双顶点色公式，以及 stage 0/1 到 pixel/vertex Shader resource 的映射。
-- 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，并经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode；编辑器发布物不依赖 Cg。
+- 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
 
 尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request/设备丢失生命周期、ShapeEnv 剩余 context 到完整 Simple 键的映射、bytecode 表的 runtime 选择/设备接入、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
 

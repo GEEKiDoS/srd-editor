@@ -23,7 +23,9 @@
 4. 递归展开 include，并消除与游戏 include guard 等价的重复 include；
 5. 动态加载游戏 `cg.dll`，用上述精确参数取得 D3D assembly；
 6. 动态加载系统 `d3dcompiler_47.dll` 并调用 `D3DAssemble`；
-7. 写出 `.cg/.asm/.bin` 与 `manifest.tsv`。
+7. 创建不可见 Win32 窗口和 windowed D3D9 HAL device（software vertex processing）；
+8. 对每份 bytecode 调用 `CreateVertexShader` 或 `CreatePixelShader`，成功后立即释放对象；
+9. 写出 `.cg/.asm/.bin` 与含精确 HRESULT 的 `manifest.tsv`。
 
 工具的 PE import table 没有 Cg、D3DCompiler 或 D3DX 静态依赖，所有取证 DLL 都显式动态加载；import table 对 `D3DX` 的匹配数为零。源码中没有 D3DX 调用。
 
@@ -47,8 +49,23 @@ collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 同一输入重复执行后两个 hash 均保持不变。其 PS assembly 直接显示 stage 0/1 sampler、MultiTex0 mode 9 的 alpha epsilon 公式、COLOR0 乘法、COLOR1.rgb 加法和最终异常高亮度清零分支，与解码 source 逐项一致。
 
+## D3D9 HAL device 验证
+
+探针通过动态加载 `d3d9.dll` 调用 `Direct3DCreate9(D3D_SDK_VERSION=32)`，随后以 adapter `0`、`D3DDEVTYPE_HAL`、`D3DCREATE_SOFTWARE_VERTEXPROCESSING` 和不可见的 1x1 windowed swap chain 创建一次 device。该次 `IDirect3D9::CreateDevice` 返回 `0x00000000`。
+
+同一 device 对完整 collection 的 164 份 bytecode 逐个执行真实 COM 创建调用：
+
+| stage | vtable index | count | shader-create HRESULT |
+| --- | ---: | ---: | --- |
+| VS | 91 (`CreateVertexShader`) | 82 | 全部 `0x00000000` |
+| PS | 106 (`CreatePixelShader`) | 82 | 全部 `0x00000000` |
+
+失败数为 `0`；每个成功创建的 shader 对象都立即经 IUnknown vtable index 2 释放。由此不只证明 token/profile 结构可解析，还证明完整结果被当前 D3D9 HAL 驱动实际接受。
+
+重新检查探针 PE import table，只包含 `KERNEL32.dll`、`USER32.dll`、系统 CRT/NT DLL；没有 `cg.dll`、`D3DCompiler_47.dll`、`d3d9.dll` 或任何 D3DX 静态 import。后三类取证组件仍全部显式动态加载。
+
 ## 边界
 
-已经证明：原版 Cg profile/参数、完整 collection 的 canonical assembly、无需 D3DX 的确定性 D3D9 bytecode 生成，以及 bytecode profile/end token。
+已经证明：原版 Cg profile/参数、完整 collection 的 canonical assembly、无需 D3DX 的确定性 D3D9 bytecode 生成、bytecode profile/end token，以及全部 164 份 bytecode 的 D3D9 HAL shader 对象创建。
 
-仍需完成：把 runtime ShapeEnv context 精确映射到 compact key；决定发布包是嵌入经验证的 key->bytecode 表，还是在构建期生成同一表；在真实 D3D9 device 上创建 shader 并接入常量、sampler 与 draw submission。不会把离线 x86 Cg 工具变成发布依赖。
+仍需完成：把 runtime ShapeEnv context 精确映射到 compact key；决定发布包是嵌入经验证的 key->bytecode 表，还是在构建期生成同一表；把已验证 shader 接入编辑器 runtime 的常量、sampler 与 draw submission。不会把离线 x86 Cg 工具变成发布依赖。

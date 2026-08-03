@@ -90,4 +90,4 @@ Simple 主 source 与专属 include 的记录为：
 
 已经闭环：selector、前缀格式与拼接、嵌入 source 解码、全部 Simple include、双 UV/双顶点色消费顺序、MultiTex 公式、Cg 到 D3D assembly 的原游戏链，以及最终 D3D9 stage 创建。
 
-仍需闭环：64 位 ShapeEnv key 的其余 base/context 输入如何生成每一种完整 18 字节 Simple 键，以及 bytecode 表的发布期封装与真实 D3D9 device 接入。
+仍需闭环：64 位 ShapeEnv key 的其余 base/context 输入如何生成每一种完整 18 字节 Simple 键，以及 bytecode 表的发布期封装与编辑器 runtime draw submission 接入。完整 bytecode 已由独立 D3D9 HAL device 实际创建，见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。

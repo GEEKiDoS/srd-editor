@@ -7,6 +7,9 @@ The probe reads the verified embedded shader records from `chusanApp.exe`,
 recreates the Simple selector define prefix, invokes the game's 32-bit
 `cg.dll` to obtain canonical D3D assembly, and assembles that text through
 `D3DCompiler_47!D3DAssemble`. It never loads or calls D3DX.
+Each assembled shader is then passed to a hidden-window D3D9 HAL device's
+`CreateVertexShader` or `CreatePixelShader`; any rejected bytecode stops the
+probe. `manifest.tsv` records the exact device- and shader-creation HRESULTs.
 
 Build and run from an x86-capable Windows host:
 

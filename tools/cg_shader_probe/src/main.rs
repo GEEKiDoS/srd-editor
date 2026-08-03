@@ -258,7 +258,68 @@ mod win {
         fn LoadLibraryW(name: *const u16) -> *mut c_void;
         fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
         fn FreeLibrary(module: *mut c_void) -> i32;
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
         fn SetDllDirectoryW(path: *const u16) -> i32;
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn RegisterClassW(window_class: *const WindowClass) -> u16;
+        fn UnregisterClassW(class_name: *const u16, instance: *mut c_void) -> i32;
+        fn CreateWindowExW(
+            extended_style: u32,
+            class_name: *const u16,
+            window_name: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            parent: *mut c_void,
+            menu: *mut c_void,
+            instance: *mut c_void,
+            parameter: *mut c_void,
+        ) -> *mut c_void;
+        fn DefWindowProcW(window: *mut c_void, message: u32, wparam: usize, lparam: isize)
+        -> isize;
+        fn DestroyWindow(window: *mut c_void) -> i32;
+    }
+
+    #[repr(C)]
+    struct WindowClass {
+        style: u32,
+        window_proc: Option<unsafe extern "system" fn(*mut c_void, u32, usize, isize) -> isize>,
+        class_extra: i32,
+        window_extra: i32,
+        instance: *mut c_void,
+        icon: *mut c_void,
+        cursor: *mut c_void,
+        background: *mut c_void,
+        menu_name: *const u16,
+        class_name: *const u16,
+    }
+
+    #[repr(C)]
+    struct PresentParameters {
+        back_buffer_width: u32,
+        back_buffer_height: u32,
+        back_buffer_format: u32,
+        back_buffer_count: u32,
+        multi_sample_type: u32,
+        multi_sample_quality: u32,
+        swap_effect: u32,
+        device_window: *mut c_void,
+        windowed: i32,
+        enable_auto_depth_stencil: i32,
+        auto_depth_stencil_format: u32,
+        flags: u32,
+        full_screen_refresh_rate_hz: u32,
+        presentation_interval: u32,
+    }
+
+    #[repr(C)]
+    struct ComObject {
+        vtable: *const *const c_void,
     }
 
     type CgCreateContext = unsafe extern "C" fn() -> *mut c_void;
@@ -303,6 +364,22 @@ mod win {
         *mut *mut Blob,
     ) -> i32;
 
+    type Direct3dCreate9 = unsafe extern "system" fn(u32) -> *mut ComObject;
+    type CreateDevice = unsafe extern "system" fn(
+        *mut ComObject,
+        u32,
+        u32,
+        *mut c_void,
+        u32,
+        *mut PresentParameters,
+        *mut *mut ComObject,
+    ) -> i32;
+    type CreateVertexShader =
+        unsafe extern "system" fn(*mut ComObject, *const u32, *mut *mut ComObject) -> i32;
+    type CreatePixelShader =
+        unsafe extern "system" fn(*mut ComObject, *const u32, *mut *mut ComObject) -> i32;
+    type Release = unsafe extern "system" fn(*mut ComObject) -> u32;
+
     struct Module(*mut c_void);
 
     impl Module {
@@ -334,6 +411,192 @@ mod win {
         fn drop(&mut self) {
             unsafe {
                 FreeLibrary(self.0);
+            }
+        }
+    }
+
+    unsafe extern "system" fn probe_window_proc(
+        window: *mut c_void,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        unsafe { DefWindowProcW(window, message, wparam, lparam) }
+    }
+
+    unsafe fn com_method(object: *mut ComObject, index: usize) -> *const c_void {
+        unsafe { *(*object).vtable.add(index) }
+    }
+
+    unsafe fn release_com(object: *mut ComObject) {
+        if !object.is_null() {
+            let release: Release = unsafe { std::mem::transmute(com_method(object, 2)) };
+            unsafe { release(object) };
+        }
+    }
+
+    pub struct D3d9Validator {
+        _module: Module,
+        class_name: Vec<u16>,
+        instance: *mut c_void,
+        window: *mut c_void,
+        d3d: *mut ComObject,
+        device: *mut ComObject,
+        device_create_hresult: u32,
+    }
+
+    impl D3d9Validator {
+        pub fn new() -> Result<Self, String> {
+            let module = Module::load(Path::new("d3d9.dll"))?;
+            let create_d3d: Direct3dCreate9 =
+                unsafe { std::mem::transmute(module.proc(b"Direct3DCreate9\0")?) };
+            let instance = unsafe { GetModuleHandleW(ptr::null()) };
+            if instance.is_null() {
+                return Err("GetModuleHandleW(null) failed".into());
+            }
+            let class_name: Vec<u16> = "SrdCgShaderProbeWindow"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let window_class = WindowClass {
+                style: 0,
+                window_proc: Some(probe_window_proc),
+                class_extra: 0,
+                window_extra: 0,
+                instance,
+                icon: ptr::null_mut(),
+                cursor: ptr::null_mut(),
+                background: ptr::null_mut(),
+                menu_name: ptr::null(),
+                class_name: class_name.as_ptr(),
+            };
+            if unsafe { RegisterClassW(&window_class) } == 0 {
+                return Err("RegisterClassW failed".into());
+            }
+            let window = unsafe {
+                CreateWindowExW(
+                    0,
+                    class_name.as_ptr(),
+                    class_name.as_ptr(),
+                    0,
+                    0,
+                    0,
+                    1,
+                    1,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    instance,
+                    ptr::null_mut(),
+                )
+            };
+            if window.is_null() {
+                unsafe { UnregisterClassW(class_name.as_ptr(), instance) };
+                return Err("CreateWindowExW failed".into());
+            }
+            let d3d = unsafe { create_d3d(32) };
+            if d3d.is_null() {
+                unsafe {
+                    DestroyWindow(window);
+                    UnregisterClassW(class_name.as_ptr(), instance);
+                }
+                return Err("Direct3DCreate9 returned null".into());
+            }
+            let mut parameters = PresentParameters {
+                back_buffer_width: 1,
+                back_buffer_height: 1,
+                back_buffer_format: 0,
+                back_buffer_count: 1,
+                multi_sample_type: 0,
+                multi_sample_quality: 0,
+                swap_effect: 1,
+                device_window: window,
+                windowed: 1,
+                enable_auto_depth_stencil: 0,
+                auto_depth_stencil_format: 0,
+                flags: 0,
+                full_screen_refresh_rate_hz: 0,
+                presentation_interval: 0,
+            };
+            let create_device: CreateDevice = unsafe { std::mem::transmute(com_method(d3d, 16)) };
+            let mut device = ptr::null_mut();
+            let hr =
+                unsafe { create_device(d3d, 0, 1, window, 0x20, &mut parameters, &mut device) };
+            if hr < 0 || device.is_null() {
+                unsafe {
+                    release_com(d3d);
+                    DestroyWindow(window);
+                    UnregisterClassW(class_name.as_ptr(), instance);
+                }
+                return Err(format!(
+                    "IDirect3D9::CreateDevice(HAL, software VP) HRESULT 0x{:08x}",
+                    hr as u32
+                ));
+            }
+            Ok(Self {
+                _module: module,
+                class_name,
+                instance,
+                window,
+                d3d,
+                device,
+                device_create_hresult: hr as u32,
+            })
+        }
+
+        pub fn device_create_hresult(&self) -> u32 {
+            self.device_create_hresult
+        }
+
+        pub fn validate(&self, stage: &str, bytecode: &[u8]) -> Result<u32, String> {
+            if bytecode.len() % 4 != 0 {
+                return Err(format!(
+                    "{stage} bytecode length {} is not DWORD-aligned",
+                    bytecode.len()
+                ));
+            }
+            let tokens: Vec<u32> = bytecode
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            let (method_index, expected_token) = match stage {
+                "vs" => (91, 0xfffe_0300),
+                "ps" => (106, 0xffff_0300),
+                _ => return Err(format!("unknown shader stage {stage}")),
+            };
+            if tokens.first().copied() != Some(expected_token) {
+                return Err(format!("{stage} bytecode has the wrong profile token"));
+            }
+            let mut shader = ptr::null_mut();
+            let hr = unsafe {
+                if stage == "vs" {
+                    let create: CreateVertexShader =
+                        std::mem::transmute(com_method(self.device, method_index));
+                    create(self.device, tokens.as_ptr(), &mut shader)
+                } else {
+                    let create: CreatePixelShader =
+                        std::mem::transmute(com_method(self.device, method_index));
+                    create(self.device, tokens.as_ptr(), &mut shader)
+                }
+            };
+            if hr < 0 || shader.is_null() {
+                return Err(format!(
+                    "IDirect3DDevice9::Create{}Shader HRESULT 0x{:08x}",
+                    if stage == "vs" { "Vertex" } else { "Pixel" },
+                    hr as u32
+                ));
+            }
+            unsafe { release_com(shader) };
+            Ok(hr as u32)
+        }
+    }
+
+    impl Drop for D3d9Validator {
+        fn drop(&mut self) {
+            unsafe {
+                release_com(self.device);
+                release_com(self.d3d);
+                DestroyWindow(self.window);
+                UnregisterClassW(self.class_name.as_ptr(), self.instance);
             }
         }
     }
@@ -469,6 +732,22 @@ mod win {
     ) -> Result<(Vec<u8>, Vec<u8>), String> {
         Err("cg_shader_probe requires Windows".into())
     }
+
+    pub struct D3d9Validator;
+
+    impl D3d9Validator {
+        pub fn new() -> Result<Self, String> {
+            Err("cg_shader_probe requires Windows".into())
+        }
+
+        pub fn device_create_hresult(&self) -> u32 {
+            unreachable!()
+        }
+
+        pub fn validate(&self, _stage: &str, _bytecode: &[u8]) -> Result<u32, String> {
+            Err("cg_shader_probe requires Windows".into())
+        }
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -498,7 +777,10 @@ fn run() -> Result<(), String> {
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("{}: {error}", output_dir.display()))?;
 
-    let mut manifest = String::from("key\tstage\tassembly_bytes\tbytecode_bytes\n");
+    let validator = win::D3d9Validator::new()?;
+    let mut manifest = String::from(
+        "key\tstage\tassembly_bytes\tbytecode_bytes\tdevice_create_hresult\tshader_create_hresult\n",
+    );
     for key in keys {
         let key_text = std::str::from_utf8(&key).map_err(|error| error.to_string())?;
         let bits = CeylonSimpleShaderBits::from_compact_key(key);
@@ -518,10 +800,14 @@ fn run() -> Result<(), String> {
             )?);
             let (assembly, bytecode) = win::compile(&cg_path, &source, profile)
                 .map_err(|error| format!("{key_text} {stage_name}: {error}"))?;
+            let shader_create_hresult = validator
+                .validate(stage_name, &bytecode)
+                .map_err(|error| format!("{key_text} {stage_name}: {error}"))?;
             manifest.push_str(&format!(
-                "{key_text}\t{stage_name}\t{}\t{}\n",
+                "{key_text}\t{stage_name}\t{}\t{}\t0x{:08X}\t0x{shader_create_hresult:08X}\n",
                 assembly.len(),
-                bytecode.len()
+                bytecode.len(),
+                validator.device_create_hresult(),
             ));
             let stem = format!("SimpleShader{stage_name}_{key_text}");
             fs::write(output_dir.join(format!("{stem}.asm")), assembly)
