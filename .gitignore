@@ -1,0 +1,10 @@
+/target/
+*.pdb
+*.ilk
+*.suo
+*.user
+.vs/
+.idea/
+.vscode/
+*.log
+
