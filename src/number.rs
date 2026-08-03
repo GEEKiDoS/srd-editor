@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::csli::CrefEntry;
-use crate::image::{ImageDefinition, ImageReferenceChannel};
+use crate::image::{ImageCoordinateState, ImageDefinition, ImageReferenceChannel};
 use crate::vtbf::{Block, Property, SrdFile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,42 @@ pub struct NumberSpecialGlyphs {
     pub minus: i16,
     pub comma: i16,
     pub decimal_point: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberGlyphQuad {
+    pub positions: [[f32; 3]; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberGlyphSegment {
+    Sign,
+    Integer,
+    DecimalPoint,
+    Fraction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumberFormattedText {
+    pub sign: Vec<u8>,
+    pub integer: Vec<u8>,
+    pub decimal_point: Vec<u8>,
+    pub fraction: Vec<u8>,
+    pub combined: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberGlyphRecord {
+    pub glyph_index: i16,
+    pub is_digit: bool,
+    pub segment: NumberGlyphSegment,
+    pub quad: NumberGlyphQuad,
+}
+
+impl NumberGlyphRecord {
+    pub fn drawable(self) -> bool {
+        self.glyph_index >= 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,12 +169,56 @@ impl NumberDefinition {
         f64::from(self.initial_integer) + f64::from(self.initial_fraction)
     }
 
-    pub fn fraction_digit_count(&self) -> i16 {
+    pub fn digit_advance(&self) -> i16 {
+        self.fields_83_8b[0]
+    }
+
+    pub fn digit_height(&self) -> i16 {
+        self.fields_83_8b[1]
+    }
+
+    pub fn punctuation_advance(&self) -> i16 {
+        self.fields_83_8b[2]
+    }
+
+    pub fn punctuation_height(&self) -> i16 {
+        self.fields_83_8b[3]
+    }
+
+    pub fn comma_vertical_offset(&self) -> i16 {
+        self.fields_83_8b[4]
+    }
+
+    pub fn grouping_interval(&self) -> i16 {
+        self.fields_83_8b[5]
+    }
+
+    pub fn integer_digit_count(&self) -> i16 {
         self.fields_83_8b[6]
     }
 
-    pub fn fraction_padding_character(&self) -> i16 {
-        self.fields_83_8b[5]
+    pub fn digit_spacing(&self) -> i16 {
+        self.fields_83_8b[7]
+    }
+
+    pub fn fraction_digit_count(&self) -> i16 {
+        self.fields_83_8b[8]
+    }
+
+    pub fn fraction_scale(&self) -> [f32; 2] {
+        self.field_8c
+    }
+
+    pub fn fraction_spacing(&self) -> i16 {
+        self.fields_8d_94[0]
+    }
+
+    pub fn fraction_vertical_offset(&self) -> i16 {
+        self.fields_8d_94[1]
+    }
+
+    pub fn decimal_point_vertical_offset(&self) -> i16 {
+        self.fields_8d_94[2]
     }
 
     pub fn value_animation_mode(&self) -> i16 {
@@ -165,6 +245,254 @@ impl NumberDefinition {
         }
     }
 
+    pub fn format_value_parts(&self, integer: i32, fraction: f64) -> NumberFormattedText {
+        let total = f64::from(integer) + fraction;
+        let sign = if total < 0.0 {
+            vec![b'-']
+        } else if self.format_flags & 0x01 != 0 {
+            vec![b'+']
+        } else {
+            Vec::new()
+        };
+        let integer = self.format_integer_digits(integer);
+        let fraction = self.format_fraction_digits(fraction);
+        let decimal_point = if fraction.is_empty() {
+            Vec::new()
+        } else {
+            vec![b'.']
+        };
+        let mut combined =
+            Vec::with_capacity(sign.len() + integer.len() + decimal_point.len() + fraction.len());
+        combined.extend_from_slice(&sign);
+        combined.extend_from_slice(&integer);
+        combined.extend_from_slice(&decimal_point);
+        combined.extend_from_slice(&fraction);
+        NumberFormattedText {
+            sign,
+            integer,
+            decimal_point,
+            fraction,
+            combined,
+        }
+    }
+
+    pub fn initial_formatted_text(&self) -> NumberFormattedText {
+        self.format_value_parts(self.initial_integer, f64::from(self.initial_fraction))
+    }
+
+    pub fn build_glyph_records(
+        &self,
+        formatted: &NumberFormattedText,
+        axis_mode: bool,
+    ) -> Vec<NumberGlyphRecord> {
+        let mut records = Vec::new();
+        for (segment, text) in [
+            (NumberGlyphSegment::Sign, formatted.sign.as_slice()),
+            (NumberGlyphSegment::Integer, formatted.integer.as_slice()),
+            (
+                NumberGlyphSegment::DecimalPoint,
+                formatted.decimal_point.as_slice(),
+            ),
+            (NumberGlyphSegment::Fraction, formatted.fraction.as_slice()),
+        ] {
+            for byte in text.iter().copied() {
+                let Some(glyph_index) = self.glyph_index_for_ascii(byte) else {
+                    continue;
+                };
+                if i32::from(glyph_index) >= i32::from(self.cref_count) {
+                    continue;
+                }
+                records.push(NumberGlyphRecord {
+                    glyph_index,
+                    is_digit: !matches!(byte, b'+' | b'-' | b',' | b'.'),
+                    segment,
+                    quad: NumberGlyphQuad {
+                        positions: [[0.0; 3]; 4],
+                    },
+                });
+            }
+        }
+
+        let positions = self.build_glyph_positions(&formatted.combined, axis_mode);
+        for (record, quad) in records.iter_mut().zip(positions) {
+            record.quad = quad;
+        }
+        records
+    }
+
+    pub fn glyph_coordinate_state(
+        &self,
+        glyph_index: i16,
+        channel: ImageReferenceChannel,
+    ) -> ImageCoordinateState {
+        let mut state = self.image_base().initial_coordinate_state(channel);
+        if channel == ImageReferenceChannel::Cref {
+            state.reference_index = glyph_index;
+        }
+        state
+    }
+
+    #[allow(clippy::assign_op_pattern)]
+    pub fn measure_string_width(&self, text: &[u8]) -> f32 {
+        let mut width = 0.0f32;
+        let mut after_decimal_point = false;
+        for (index, byte) in text.iter().copied().enumerate() {
+            if byte == b',' {
+                width = width + f32::from(self.punctuation_advance());
+                continue;
+            }
+            if byte == b'.' {
+                after_decimal_point = true;
+                width = width + f32::from(self.punctuation_advance());
+                continue;
+            }
+
+            let mut advance = f32::from(self.digit_advance());
+            if after_decimal_point {
+                advance = advance * self.fraction_scale()[0];
+            }
+            width = width + advance;
+            if index + 1 < text.len() {
+                let spacing = if !after_decimal_point || self.format_flags & 0x20 != 0 {
+                    self.digit_spacing()
+                } else {
+                    self.fraction_spacing()
+                };
+                width = width + f32::from(spacing);
+            }
+        }
+        width.ceil()
+    }
+
+    #[allow(clippy::assign_op_pattern)]
+    pub fn build_glyph_positions(&self, text: &[u8], axis_mode: bool) -> Vec<NumberGlyphQuad> {
+        let measured_width = self.measure_string_width(text);
+        let mut left = -self.custom_origin[0];
+        match self.field_78 & 0x0c {
+            0x04 => left = (self.width - measured_width) * 0.5 + left,
+            0x08 => left = self.width - measured_width + left,
+            _ => {}
+        }
+
+        let base_top = -self.custom_origin[1];
+        let digit_height = f32::from(self.digit_height());
+        let mut after_decimal_point = false;
+        let mut result = Vec::with_capacity(text.len());
+        for (index, byte) in text.iter().copied().enumerate() {
+            let (advance, mut top, mut height) = if byte == b',' {
+                let height = f32::from(self.punctuation_height());
+                (
+                    f32::from(self.punctuation_advance()),
+                    (digit_height - height) + base_top - f32::from(self.comma_vertical_offset()),
+                    height,
+                )
+            } else if byte == b'.' {
+                let height = f32::from(self.punctuation_height());
+                (
+                    f32::from(self.punctuation_advance()),
+                    (digit_height - height) + base_top
+                        - f32::from(self.decimal_point_vertical_offset()),
+                    height,
+                )
+            } else if after_decimal_point {
+                let scale = self.fraction_scale();
+                let height = digit_height * scale[1];
+                (
+                    f32::from(self.digit_advance()) * scale[0],
+                    (digit_height - height) + base_top - f32::from(self.fraction_vertical_offset()),
+                    height,
+                )
+            } else {
+                (f32::from(self.digit_advance()), base_top, digit_height)
+            };
+
+            if !axis_mode {
+                top = -top;
+                height = -height;
+            }
+            let right = left + advance;
+            result.push(NumberGlyphQuad {
+                positions: [
+                    [left, top, 0.0],
+                    [left, top + height, 0.0],
+                    [right, top, 0.0],
+                    [right, top + height, 0.0],
+                ],
+            });
+            left = right;
+
+            if index + 1 < text.len() {
+                let spacing = if after_decimal_point {
+                    if self.format_flags & 0x20 != 0 {
+                        Some(self.digit_spacing())
+                    } else {
+                        Some(self.fraction_spacing())
+                    }
+                } else if matches!(text[index + 1], b'.' | b',') {
+                    None
+                } else {
+                    Some(self.digit_spacing())
+                };
+                if let Some(spacing) = spacing {
+                    left = left + f32::from(spacing);
+                }
+            }
+            if byte == b'.' {
+                after_decimal_point = true;
+            }
+        }
+        result
+    }
+
+    fn format_integer_digits(&self, integer: i32) -> Vec<u8> {
+        let digit_count = i32::from(self.integer_digit_count());
+        let mut limit = 1i32;
+        if digit_count > 0 {
+            for _ in 0..digit_count {
+                limit = limit.wrapping_mul(10);
+            }
+        }
+        limit = limit.wrapping_sub(1);
+        let absolute = integer.wrapping_abs();
+        let displayed = if absolute < limit { absolute } else { limit };
+
+        let text = if self.format_flags & 0x04 == 0 || digit_count == 0 {
+            displayed.to_string()
+        } else if digit_count > 0 {
+            format!("{displayed:0width$}", width = digit_count as usize)
+        } else {
+            format!(
+                "{displayed:<width$}",
+                width = digit_count.unsigned_abs() as usize
+            )
+        };
+        if self.format_flags & 0x02 == 0 {
+            return text.into_bytes();
+        }
+        insert_group_separators(text.as_bytes(), self.grouping_interval())
+    }
+
+    fn format_fraction_digits(&self, fraction: f64) -> Vec<u8> {
+        if self.format_flags & 0x08 == 0 {
+            return Vec::new();
+        }
+
+        let mut text = format!("{:.6}", fraction.abs()).replace("0.", "");
+        while text.len() > 1 && text.ends_with('0') {
+            text.pop();
+        }
+        let requested = i32::from(self.fraction_digit_count());
+        if (text.len() as i32) < requested && self.format_flags & 0x10 != 0 {
+            text.extend(std::iter::repeat_n(
+                '0',
+                (requested - text.len() as i32) as usize,
+            ));
+        } else if (text.len() as i32) > requested && requested > -1 {
+            text.truncate(requested as usize);
+        }
+        text.into_bytes()
+    }
+
     pub fn image_base(&self) -> ImageDefinition {
         ImageDefinition {
             flags: self.flags,
@@ -189,10 +517,20 @@ impl NumberDefinition {
             has_text_child: false,
         }
     }
+}
 
-    pub fn initial_reference_index(&self, _channel: ImageReferenceChannel) -> i16 {
-        0
+fn insert_group_separators(text: &[u8], interval: i16) -> Vec<u8> {
+    let mut result = Vec::with_capacity(text.len());
+    let mut group_size = 0i32;
+    for (index, byte) in text.iter().copied().enumerate().rev() {
+        result.insert(0, byte);
+        group_size += 1;
+        if index > 0 && group_size == i32::from(interval) {
+            result.insert(0, b',');
+            group_size = 0;
+        }
     }
+    result
 }
 
 fn parse_reference_table(
@@ -283,9 +621,9 @@ mod tests {
             field_78: 0,
             initial_integer: -12,
             initial_fraction: -0.5,
-            fields_83_8b: [0, 0, 0, 0, 0, b'0' as i16, 3, 0, 0],
-            field_8c: [1.0, 1.0],
-            fields_8d_94: [0, 0, 0, 6, 10, 11, 12, 13],
+            fields_83_8b: [10, 20, 4, 6, 2, 3, 5, 1, 2],
+            field_8c: [0.5, 0.25],
+            fields_8d_94: [3, 4, 5, 6, 10, 11, 12, 13],
             node_index: 0,
         }
     }
@@ -294,8 +632,9 @@ mod tests {
     fn value_and_special_glyph_mapping_match_runtime_inputs() {
         let definition = definition();
         assert_eq!(definition.initial_value(), -12.5);
-        assert_eq!(definition.fraction_digit_count(), 3);
-        assert_eq!(definition.fraction_padding_character(), b'0' as i16);
+        assert_eq!(definition.integer_digit_count(), 5);
+        assert_eq!(definition.grouping_interval(), 3);
+        assert_eq!(definition.fraction_digit_count(), 2);
         assert_eq!(definition.value_animation_mode(), 6);
         assert_eq!(definition.glyph_index_for_ascii(b'7'), Some(7));
         assert_eq!(definition.glyph_index_for_ascii(b'+'), Some(10));
@@ -303,6 +642,96 @@ mod tests {
         assert_eq!(definition.glyph_index_for_ascii(b','), Some(12));
         assert_eq!(definition.glyph_index_for_ascii(b'.'), Some(13));
         assert_eq!(definition.glyph_index_for_ascii(b'x'), None);
+    }
+
+    #[test]
+    fn glyph_measurement_and_positions_preserve_the_two_binary_spacing_paths() {
+        let definition = definition();
+        let text = b"1,2.3";
+        assert_eq!(definition.measure_string_width(text), 35.0);
+        let quads = definition.build_glyph_positions(text, true);
+        assert_eq!(quads.len(), 5);
+        assert_eq!(
+            quads[0].positions,
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 20.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 20.0, 0.0],
+            ]
+        );
+        assert_eq!(
+            quads[1].positions,
+            [
+                [10.0, 12.0, 0.0],
+                [10.0, 18.0, 0.0],
+                [14.0, 12.0, 0.0],
+                [14.0, 18.0, 0.0],
+            ]
+        );
+        assert_eq!(quads[2].positions[0], [15.0, 0.0, 0.0]);
+        assert_eq!(
+            quads[3].positions,
+            [
+                [25.0, 9.0, 0.0],
+                [25.0, 15.0, 0.0],
+                [29.0, 9.0, 0.0],
+                [29.0, 15.0, 0.0],
+            ]
+        );
+        assert_eq!(
+            quads[4].positions,
+            [
+                [30.0, 11.0, 0.0],
+                [30.0, 16.0, 0.0],
+                [35.0, 11.0, 0.0],
+                [35.0, 16.0, 0.0],
+            ]
+        );
+        assert_eq!(
+            definition.build_glyph_positions(b"1", false)[0].positions,
+            [
+                [0.0, -0.0, 0.0],
+                [0.0, -20.0, 0.0],
+                [10.0, -0.0, 0.0],
+                [10.0, -20.0, 0.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn formatting_and_glyph_filtering_follow_the_number_cast_build_order() {
+        let mut definition = definition();
+        definition.format_flags = 0x01 | 0x02 | 0x04 | 0x08 | 0x10;
+        definition.initial_integer = 12345;
+        definition.initial_fraction = 0.5;
+        let formatted = definition.initial_formatted_text();
+        assert_eq!(formatted.sign, b"+");
+        assert_eq!(formatted.integer, b"12,345");
+        assert_eq!(formatted.decimal_point, b".");
+        assert_eq!(formatted.fraction, b"50");
+        assert_eq!(formatted.combined, b"+12,345.50");
+
+        definition.cref_count = 11;
+        definition.fields_8d_94[4] = 10;
+        definition.fields_8d_94[6] = 20;
+        definition.fields_8d_94[7] = -1;
+        let records = definition.build_glyph_records(&formatted, true);
+        assert_eq!(records.len(), 9);
+        assert_eq!(records[0].glyph_index, 10);
+        assert!(!records[0].is_digit);
+        assert!(records[0].drawable());
+        assert_eq!(records[1].glyph_index, 1);
+        assert!(records[1].is_digit);
+        assert_eq!(records[3].glyph_index, 3);
+        assert_eq!(records[5].glyph_index, 5);
+        assert_eq!(records[6].glyph_index, -1);
+        assert!(!records[6].drawable());
+        assert_eq!(records[7].glyph_index, 5);
+        assert_eq!(records[8].glyph_index, 0);
+        let positions = definition.build_glyph_positions(&formatted.combined, true);
+        assert_eq!(records[3].quad, positions[3]);
+        assert_eq!(records[7].quad, positions[7]);
     }
 
     #[test]
@@ -319,5 +748,17 @@ mod tests {
         );
         assert_eq!(base.coordinate_offsets[1][0], -0.5);
         assert_eq!(NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE, 0.0);
+        assert_eq!(
+            definition
+                .glyph_coordinate_state(7, ImageReferenceChannel::Cref)
+                .reference_index,
+            7
+        );
+        assert_eq!(
+            definition
+                .glyph_coordinate_state(7, ImageReferenceChannel::Cre1)
+                .reference_index,
+            0
+        );
     }
 }

@@ -169,6 +169,9 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut number_cre1_count = 0usize;
     let mut resolved_number_channels = 0usize;
     let mut valid_number_special_glyphs = 0usize;
+    let mut number_glyph_count = 0usize;
+    let mut drawable_number_glyph_count = 0usize;
+    let mut resolved_number_glyph_textures = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file).unwrap();
@@ -352,6 +355,46 @@ fn parses_and_links_binary_proven_csli_grids() {
                     });
                     resolved_number_channels += 1;
                 }
+                let formatted = definition.initial_formatted_text();
+                assert!(
+                    formatted
+                        .combined
+                        .iter()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'+' | b'-' | b',' | b'.'))
+                );
+                let glyphs = definition.build_glyph_records(&formatted, true);
+                assert_eq!(
+                    glyphs.len(),
+                    definition.build_glyph_records(&formatted, false).len()
+                );
+                assert!(glyphs.len() <= formatted.combined.len());
+                number_glyph_count += glyphs.len();
+                for glyph in glyphs {
+                    assert!(i32::from(glyph.glyph_index) < i32::from(definition.cref_count));
+                    if !glyph.drawable() {
+                        continue;
+                    }
+                    drawable_number_glyph_count += 1;
+                    let reference = definition.crefs[glyph.glyph_index as usize];
+                    if reference.image_index < 0 || reference.rectangle_index < 0 {
+                        continue;
+                    }
+                    base.resolve_coordinates(
+                        ImageReferenceChannel::Cref,
+                        definition
+                            .glyph_coordinate_state(glyph.glyph_index, ImageReferenceChannel::Cref),
+                        textures.as_ref().expect("CNUM glyph requires TEXL"),
+                        NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{} CNUM NODE {node_index} glyph {}: {error}",
+                            path.display(),
+                            glyph.glyph_index
+                        )
+                    });
+                    resolved_number_glyph_textures += 1;
+                }
             }
             for (node_index, node) in layer.nodes.iter().enumerate() {
                 let Some(cell_index) = node.parent_csli_cell_index.filter(|index| *index >= 0)
@@ -401,7 +444,7 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
@@ -415,6 +458,9 @@ fn parses_and_links_binary_proven_csli_grids() {
     assert!(number_cre1_count > 0);
     assert!(resolved_number_channels > 0);
     assert!(valid_number_special_glyphs > 0);
+    assert!(number_glyph_count > 0);
+    assert!(drawable_number_glyph_count > 0);
+    assert!(resolved_number_glyph_textures > 0);
     assert!(texture_count > 0);
     assert!(crop_count > 0);
     assert!(nonnegative_cell_crefs > 0);

@@ -73,5 +73,5 @@
 - 各标签名称对应的最终渲染业务语义。
 - `NODE`、`TRS2`、`TRS3` 的世界变换组合顺序。
 - TEXT 的完整运行时消费。
-- CNUM 的完整 glyph 排版，以及 CNUM、CSLI、TEXT 的最终绘制行为。
+- CNUM 历史 glyph 动画，以及 CNUM、CSLI、TEXT 的最终绘制行为。
 - 动画通道编号与 CAST 字段的绑定。

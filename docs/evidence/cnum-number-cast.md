@@ -3,7 +3,7 @@
 本页只记录已经由 CNUM 解析器、运行时对象初始化、数字格式化和 glyph 记录生成代码共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`C90A6D76104FB1462F3DF8049D269BEF03EF3EAEAE506EA82693CCB3D1A9D80C`。
+- 保存后的 IDB SHA-256：`6AEE8BCD6D42F393B48FBEC615A0D324A9502E160A565B11BE7701F548E97C62`。
 
 ## CNUM 解析布局
 
@@ -22,12 +22,22 @@
 | `0x4D` | `+0x32` u16 | CRE1 声明数量 |
 | `CRE1` | `+0x34` pointer | CRE1 记录数组 |
 | `0x80` | `+0x38` u32 | 数字格式 flags |
-| `0x78` | `+0x3C` u32 | 语义尚未闭环，保留原值 |
+| `0x78` | `+0x3C` u32 | bits `0x0C` 选择数字串左/中/右横向放置 |
 | `0x81` | `+0x40` i32 | 初始整数部分 |
 | `0x82` | `+0x44` f32 | 初始小数部分 |
-| `0x83..0x8B` | `+0x68..+0x78` | 九个 signed i16 |
-| `0x8C` | `+0x7C/+0x80` | 两个 f32 |
-| `0x8D..0x94` | `+0x84..+0x92` | 八个 signed i16 |
+| `0x83/0x84` | `+0x68/+0x6A` i16 | 普通数字横向 advance / 高度 |
+| `0x85/0x86` | `+0x6C/+0x6E` i16 | 逗号与小数点共用的 advance / 高度 |
+| `0x87` | `+0x70` i16 | 逗号纵向偏移 |
+| `0x88` | `+0x72` i16 | 分组分隔符的字符间隔 |
+| `0x89` | `+0x74` i16 | 整数位数限制及补零宽度 |
+| `0x8A` | `+0x76` i16 | 普通字符间距 |
+| `0x8B` | `+0x78` i16 | 小数位数 |
+| `0x8C` | `+0x7C/+0x80` f32 | 小数位数字的 X/Y 缩放 |
+| `0x8D` | `+0x84` i16 | 小数位字符间距 |
+| `0x8E` | `+0x86` i16 | 小数位数字纵向偏移 |
+| `0x8F` | `+0x88` i16 | 小数点纵向偏移 |
+| `0x90` | `+0x8A` i16 | 数值变化时的 glyph 动画模式 |
+| `0x91..0x94` | `+0x8C..+0x92` i16 | `+`、`-`、`,`、`.` 的 CREF 下标 |
 | `0x51` | 临时 i32 | NODE 索引；非负时写入 NODE `+0x50` |
 
 `CREF` 与 `CRE1` 都使用和 CIMG 相同的记录格式：每个 `0x4A` 连续读取两个 signed i16，分别是 TEXL 图像下标和该 TEX 的矩形下标。CNUM 对 `TEXT` 只比较标签，不调用 CIMG 的 TEXT 解析器。
@@ -61,21 +71,43 @@ CREF/CRE1 指针和数量被同时复制到 SrImage，与 CIMG 一样是两个�
 
 映射结果是 CREF 下标。只有当该 signed 下标小于 CREF 声明数量时，函数才追加一个 56 字节 glyph 记录；记录 `+0x30` 保存该下标，`+0x34` 的字节把 `+`、`-`、`,`、`.` 四类特殊符号标为 `0`，普通数字标为 `1`。样本中确实存在超出 CREF 数量的特殊字符下标，游戏会跳过对应 glyph；Rust 不把这种情况擅自判为格式错误。
 
-## 小数格式化与已知宽度字段
+## 整数与小数字符串格式
 
-`srd_number_format_fractional_digits` (`0xAE0280`) 使用属性 `0x89` 作为小数位数，计算 `10^digits`，并把小数绝对值限制到 `10^digits - 1`。格式 flags `0x4` 选择按位数补零的整数格式；未设置时使用普通十进制整数格式。flags `0x2` 会进一步调用字符串填充辅助函数，并把属性 `0x88` 的 signed 值作为该辅助函数的参数。Rust 暂时只公开原始 `0x88` 值，不把辅助函数尚未完全闭环的行为扩展成编辑器语义。
+`srd_number_format_integer_digits` (`0xAE0280`) 使用 `0x89` 计算 `10^count`，对当前整数部分取 wrapping abs，再把它限制到 `10^count - 1`。format flags 已闭环的位为：
 
-`srd_number_measure_string_width` (`0xADE140`) 还证明：普通数字基础宽度来自 `0x83`，逗号或小数点宽度来自 `0x85`；小数点后的普通数字宽度乘以 `0x8C[0]`。间距路径会使用 `0x8A` 和 `0x8D`，并受 format flags `0x20` 影响。由于完整定位、对齐、缩放和 glyph quad 生成链尚未闭环，这些字段目前仍以原始数组保存，未暴露成可编辑的最终布局模型。
+| 位 | 行为 |
+| --- | --- |
+| `0x01` | 总值非负时添加 `+`；负值始终添加 `-` |
+| `0x02` | 调用 `srd_number_insert_group_separators` (`0xAE0B40`)，每 `0x88` 个字符从右向左插入 `,` |
+| `0x04` | 按 `0x89` 指定宽度对整数补零 |
+| `0x08` | 生成小数字符串 |
+| `0x10` | 小数位不足 `0x8B` 时在右侧补零 |
+| `0x20` | 小数点后的字符间距改用 `0x8A`，否则使用 `0x8D` |
+
+`srd_number_format_fraction_digits` (`0xADE250`) 对当前 double 小数部分清除符号位，以 `%lf` 生成六位小数文本，把所有 `0.` 替换为空串，再把末尾 `0` 删除到至少剩一个字符。之后按 `0x8B` 处理：过长且 `0x8B >= 0` 时截断；过短且 flags `0x10` 有效时补零。只有最终小数字符串非空，组合串才插入 `.`。
+
+`srd_number_rebuild_glyph_geometry` (`0xADD6C0`) 依次生成 sign、integer、decimal-point、fraction 四组 glyph 记录，同时把四段连接成完整字符串交给位置生成器。总值的符号判断使用 `double(integer) + fraction`，但整数和小数字符串分别对各自分量取绝对值。
+
+## 字符宽度与四顶点位置
+
+`srd_number_measure_string_width` (`0xADE140`) 以 f32 顺序累加字符 advance 与间距，最后调用 `ceil`。`srd_number_build_glyph_positions` (`0xADDD60`) 使用该宽度和 `0x78 & 0x0C` 放置字符串：`0` 从 `-origin.x` 开始，`4` 在 CNUM 宽度中居中，`8` 右对齐。
+
+每个字符生成四个 `[x,y,0]`，顺序与 SrImage quad 一致：左上、左下、右上、右下。普通整数数字使用 `0x83/0x84`；逗号与小数点使用 `0x85/0x86`，并分别用 `0x87/0x8F` 调整基线；小数位数字把 `0x83/0x84` 分别乘以 `0x8C[0]/[1]`，再用 `0x8E` 调整基线。CAST 的轴模式为零时，top 与 height 都取反，精确复现二维/三维分支的 Y 顺序。
+
+位置生成器和宽度测量器对标点附近间距使用不同控制流，但对已生成字符串得到相同总宽度：测量器在普通字符后加间距，位置生成器在下一字符不是标点时加间距。Rust 分别保留两条原始控制流，没有合并成推测性的排版规则。
+
+glyph 记录只在 `mapped_index < CREF count` 的 signed 比较成立时建立；负下标因此会建立记录，但 `srd_render_number_glyph` (`0xADF860`) 在记录 `+0x30 < 0` 时跳过绘制。位置数组则为完整字符串的每个字符生成；随后游戏只把位置数组前 N 项顺序复制到 N 个已建立记录，而不是按被过滤字符的原下标配对。Rust 保留了这一非直观行为。
+
+绘制单个 glyph 前，`srd_set_image_reference_index` (`0xAD4730`) 只把该 glyph 的映射下标写入通道 `0` 的坐标描述符；随后 CREF 使用 glyph 下标解析，CRE1 仍使用 NumberCast 初始化时的选择器 `0`。因此静态 glyph 的两张引用表消费路径也已闭环到 TEXL/CROP。
 
 ## Rust 对应与样本验证
 
-`NumberDefinition` 复现上述默认值、属性布局、CREF/CRE1 表、初始数值、已证明的格式字段和特殊 glyph 映射。`Layer::from_block` 根据 CNUM `0x51` 把定义连接到 NODE，并验证对应 NODE 的 cast type 为 `4`。复用 `ImageDefinition` 的部分只包含二进制证明由 SrImage 共用的尺寸、origin、颜色、纹理表和初始坐标状态。
+`NumberDefinition` 复现上述默认值、属性布局、CREF/CRE1 表、初始数值、格式化、字段访问、字符串宽度、逐字符 quad、glyph 过滤顺序和每 glyph 的 CREF/CRE1 坐标状态。`Layer::from_block` 根据 CNUM `0x51` 把定义连接到 NODE，并验证对应 NODE 的 cast type 为 `4`。
 
-本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；其中 555 个具有非负实际引用的初始通道能够解析到 TEXL/CROP。测试也单独统计落在声明 CREF 范围内的特殊 glyph，而不拒绝游戏会跳过的越界映射。
+本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。样本中的 `0x89` 为 `1..10`、`0x88` 为 `3`、`0x8B` 为 `0..4` 或 `10`；这些统计用于验证实现路径，不被提升为格式限制。
 
 ## 仍未闭环
 
-- `srd_number_rebuild_glyph_geometry` (`0xADD6C0`) 的完整字符串分段、对齐和每个 glyph 的位置公式；
-- `0x83..0x90` 其余字段的完整语义，以及 format flags 除已列位之外的含义；
 - NumberCast 的动画通道到数值、格式和布局字段的全部绑定；
-- `srd_render_number_cast` (`0xADE6C0`) 下游纹理槽、混合、深度/裁剪状态和最终 D3D9 draw call。
+- `0x90` 各动画模式在 `srd_render_number_glyph_history` (`0xADED10`) 中对历史 glyph 的完整插值/裁剪行为；
+- `srd_render_number_cast` (`0xADE6C0`) 下游混合、深度/裁剪状态和最终 D3D9 draw call。
