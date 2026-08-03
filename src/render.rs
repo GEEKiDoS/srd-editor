@@ -1,3 +1,5 @@
+use crate::shader::CeylonSimpleShaderBits;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum D3d9PrimitiveType {
@@ -582,6 +584,70 @@ pub struct CeylonShaderKey {
     pub high: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrdSimpleShaderContributionError {
+    UnsupportedVertexFormat(u32),
+    UnsupportedBaseEnvironment(u32),
+}
+
+impl CeylonShaderKey {
+    /// Reproduces every Simple-selector feature contributed directly by the
+    /// Ceylon ShapeEnv object built from this key for an SRD quad.
+    ///
+    /// Renderer-global parameter providers are deliberately outside this
+    /// method: they are not encoded in the 64-bit ShapeEnv cache key. In
+    /// particular, key low bit 6 only gates shadow parameters 43..48 if an
+    /// independent global provider supplied parameter 43, and low bit 7 is
+    /// not read by `SimpleShaderSelector`.
+    pub fn srd_simple_shader_direct_contributions(
+        self,
+    ) -> Result<CeylonSimpleShaderBits, SrdSimpleShaderContributionError> {
+        let vertex_format = (self.low >> 15) & 0x1f;
+        if vertex_format != 14 {
+            return Err(SrdSimpleShaderContributionError::UnsupportedVertexFormat(
+                vertex_format,
+            ));
+        }
+
+        let mut bits = CeylonSimpleShaderBits::default();
+        bits.apply_srd_vertex_format_14();
+
+        // State slots are allocated from low 13..14. The selector takes the
+        // maximum of this count and the number of actually bound textures.
+        // The ShapeEnv cache key itself was formed from those same non-null
+        // packet slots, so the direct SRD result is exactly this count.
+        bits.apply_enabled_texture_count(((self.low >> 13) & 3) as usize);
+
+        // The State alpha-test field starts at zero and this constructor does
+        // not modify it, so position 23 remains clear. Alpha blend and the
+        // inverted NoUpdateDistance flag are written explicitly by the key.
+        bits.set(24, self.low & (1 << 4) != 0);
+        bits.set(20, self.low & (1 << 5) == 0);
+
+        match self.low & 7 {
+            0 => {}
+            1 => bits.set(25, true),
+            2 => bits.set(39, true),
+            3 => bits.set(40, true),
+            4 => bits.set(69, true),
+            5 => bits.set(2, true),
+            variant => {
+                return Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(variant));
+            }
+        }
+        if self.low & (1 << 3) != 0 {
+            bits.set(2, true);
+        }
+
+        bits.apply_shape_environment_variants(
+            (self.low >> 20) & 0x3f,
+            (self.low >> 26) & 0x0f,
+            self.high & 7,
+        );
+        Ok(bits)
+    }
+}
+
 impl CeylonShaderKeyInput {
     /// Reproduces the complete 64-bit ShapeEnv cache key built by
     /// `sub_671480`. This identifies the game's shader-module combination;
@@ -979,6 +1045,60 @@ mod tests {
             input.texture_present = std::array::from_fn(|index| index < texture_count);
             assert_eq!((input.shader_key().low >> 13) & 3, texture_count as u32);
         }
+    }
+
+    #[test]
+    fn srd_shape_environment_key_maps_all_direct_simple_features() {
+        let low = 3 | (1 << 3) | (1 << 4) | (2 << 13) | (14 << 15) | (0x23 << 20) | (9 << 26);
+        let bits = CeylonShaderKey { low, high: 5 }
+            .srd_simple_shader_direct_contributions()
+            .unwrap();
+
+        assert!(!bits.contains(9));
+        assert!(bits.contains(10));
+        assert!(!bits.contains(11));
+        assert!(bits.contains(12));
+        assert!(bits.contains(2));
+        assert!(bits.contains(20));
+        assert!(!bits.contains(23));
+        assert!(bits.contains(24));
+        assert!(bits.contains(36));
+        assert!(bits.contains(37));
+        assert!(!bits.contains(38));
+        assert!(!bits.contains(39));
+        assert!(bits.contains(40));
+        for bit in 0..6 {
+            assert_eq!(bits.contains(41 + bit), 0x23 & (1 << bit) != 0);
+        }
+        assert!(bits.contains(47));
+        assert!(!bits.contains(48));
+        assert!(!bits.contains(49));
+        assert!(bits.contains(50));
+        assert!(bits.contains(51));
+        assert!(!bits.contains(52));
+        assert!(bits.contains(53));
+    }
+
+    #[test]
+    fn srd_direct_simple_mapping_rejects_unproven_key_variants() {
+        assert_eq!(
+            CeylonShaderKey {
+                low: 13 << 15,
+                high: 0,
+            }
+            .srd_simple_shader_direct_contributions(),
+            Err(SrdSimpleShaderContributionError::UnsupportedVertexFormat(
+                13
+            ))
+        );
+        assert_eq!(
+            CeylonShaderKey {
+                low: 6 | (14 << 15),
+                high: 0,
+            }
+            .srd_simple_shader_direct_contributions(),
+            Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(6))
+        );
     }
 
     #[test]

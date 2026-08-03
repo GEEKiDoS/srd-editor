@@ -565,10 +565,37 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
     let mut field_0c_counts = std::collections::BTreeMap::new();
     let mut texture_presence_counts = std::collections::BTreeMap::new();
     let mut shader_keys = std::collections::BTreeMap::new();
+    let mut direct_simple_keys = std::collections::BTreeMap::new();
+    let mut global_2d_only_simple_keys = std::collections::BTreeMap::new();
+    let mut uncovered_simple_keys = std::collections::BTreeMap::new();
     let mut base_variants = std::collections::BTreeMap::new();
     let mut optional_modules = std::collections::BTreeMap::new();
     let mut multi_tex0_variants = std::collections::BTreeMap::new();
     let mut multi_tex1_variants = std::collections::BTreeMap::new();
+    let shader_collection = std::env::var_os("GAME_DATA_CORPUS").map(|root| {
+        let xml =
+            fs::read_to_string(PathBuf::from(root).join("A000/shader/shadercollect.xml")).unwrap();
+        let mut inside_simple_group = false;
+        xml.lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                if line.starts_with("<SimpleShaderVSSimpleShaderPS_") {
+                    inside_simple_group = true;
+                    return None;
+                }
+                if line.starts_with("</SimpleShaderVSSimpleShaderPS_") {
+                    inside_simple_group = false;
+                    return None;
+                }
+                if !inside_simple_group || !line.starts_with('<') || !line.ends_with("/>") {
+                    return None;
+                }
+                let key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+                    line.as_bytes()[1..line.len() - 2].try_into().ok()?;
+                Some(key)
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    });
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file)
@@ -625,6 +652,34 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
                 packet.set_render_preset_id(preset);
                 apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
                 let key = packet.srd_quad_shader_key(texture_present);
+                let direct_simple_key = key
+                    .srd_simple_shader_direct_contributions()
+                    .unwrap()
+                    .compact_key();
+                *direct_simple_keys
+                    .entry(direct_simple_key)
+                    .or_insert(0usize) += 1;
+                // The collection is an asset inventory, not proof that this
+                // draw reaches a particular runtime context. Keep membership
+                // differences diagnostic-only until the executable provider
+                // chain has established every global contribution.
+                if let Some(shader_collection) = &shader_collection {
+                    if !shader_collection.contains(&direct_simple_key) {
+                        let mut global_2d_bits =
+                            CeylonSimpleShaderBits::from_compact_key(direct_simple_key);
+                        global_2d_bits.set(2, true);
+                        let global_2d_key = global_2d_bits.compact_key();
+                        let target = if shader_collection.contains(&global_2d_key) {
+                            &mut global_2d_only_simple_keys
+                        } else {
+                            &mut uncovered_simple_keys
+                        };
+                        let entry = target
+                            .entry(direct_simple_key)
+                            .or_insert_with(|| (0usize, path.clone(), node_index));
+                        entry.0 += 1;
+                    }
+                }
                 *field_0c_counts.entry(state.field_0c).or_insert(0usize) += 1;
                 *texture_presence_counts
                     .entry(presence_mask)
@@ -679,8 +734,11 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
         [(0, image_count)].into_iter().collect()
     );
     eprintln!(
-        "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct keys={}, MultiTex0={multi_tex0_variants:?}",
-        shader_keys.len()
+        "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct ShapeEnv keys={}, distinct direct Simple keys={}, XML keys represented only by a global-2D counterpart={}, XML-unrepresented direct keys={}, MultiTex0={multi_tex0_variants:?}",
+        shader_keys.len(),
+        direct_simple_keys.len(),
+        global_2d_only_simple_keys.len(),
+        uncovered_simple_keys.len(),
     );
 }
 

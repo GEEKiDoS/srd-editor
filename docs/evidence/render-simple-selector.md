@@ -140,6 +140,16 @@ Simple 构造函数建立 parameter ID 到 position vector 的精确映射：
 
 例如 MultiTex0 variant `9` 的二进制值为 `1001b`，因此设置 positions `47` 与 `50`。在紧凑键中 position 47 是第 12 个字符的 bit 3，position 50 是第 13 个字符的 bit 2，局部编码恰为 `I`、`E`。
 
+## SRD ShapeEnv 的直接贡献与场景全局贡献边界
+
+`sea_simple_shader_selector_construct` (`0x65ED50`) 还精确注册了 parameter ID `1` 到 position `2`，即 `SSF_2DTransform`。这是 selector 自身的静态映射，不依赖 shader collection XML。
+
+SRD quad 的 ShapeEnv cache key 能直接证明的 Simple contributions 已单独实现：format 14 的 color/texcoord 位、实际 texture slot 数、alpha blend、反向的 `NoUpdateDistance`、base environment variant，以及 ShapeEnv parameter `6/7/8`。这个 64-bit key 不包含场景全局 provider，因此实现刻意不把 `SSF_2DTransform` 等全局位混入 direct key。
+
+场景链的另一侧已经确认：每个 `sea::ChainScene` 在构造时都把嵌入的 `sea::AllEnvBasic` 注册为 all-pass provider；`AllEnvBasic` 的 append 方法 (`0x6E1800`) 无条件提交前 5 个参数句柄，并在 parameter `2` 存在时再提交 2 个矩阵句柄。其注册方法 (`0x6E0D80`) 给出 7 个逻辑名称：`systemParam`、`eyePosition`、`mtxPrjView`、`mtxView`、`mtxInvView`、`mtxDepthToWorld`、`mtxWorldToScreen`。
+
+目前仍不能仅凭这些名称断言其中哪一个在最终全局注册表中取得 parameter ID `1`，也不能把 shader collection 中“只差 position 2”的键当作运行时选择证据。后续必须继续闭合注册顺序和 parameter value 的形成链，再把场景 context contribution 加入 Rust。
+
 ## 完整 data 目录的独立校验
 
 完整游戏数据 `D:\sdhd\assets\data\A000\shader\shadercollect.xml` 包含 `SimpleShaderVSSimpleShaderPS_-382718031` 组。该组有 82 个键，全部严格为 18 字节；Rust 对每个键执行二进制同构解码再编码，82 个均逐字节回到原值。
