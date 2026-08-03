@@ -69,5 +69,5 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 
 - `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确加载器/资源管理语义。
 - DDS 解码/创建参数、纹理对象数组的布局与生命周期。
-- CIMG/CRE1 与 TEXL 纹理条目之间的运行时关联。
+- CIMG/CRE1 已闭环到 TEXL/CROP；剩余的是 TEXT、CNUM 和双 UV 的最终管线消费。
 - 混合、深度/裁剪状态和最终 D3D9 draw call。

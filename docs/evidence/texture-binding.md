@@ -93,5 +93,5 @@ selector != 0  -> pair[1] -> Point
 
 - `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确加载器/资源管理语义。
 - DDS 文件的解码、格式选择、mipmap 与 `IDirect3DTexture9` 创建参数。
-- CIMG/CRE1 资源对象与 TEXL 条目的运行时关系。
+- CIMG/CRE1 已闭环到 TEXL 条目与 Linear/Point pair 选择；双 UV 的 shader/固定管线消费仍未闭环。
 - 绘制包的混合、深度、裁剪、shader 及最终 primitive 参数。

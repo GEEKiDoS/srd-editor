@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
+use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::scene::Layer;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -157,6 +158,11 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut resolved_cell_textures = 0usize;
     let mut indexed_children = 0usize;
     let mut active_indexed_children = 0usize;
+    let mut image_count = 0usize;
+    let mut image_cref_count = 0usize;
+    let mut image_cre1_count = 0usize;
+    let mut resolved_image_channels = 0usize;
+    let mut text_cast_count = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file).unwrap();
@@ -244,6 +250,51 @@ fn parses_and_links_binary_proven_csli_grids() {
                 );
                 csli_count += 1;
             }
+            for (node_index, definition) in layer.image_by_node.iter().enumerate() {
+                let Some(definition) = definition else {
+                    continue;
+                };
+                assert_eq!(layer.nodes[node_index].cast_type(), Some(1));
+                image_count += 1;
+                image_cref_count += definition.crefs.len();
+                image_cre1_count += definition.cre1s.len();
+                text_cast_count += usize::from(definition.creates_text_cast());
+                for channel in [ImageReferenceChannel::Cref, ImageReferenceChannel::Cre1] {
+                    let state = definition.initial_coordinate_state(channel);
+                    let (declared_count, references) = match channel {
+                        ImageReferenceChannel::Cref => {
+                            (definition.cref_count, definition.crefs.as_slice())
+                        }
+                        ImageReferenceChannel::Cre1 => {
+                            (definition.cre1_count, definition.cre1s.as_slice())
+                        }
+                    };
+                    if state.reference_index < 0
+                        || u32::from(state.reference_index as u16) >= u32::from(declared_count)
+                        || references.is_empty()
+                    {
+                        continue;
+                    }
+                    let reference = references[state.reference_index as usize];
+                    if reference.image_index < 0 || reference.rectangle_index < 0 {
+                        continue;
+                    }
+                    definition
+                        .resolve_coordinates(
+                            channel,
+                            state,
+                            textures.as_ref().expect("CIMG reference requires TEXL"),
+                            ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "{} CIMG NODE {node_index} {channel:?}: {error}",
+                                path.display()
+                            )
+                        });
+                    resolved_image_channels += 1;
+                }
+            }
             for (node_index, node) in layer.nodes.iter().enumerate() {
                 let Some(cell_index) = node.parent_csli_cell_index.filter(|index| *index >= 0)
                 else {
@@ -292,11 +343,15 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
     assert!(resolved_cell_crefs > 0);
+    assert!(image_count > 0);
+    assert!(image_cref_count > 0);
+    assert!(image_cre1_count > 0);
+    assert!(resolved_image_channels > 0);
     assert!(texture_count > 0);
     assert!(crop_count > 0);
     assert!(nonnegative_cell_crefs > 0);
