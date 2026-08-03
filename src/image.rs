@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::animation::{Evaluation, Key20, KeyData, ScalarValue, Track, cvtt_f32_to_i32};
 use crate::csli::{CrefEntry, multiply_color_game, slice_texture_coordinates};
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::vtbf::{Block, Property, SrdFile};
@@ -231,6 +232,113 @@ impl ImageDefinition {
         })
     }
 
+    pub fn apply_coordinate_track(
+        &self,
+        channel: ImageReferenceChannel,
+        state: &mut ImageCoordinateState,
+        track: &Track,
+        frame: f32,
+        textures: &TextureList,
+    ) -> Result<bool, ImageError> {
+        if track.format & 3 != 3 {
+            let bits = match track.evaluate(frame) {
+                Evaluation::Value(ScalarValue::F32(value)) => value.to_bits(),
+                Evaluation::Value(ScalarValue::I32(value)) => value as u32,
+                Evaluation::Unchanged | Evaluation::Unsupported => return Ok(false),
+            };
+            let bytes = bits.to_le_bytes();
+            state.reference_index = i16::from_le_bytes([bytes[0], bytes[1]]);
+            state.explicit_image_index = i16::from_le_bytes([bytes[2], bytes[3]]);
+            return Ok(true);
+        }
+
+        let references = match channel {
+            ImageReferenceChannel::Cref => self.crefs.as_slice(),
+            ImageReferenceChannel::Cre1 => self.cre1s.as_slice(),
+        };
+        let float_keys;
+        let keys = match &track.keys {
+            KeyData::Key20I32(keys) => keys.as_slice(),
+            KeyData::Key20F32(keys) => {
+                float_keys = keys
+                    .iter()
+                    .map(|key| Key20 {
+                        frame: key.frame,
+                        value: key.value.to_bits() as i32,
+                        mode: key.mode,
+                        slope_in: key.slope_in,
+                        slope_out: key.slope_out,
+                    })
+                    .collect::<Vec<_>>();
+                float_keys.as_slice()
+            }
+            _ => {
+                state.uses_explicit_rectangle = false;
+                return Ok(false);
+            }
+        };
+        if references.is_empty() || keys.is_empty() {
+            state.uses_explicit_rectangle = false;
+            return Ok(false);
+        }
+
+        let frame = track.wrapped_frame(frame);
+        let mut explicit_image_index = -1i16;
+        match reference_key_segment(keys, frame) {
+            ReferenceKeySegment::Value(key) => {
+                state.reference_index = key.value as i16;
+                if let Some(rectangle) = lookup_reference_rectangle(
+                    references,
+                    key.value,
+                    textures,
+                    &mut explicit_image_index,
+                )? {
+                    state.explicit_rectangle = rectangle;
+                }
+            }
+            ReferenceKeySegment::Pair(left, _right) if left.mode == 0 => {
+                state.reference_index = left.value as i16;
+                if let Some(rectangle) = lookup_reference_rectangle(
+                    references,
+                    left.value,
+                    textures,
+                    &mut explicit_image_index,
+                )? {
+                    state.explicit_rectangle = rectangle;
+                }
+            }
+            ReferenceKeySegment::Pair(left, right) => {
+                let t = (frame - left.frame as f32) / (right.frame - left.frame) as f32;
+                let inverse = 1.0 - t;
+                state.reference_index =
+                    cvtt_f32_to_i32(left.value as f32 * inverse + right.value as f32 * t) as i16;
+                let left_rectangle = lookup_reference_rectangle(
+                    references,
+                    left.value,
+                    textures,
+                    &mut explicit_image_index,
+                )?;
+                let right_rectangle = lookup_reference_rectangle(
+                    references,
+                    right.value,
+                    textures,
+                    &mut explicit_image_index,
+                )?;
+                if let (Some(left), Some(right)) = (left_rectangle, right_rectangle) {
+                    state.explicit_rectangle = [
+                        right[0] * t + left[0] * inverse,
+                        left[1] * inverse + right[1] * t,
+                        left[2] * inverse + right[2] * t,
+                        left[3] * inverse + right[3] * t,
+                    ];
+                }
+            }
+        }
+        state.explicit_image_index = explicit_image_index;
+        state.uses_explicit_rectangle = true;
+        Ok(true)
+    }
+
     #[allow(clippy::assign_op_pattern)]
     pub fn resolve_coordinates(
         &self,
@@ -302,6 +410,61 @@ impl ImageDefinition {
             selected_sampler,
         })
     }
+}
+
+enum ReferenceKeySegment<'a> {
+    Value(&'a Key20<i32>),
+    Pair(&'a Key20<i32>, &'a Key20<i32>),
+}
+
+fn reference_key_segment(keys: &[Key20<i32>], frame: f32) -> ReferenceKeySegment<'_> {
+    if keys.len() == 1 || frame <= keys[0].frame as f32 {
+        return ReferenceKeySegment::Value(&keys[0]);
+    }
+    if frame >= keys[keys.len() - 1].frame as f32 {
+        return ReferenceKeySegment::Value(&keys[keys.len() - 1]);
+    }
+    let upper = keys.partition_point(|key| key.frame as f32 <= frame);
+    ReferenceKeySegment::Pair(&keys[upper - 1], &keys[upper])
+}
+
+fn lookup_reference_rectangle(
+    references: &[CrefEntry],
+    selector: i32,
+    textures: &TextureList,
+    explicit_image_index: &mut i16,
+) -> Result<Option<[f32; 4]>, ImageError> {
+    if selector < 0 || selector as usize >= references.len() {
+        return Ok(None);
+    }
+    let reference = references[selector as usize];
+    if reference.image_index < 0 || reference.rectangle_index < 0 {
+        return Ok(None);
+    }
+    *explicit_image_index = reference.image_index;
+    let texture = textures
+        .textures
+        .get(reference.image_index as usize)
+        .ok_or_else(|| {
+            ImageError(format!(
+                "animated image index {} is outside {} TEX records",
+                reference.image_index,
+                textures.textures.len()
+            ))
+        })?;
+    let rectangle = texture
+        .crops
+        .get(reference.rectangle_index as usize)
+        .ok_or_else(|| {
+            ImageError(format!(
+                "animated rectangle index {} is outside {} CROP records for TEX {}",
+                reference.rectangle_index,
+                texture.crops.len(),
+                reference.image_index
+            ))
+        })?
+        .normalized_rectangle;
+    Ok(Some(rectangle))
 }
 
 fn parse_reference_table(
@@ -408,6 +571,32 @@ mod tests {
         }
     }
 
+    fn reference_animation_track(mode: u32) -> Track {
+        Track {
+            target: 17,
+            key_count: 2,
+            format: 0x23,
+            range_start: 0,
+            range_end: 10,
+            keys: KeyData::Key20I32(vec![
+                Key20 {
+                    frame: 0,
+                    value: 0,
+                    mode,
+                    slope_in: 0.0,
+                    slope_out: 0.0,
+                },
+                Key20 {
+                    frame: 10,
+                    value: 1,
+                    mode: 0,
+                    slope_in: 0.0,
+                    slope_out: 0.0,
+                },
+            ]),
+        }
+    }
+
     #[test]
     fn cref_and_cre1_are_independent_channels() {
         let mut definition = definition();
@@ -456,6 +645,81 @@ mod tests {
         assert_eq!(resolved.image_index, -1);
         assert_eq!(resolved.coordinates, [[0.0; 2]; 4]);
         assert_eq!(resolved.selected_sampler, None);
+    }
+
+    #[test]
+    fn image_reference_tracks_interpolate_explicit_rectangles_like_the_game() {
+        let mut definition = definition();
+        definition.cref_count = 2;
+        definition.crefs = vec![
+            CrefEntry {
+                image_index: 0,
+                rectangle_index: 0,
+            },
+            CrefEntry {
+                image_index: 1,
+                rectangle_index: 0,
+            },
+        ];
+        let textures = TextureList {
+            declared_count: 2,
+            textures: vec![
+                TextureDefinition {
+                    crops: vec![TextureCrop {
+                        normalized_rectangle: [0.0, 0.2, 0.4, 0.6],
+                    }],
+                    crop_count: 1,
+                    ..TextureDefinition::default()
+                },
+                TextureDefinition {
+                    crops: vec![TextureCrop {
+                        normalized_rectangle: [0.2, 0.4, 0.8, 1.0],
+                    }],
+                    crop_count: 1,
+                    ..TextureDefinition::default()
+                },
+            ],
+        };
+        let mut state = definition.initial_coordinate_state(ImageReferenceChannel::Cref);
+        assert!(
+            definition
+                .apply_coordinate_track(
+                    ImageReferenceChannel::Cref,
+                    &mut state,
+                    &reference_animation_track(1),
+                    5.0,
+                    &textures,
+                )
+                .unwrap()
+        );
+        assert_eq!(state.reference_index, 0);
+        assert_eq!(state.explicit_image_index, 1);
+        assert!(state.uses_explicit_rectangle);
+        assert_eq!(state.explicit_rectangle, [0.1, 0.3, 0.6, 0.8]);
+        let resolved = definition
+            .resolve_coordinates(
+                ImageReferenceChannel::Cref,
+                state,
+                &textures,
+                ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+            )
+            .unwrap();
+        assert_eq!(resolved.image_index, 1);
+        assert_eq!(resolved.coordinates[0], [0.1, 0.3]);
+
+        let mut held = definition.initial_coordinate_state(ImageReferenceChannel::Cref);
+        definition
+            .apply_coordinate_track(
+                ImageReferenceChannel::Cref,
+                &mut held,
+                &reference_animation_track(0),
+                5.0,
+                &textures,
+            )
+            .unwrap();
+        assert_eq!(held.reference_index, 0);
+        assert_eq!(held.explicit_image_index, 0);
+        assert_eq!(held.explicit_rectangle, [0.0, 0.2, 0.4, 0.6]);
     }
 
     #[test]

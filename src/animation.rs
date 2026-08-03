@@ -129,13 +129,17 @@ impl Track {
         if self.key_count == 0 {
             return Evaluation::Unsupported;
         }
-        let frame = wrap_time(self.format, self.range_start, self.range_end, frame);
+        let frame = self.wrapped_frame(frame);
         match self.format & 3 {
             0 | 1 => self.evaluate_key8(frame),
             2 => Evaluation::Unchanged,
             3 => self.evaluate_key20(frame),
             _ => unreachable!(),
         }
+    }
+
+    pub fn wrapped_frame(&self, frame: f32) -> f32 {
+        wrap_time(self.format, self.range_start, self.range_end, frame)
     }
 
     fn evaluate_key8(&self, frame: f32) -> Evaluation {
@@ -505,7 +509,7 @@ fn segment20<T: Copy>(keys: &[Key20<T>], frame: f32) -> Segment20<'_, T> {
     }
 }
 
-fn cvtt_f32_to_i32(value: f32) -> i32 {
+pub(crate) fn cvtt_f32_to_i32(value: f32) -> i32 {
     if !value.is_finite() || !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
     } else {

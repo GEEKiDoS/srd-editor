@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
+use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::scene::Layer;
@@ -172,6 +172,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut number_glyph_count = 0usize;
     let mut drawable_number_glyph_count = 0usize;
     let mut resolved_number_glyph_textures = 0usize;
+    let mut animated_image_reference_evaluations = 0usize;
+    let mut resolved_animated_image_references = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file).unwrap();
@@ -396,6 +398,105 @@ fn parses_and_links_binary_proven_csli_grids() {
                     resolved_number_glyph_textures += 1;
                 }
             }
+            for animation in block.children.iter().filter(|child| child.is_tag(b"ANIM")) {
+                for motion_block in animation
+                    .children
+                    .iter()
+                    .filter(|child| child.is_tag(b"MOT "))
+                {
+                    let motion = Motion::from_block(&file, motion_block).unwrap();
+                    let Ok(node_index) = usize::try_from(motion.target) else {
+                        continue;
+                    };
+                    let base = layer
+                        .image_by_node
+                        .get(node_index)
+                        .cloned()
+                        .flatten()
+                        .or_else(|| {
+                            layer
+                                .number_by_node
+                                .get(node_index)
+                                .and_then(|definition| definition.as_ref())
+                                .map(NumberDefinition::image_base)
+                        });
+                    let Some(base) = base else {
+                        continue;
+                    };
+                    for track in motion
+                        .tracks
+                        .iter()
+                        .filter(|track| matches!(track.target, 17 | 20) && track.format & 3 == 3)
+                    {
+                        let KeyData::Key20I32(keys) = &track.keys else {
+                            panic!("coordinate track has non-i32 KEY data");
+                        };
+                        let channel = if track.target == 17 {
+                            ImageReferenceChannel::Cref
+                        } else {
+                            ImageReferenceChannel::Cre1
+                        };
+                        let mut state = base.initial_coordinate_state(channel);
+                        let mut frames = Vec::with_capacity(keys.len().saturating_mul(2));
+                        for (index, key) in keys.iter().enumerate() {
+                            frames.push(key.frame as f32);
+                            if let Some(next) = keys.get(index + 1) {
+                                frames.push((key.frame as f32 + next.frame as f32) * 0.5);
+                            }
+                        }
+                        for frame in frames {
+                            if !base
+                                .apply_coordinate_track(
+                                    channel,
+                                    &mut state,
+                                    track,
+                                    frame,
+                                    textures
+                                        .as_ref()
+                                        .expect("coordinate animation requires TEXL"),
+                                )
+                                .unwrap_or_else(|error| {
+                                    panic!(
+                                        "{} NODE {node_index} channel {} frame {frame}: {error}",
+                                        path.display(),
+                                        track.target
+                                    )
+                                })
+                            {
+                                continue;
+                            }
+                            animated_image_reference_evaluations += 1;
+                            let declared_count = match channel {
+                                ImageReferenceChannel::Cref => base.cref_count,
+                                ImageReferenceChannel::Cre1 => base.cre1_count,
+                            };
+                            if state.reference_index < 0
+                                || u32::from(state.reference_index as u16)
+                                    >= u32::from(declared_count)
+                                || state.explicit_image_index < 0
+                            {
+                                continue;
+                            }
+                            base.resolve_coordinates(
+                                channel,
+                                state,
+                                textures
+                                    .as_ref()
+                                    .expect("coordinate animation requires TEXL"),
+                                ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "{} NODE {node_index} channel {} frame {frame}: {error}",
+                                    path.display(),
+                                    track.target
+                                )
+                            });
+                            resolved_animated_image_references += 1;
+                        }
+                    }
+                }
+            }
             for (node_index, node) in layer.nodes.iter().enumerate() {
                 let Some(cell_index) = node.parent_csli_cell_index.filter(|index| *index >= 0)
                 else {
@@ -444,7 +545,7 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, animated image reference evaluations={animated_image_reference_evaluations}, resolved animated image references={resolved_animated_image_references}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
@@ -461,6 +562,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     assert!(number_glyph_count > 0);
     assert!(drawable_number_glyph_count > 0);
     assert!(resolved_number_glyph_textures > 0);
+    assert!(animated_image_reference_evaluations > 0);
+    assert!(resolved_animated_image_references > 0);
     assert!(texture_count > 0);
     assert!(crop_count > 0);
     assert!(nonnegative_cell_crefs > 0);

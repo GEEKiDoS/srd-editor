@@ -98,6 +98,7 @@ secondary = CAST additive tint
 ## 仍未闭环
 
 - TEXT 子块的完整字段、字体资源、排版和 glyph 绘制；
-- 动画轨道如何逐字段修改两个 48 字节坐标描述符；
 - 两个 UV 通道进入 shader/固定管线后的精确组合；
 - CAST tint 的动画/default 来源。
+
+坐标描述符的动画通道 `17/20` 已另行闭环，见 [`image-coordinate-animation.md`](image-coordinate-animation.md)。
