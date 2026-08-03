@@ -7,15 +7,102 @@ pub enum D3d9PrimitiveType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum D3d9RenderState {
+    ZEnable = 7,
+    ZWriteEnable = 14,
     AlphaTestEnable = 15,
     SourceBlend = 19,
     DestinationBlend = 20,
+    ZFunction = 23,
+    AlphaReference = 24,
+    AlphaFunction = 25,
     AlphaBlendEnable = 27,
+    StencilEnable = 52,
+    StencilFail = 53,
+    StencilZFail = 54,
+    StencilPass = 55,
+    StencilFunction = 56,
+    StencilReference = 57,
+    StencilMask = 58,
+    StencilWriteMask = 59,
     BlendOperation = 171,
+    SlopeScaleDepthBias = 175,
+    BlendFactor = 193,
+    DepthBias = 195,
     SeparateAlphaBlendEnable = 206,
     SourceBlendAlpha = 207,
     DestinationBlendAlpha = 208,
     BlendOperationAlpha = 209,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum D3d9ComparisonFunction {
+    Never = 1,
+    Less = 2,
+    Equal = 3,
+    LessEqual = 4,
+    Greater = 5,
+    NotEqual = 6,
+    GreaterEqual = 7,
+    Always = 8,
+}
+
+pub const fn d3d9_comparison_function_from_internal(value: u32) -> Option<D3d9ComparisonFunction> {
+    match value {
+        0 => Some(D3d9ComparisonFunction::Never),
+        1 => Some(D3d9ComparisonFunction::Always),
+        2 => Some(D3d9ComparisonFunction::Equal),
+        3 => Some(D3d9ComparisonFunction::NotEqual),
+        4 => Some(D3d9ComparisonFunction::Less),
+        5 => Some(D3d9ComparisonFunction::LessEqual),
+        6 => Some(D3d9ComparisonFunction::Greater),
+        7 => Some(D3d9ComparisonFunction::GreaterEqual),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum D3d9StencilOperation {
+    Keep = 1,
+    Zero = 2,
+    Replace = 3,
+    IncrementSaturate = 4,
+    DecrementSaturate = 5,
+    Invert = 6,
+    Increment = 7,
+    Decrement = 8,
+}
+
+pub const fn d3d9_stencil_operation_from_internal(value: u32) -> Option<D3d9StencilOperation> {
+    match value {
+        0 => Some(D3d9StencilOperation::Keep),
+        1 => Some(D3d9StencilOperation::Zero),
+        2 => Some(D3d9StencilOperation::Replace),
+        3 => Some(D3d9StencilOperation::IncrementSaturate),
+        4 => Some(D3d9StencilOperation::DecrementSaturate),
+        5 => Some(D3d9StencilOperation::Invert),
+        6 => Some(D3d9StencilOperation::Increment),
+        7 => Some(D3d9StencilOperation::Decrement),
+        _ => None,
+    }
+}
+
+/// Raw f32 bits loaded by `d3d9_flush_depth_state` before D3DRS_DEPTHBIAS.
+/// Keeping the binary word avoids replacing the game's value with a rounded
+/// decimal approximation.
+pub const CEYLON_DEPTH_BIAS_SCALE_BITS: u32 = 3_045_472_189;
+
+/// Reproduces `movd` + `cvtdq2ps` + `mulss` and returns the DWORD passed to
+/// `IDirect3DDevice9::SetRenderState(D3DRS_DEPTHBIAS, ...)`.
+pub fn d3d9_depth_bias_bits(value: i32) -> u32 {
+    ((value as f32) * f32::from_bits(CEYLON_DEPTH_BIAS_SCALE_BITS)).to_bits()
+}
+
+/// The binary negates slope-scale depth bias with XORPS against a sign-bit
+/// mask. Flipping the bit directly also preserves signed zero and NaN payloads.
+pub const fn d3d9_slope_scale_depth_bias_bits(value: f32) -> u32 {
+    value.to_bits() ^ (-0.0_f32).to_bits()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +411,9 @@ pub fn ceylon_d3d9_blend_preset(preset_id: i32) -> SrdD3d9BlendPreset {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CeylonDrawPacketPresetState {
     pub draw_flags_00: u32,
+    pub packed_08: u32,
+    pub flags_0c: u32,
+    pub field_2c: i32,
     pub flags_58: u32,
     pub flags_60: u32,
 }
@@ -368,6 +458,160 @@ impl CeylonDrawPacketPresetState {
             self.flags_60 |= 0x20;
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonAlphaStencilState {
+    pub alpha_test_enabled: bool,
+    pub alpha_reference: u32,
+    pub alpha_function_internal: u32,
+    pub stencil_enabled: bool,
+    pub stencil_function_internal: u32,
+    pub stencil_fail_internal: u32,
+    pub stencil_z_fail_internal: u32,
+    pub stencil_pass_internal: u32,
+    pub stencil_reference: u32,
+    pub stencil_mask: u32,
+    pub stencil_write_mask: u32,
+}
+
+impl CeylonAlphaStencilState {
+    /// Applies the conditional packet override block in
+    /// `ceylon_apply_draw_packet_state` to a caller-supplied base RenderState.
+    pub fn apply_draw_packet(&mut self, packet: CeylonDrawPacketPresetState) {
+        self.stencil_enabled = packet.flags_0c & 0x100 != 0;
+        if packet.flags_0c & 0x100 == 0 {
+            return;
+        }
+
+        self.stencil_function_internal = packet.packed_08 & 0x0f;
+        if self.stencil_function_internal == 1 {
+            self.alpha_test_enabled = true;
+            self.alpha_reference = 128;
+        }
+        self.stencil_fail_internal = (packet.packed_08 >> 4) & 0x0f;
+        self.stencil_z_fail_internal = (packet.packed_08 >> 8) & 0x0f;
+        self.stencil_pass_internal = (packet.packed_08 >> 12) & 0x0f;
+        self.stencil_reference = (packet.packed_08 >> 16) & 0xff;
+        self.stencil_mask = (packet.packed_08 >> 24) & 0xff;
+        self.stencil_write_mask = packet.flags_0c & 0xff;
+    }
+
+    pub fn alpha_function(self) -> Option<D3d9ComparisonFunction> {
+        d3d9_comparison_function_from_internal(self.alpha_function_internal)
+    }
+
+    pub fn stencil_function(self) -> Option<D3d9ComparisonFunction> {
+        d3d9_comparison_function_from_internal(self.stencil_function_internal)
+    }
+
+    pub fn stencil_fail(self) -> Option<D3d9StencilOperation> {
+        d3d9_stencil_operation_from_internal(self.stencil_fail_internal)
+    }
+
+    pub fn stencil_z_fail(self) -> Option<D3d9StencilOperation> {
+        d3d9_stencil_operation_from_internal(self.stencil_z_fail_internal)
+    }
+
+    pub fn stencil_pass(self) -> Option<D3d9StencilOperation> {
+        d3d9_stencil_operation_from_internal(self.stencil_pass_internal)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonDepthState {
+    pub z_enabled: bool,
+    pub z_write_enabled: bool,
+    pub z_function_internal: u32,
+}
+
+impl CeylonDepthState {
+    pub fn from_draw_flags(draw_flags_00: u32) -> Self {
+        Self {
+            z_enabled: draw_flags_00 & 0x40000 != 0,
+            z_write_enabled: draw_flags_00 & 0x20000 != 0,
+            z_function_internal: (draw_flags_00 >> 19) & 0x0f,
+        }
+    }
+
+    pub fn z_function(self) -> Option<D3d9ComparisonFunction> {
+        d3d9_comparison_function_from_internal(self.z_function_internal)
+    }
+}
+
+fn set_packet_mask_bytes(packet: &mut CeylonDrawPacketPresetState, mask: u8) {
+    packet.packed_08 =
+        (packet.packed_08 & 0x0000_ffff) | (u32::from(mask) << 16) | (u32::from(mask) << 24);
+    packet.flags_0c = (packet.flags_0c & !0xff) | u32::from(mask);
+}
+
+fn set_srd_stencil_packet(
+    packet: &mut CeylonDrawPacketPresetState,
+    mask: u8,
+    comparison_internal: u32,
+) {
+    packet.packed_08 = comparison_internal;
+    packet.flags_0c = 0x100;
+    packet.draw_flags_00 |= 0x1e000;
+    set_packet_mask_bytes(packet, mask);
+}
+
+/// Reproduces the alpha/stencil packet writes in `sub_AC5320` without assigning
+/// unproven business names to `SrImage+0x10/+0x14/+0x18`.
+pub fn apply_srd_image_alpha_stencil_packet_fields(
+    packet: &mut CeylonDrawPacketPresetState,
+    image_field_10: i32,
+    image_field_14: u32,
+    image_field_18: u8,
+    renderer_mask_274: u8,
+    renderer_counter_198: &mut u8,
+) {
+    let shift = image_field_14 & 0x1f;
+    let image_mask = 1u8.checked_shl(shift).unwrap_or(0);
+
+    match image_field_10 {
+        1 | 2 => {
+            *renderer_counter_198 = renderer_counter_198.wrapping_sub(1);
+            packet.packed_08 = 0x2001;
+            packet.flags_0c = 0x100;
+            packet.draw_flags_00 &= !0x1e000;
+            set_packet_mask_bytes(packet, image_mask);
+        }
+        3 if image_field_18 == 0 => {
+            set_srd_stencil_packet(packet, image_mask | renderer_mask_274, 2);
+        }
+        4 if image_field_18 == 0 => {
+            set_srd_stencil_packet(packet, image_mask | renderer_mask_274, 3);
+        }
+        _ if renderer_mask_274 != 0 => {
+            set_srd_stencil_packet(packet, renderer_mask_274, 2);
+        }
+        _ => {
+            packet.draw_flags_00 |= 0x1e000;
+            packet.packed_08 = 0;
+            packet.flags_0c = 0;
+        }
+    }
+}
+
+/// Reproduces only the draw-packet fields written by `sub_AC5320`'s renderer
+/// special-mode depth branch. The same branch also updates renderer-private
+/// ordering fields, which are deliberately not represented here yet.
+pub fn apply_srd_special_depth_packet_fields(
+    packet: &mut CeylonDrawPacketPresetState,
+    renderer_special_mode: bool,
+    image_field_1c: i32,
+) {
+    if !renderer_special_mode {
+        return;
+    }
+    if image_field_1c < 0 {
+        packet.draw_flags_00 &= !0x20000;
+    } else {
+        packet.draw_flags_00 |= 0x20000;
+    }
+    packet.draw_flags_00 |= 0x40000;
+    packet.field_2c = 4;
 }
 
 pub fn select_srd_image_render_preset(
@@ -668,6 +912,7 @@ mod tests {
             draw_flags_00: 0xa5a5_5a80,
             flags_58: 0xffff_ffff,
             flags_60: 0xffff_f7ff,
+            ..CeylonDrawPacketPresetState::default()
         };
         packet.set_render_preset_id(3);
         assert_eq!(packet.draw_flags_00 & 0x3f, 3);
@@ -711,6 +956,157 @@ mod tests {
         assert_eq!(packet.flags_60 & 0x800, 0);
         assert_eq!(packet.flags_60 & 0x20, 0x20);
         assert_eq!(packet.flags_58 & 0x8, 0);
+    }
+
+    #[test]
+    fn comparison_and_stencil_operation_tables_match_the_d3d9_backend() {
+        let comparisons = [
+            D3d9ComparisonFunction::Never,
+            D3d9ComparisonFunction::Always,
+            D3d9ComparisonFunction::Equal,
+            D3d9ComparisonFunction::NotEqual,
+            D3d9ComparisonFunction::Less,
+            D3d9ComparisonFunction::LessEqual,
+            D3d9ComparisonFunction::Greater,
+            D3d9ComparisonFunction::GreaterEqual,
+        ];
+        for (internal, expected) in comparisons.into_iter().enumerate() {
+            assert_eq!(
+                d3d9_comparison_function_from_internal(internal as u32),
+                Some(expected)
+            );
+        }
+        assert_eq!(d3d9_comparison_function_from_internal(8), None);
+
+        let stencil_operations = [
+            D3d9StencilOperation::Keep,
+            D3d9StencilOperation::Zero,
+            D3d9StencilOperation::Replace,
+            D3d9StencilOperation::IncrementSaturate,
+            D3d9StencilOperation::DecrementSaturate,
+            D3d9StencilOperation::Invert,
+            D3d9StencilOperation::Increment,
+            D3d9StencilOperation::Decrement,
+        ];
+        for (internal, expected) in stencil_operations.into_iter().enumerate() {
+            assert_eq!(
+                d3d9_stencil_operation_from_internal(internal as u32),
+                Some(expected)
+            );
+        }
+        assert_eq!(d3d9_stencil_operation_from_internal(8), None);
+    }
+
+    #[test]
+    fn depth_bias_encoding_preserves_the_backend_instruction_chain() {
+        assert_eq!(d3d9_depth_bias_bits(1), CEYLON_DEPTH_BIAS_SCALE_BITS);
+        assert_eq!(d3d9_depth_bias_bits(0), (-0.0_f32).to_bits());
+
+        assert_eq!(d3d9_slope_scale_depth_bias_bits(0.0), (-0.0_f32).to_bits());
+        assert_eq!(d3d9_slope_scale_depth_bias_bits(-0.0), 0.0_f32.to_bits());
+        let nan = f32::from_bits(2_143_290_709);
+        assert_eq!(
+            d3d9_slope_scale_depth_bias_bits(nan),
+            nan.to_bits() ^ (-0.0_f32).to_bits()
+        );
+    }
+
+    #[test]
+    fn srimage_raw_fields_build_the_exact_alpha_and_stencil_packet_words() {
+        let mut packet = CeylonDrawPacketPresetState {
+            draw_flags_00: 0xffff_ffff,
+            ..CeylonDrawPacketPresetState::default()
+        };
+        let mut counter = 0;
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 1, 3, 0, 0, &mut counter);
+        assert_eq!(counter, 0xff);
+        assert_eq!(packet.packed_08, 0x0808_2001);
+        assert_eq!(packet.flags_0c, 0x108);
+        assert_eq!(packet.draw_flags_00 & 0x1e000, 0);
+
+        let mut state = CeylonAlphaStencilState {
+            alpha_test_enabled: false,
+            alpha_reference: 7,
+            alpha_function_internal: 1,
+            stencil_enabled: false,
+            stencil_function_internal: 7,
+            stencil_fail_internal: 7,
+            stencil_z_fail_internal: 7,
+            stencil_pass_internal: 7,
+            stencil_reference: 0,
+            stencil_mask: 0,
+            stencil_write_mask: 0,
+        };
+        state.apply_draw_packet(packet);
+        assert!(state.alpha_test_enabled);
+        assert_eq!(state.alpha_reference, 128);
+        assert_eq!(state.alpha_function(), Some(D3d9ComparisonFunction::Always));
+        assert!(state.stencil_enabled);
+        assert_eq!(
+            state.stencil_function(),
+            Some(D3d9ComparisonFunction::Always)
+        );
+        assert_eq!(state.stencil_fail(), Some(D3d9StencilOperation::Keep));
+        assert_eq!(state.stencil_z_fail(), Some(D3d9StencilOperation::Keep));
+        assert_eq!(state.stencil_pass(), Some(D3d9StencilOperation::Replace));
+        assert_eq!(state.stencil_reference, 8);
+        assert_eq!(state.stencil_mask, 8);
+        assert_eq!(state.stencil_write_mask, 8);
+
+        packet.draw_flags_00 = 0;
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 3, 2, 0, 1, &mut counter);
+        assert_eq!(packet.packed_08, 0x0505_0002);
+        assert_eq!(packet.flags_0c, 0x105);
+        assert_eq!(packet.draw_flags_00 & 0x1e000, 0x1e000);
+
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 4, 2, 0, 1, &mut counter);
+        assert_eq!(packet.packed_08 & 0xffff, 3);
+
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 4, 2, 1, 1, &mut counter);
+        assert_eq!(packet.packed_08, 0x0101_0002);
+        assert_eq!(packet.flags_0c, 0x101);
+
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 0, 0, 0, 0, &mut counter);
+        assert_eq!(packet.packed_08, 0);
+        assert_eq!(packet.flags_0c, 0);
+
+        apply_srd_image_alpha_stencil_packet_fields(&mut packet, 1, 8, 0, 0, &mut counter);
+        assert_eq!(packet.packed_08, 0x2001);
+        assert_eq!(packet.flags_0c, 0x100);
+    }
+
+    #[test]
+    fn draw_flags_decode_and_special_mode_update_the_binary_depth_state() {
+        let initial = CeylonDepthState::from_draw_flags(0x00af_e000);
+        assert!(initial.z_enabled);
+        assert!(initial.z_write_enabled);
+        assert_eq!(initial.z_function_internal, 5);
+        assert_eq!(
+            initial.z_function(),
+            Some(D3d9ComparisonFunction::LessEqual)
+        );
+
+        let mut packet = CeylonDrawPacketPresetState {
+            draw_flags_00: 0x00af_e003,
+            field_2c: -9,
+            ..CeylonDrawPacketPresetState::default()
+        };
+        apply_srd_special_depth_packet_fields(&mut packet, false, -1);
+        assert_eq!(packet.draw_flags_00, 0x00af_e003);
+        assert_eq!(packet.field_2c, -9);
+
+        apply_srd_special_depth_packet_fields(&mut packet, true, -1);
+        let disabled_write = CeylonDepthState::from_draw_flags(packet.draw_flags_00);
+        assert!(disabled_write.z_enabled);
+        assert!(!disabled_write.z_write_enabled);
+        assert_eq!(disabled_write.z_function_internal, 5);
+        assert_eq!(packet.field_2c, 4);
+
+        apply_srd_special_depth_packet_fields(&mut packet, true, 0);
+        let enabled_write = CeylonDepthState::from_draw_flags(packet.draw_flags_00);
+        assert!(enabled_write.z_enabled);
+        assert!(enabled_write.z_write_enabled);
+        assert_eq!(enabled_write.z_function_internal, 5);
     }
 
     #[test]

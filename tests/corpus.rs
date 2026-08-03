@@ -63,6 +63,9 @@ fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus
                 continue;
             };
             cast_type_counts[kind] += 1;
+            assert_eq!(runtime.field_10, 0);
+            assert_eq!(runtime.field_14, 0);
+            assert_eq!(runtime.field_18, 0);
             assert_eq!(runtime.render_preset_override, -1);
             assert_eq!(runtime.field_1c, -1);
 

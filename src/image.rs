@@ -63,6 +63,9 @@ pub struct ImageGeometryState {
 pub struct RuntimeImageState {
     pub geometry: ImageGeometryState,
     pub coordinates: [ImageCoordinateState; 2],
+    pub field_10: i32,
+    pub field_14: u32,
+    pub field_18: u8,
     pub render_preset_override: i32,
     pub field_1c: i32,
 }
@@ -212,6 +215,9 @@ impl ImageDefinition {
                 self.initial_coordinate_state(ImageReferenceChannel::Cref),
                 self.initial_coordinate_state(ImageReferenceChannel::Cre1),
             ],
+            field_10: 0,
+            field_14: 0,
+            field_18: 0,
             render_preset_override: -1,
             field_1c: -1,
         }
@@ -1025,6 +1031,9 @@ mod tests {
         assert_eq!(constructor_state.coordinates[0].vertex_colors, [[0; 4]; 4]);
         assert_eq!(constructor_state.coordinates[0].reference_index, 0);
         assert_eq!(constructor_state.coordinates[1].reference_index, 0);
+        assert_eq!(constructor_state.field_10, 0);
+        assert_eq!(constructor_state.field_14, 0);
+        assert_eq!(constructor_state.field_18, 0);
         assert_eq!(constructor_state.render_preset_override, -1);
         assert_eq!(constructor_state.field_1c, -1);
 

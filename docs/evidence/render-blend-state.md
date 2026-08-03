@@ -125,4 +125,4 @@ SRD 直接选择的六个预设最终状态为：
 
 ## 当前证据边界
 
-本页闭环的是预设选择、packet ID 编码、62 项 blend/alpha-enable 表以及最终 D3D9 blend render states。`ALPHAREF`、`ALPHAFUNC`、深度、scissor、shader 和双 UV 的像素阶段消费仍需各自调用链证明；这里没有把它们并入混合预设或赋予推测值。
+本页闭环的是预设选择、packet ID 编码、62 项 blend/alpha-enable 表以及最终 D3D9 blend render states。后续已经闭环的 alpha/depth/stencil packet 与 backend 状态见 [`render-alpha-depth-stencil.md`](render-alpha-depth-stencil.md)；scissor、shader 和双 UV 的像素阶段消费仍需各自调用链证明。这里没有把它们并入混合预设或赋予推测值。
