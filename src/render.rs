@@ -626,10 +626,18 @@ impl CeylonShaderKey {
 
         match self.low & 7 {
             0 => {}
-            1 => bits.set(25, true),
-            2 => bits.set(39, true),
-            3 => bits.set(40, true),
-            4 => bits.set(69, true),
+            1 => bits
+                .set_selector_parameter_value(23, 1)
+                .expect("parameter 23 is registered"),
+            2 => bits
+                .set_selector_parameter_value(24, 1)
+                .expect("parameter 24 is registered"),
+            3 => bits
+                .set_selector_parameter_value(24, 2)
+                .expect("parameter 24 is registered"),
+            4 => bits
+                .set_selector_parameter_value(66, 1)
+                .expect("parameter 66 is registered"),
             variant => {
                 return Err(SrdSimpleShaderContributionError::UnsupportedBaseEnvironment(variant));
             }
@@ -640,7 +648,8 @@ impl CeylonShaderKey {
         // method raises integer selector parameter 1 to value 1, which the
         // Simple selector maps to position 2 (`SSF_2DTransform`).
         if self.low & (1 << 3) != 0 {
-            bits.set(2, true);
+            bits.set_selector_parameter_value(1, 1)
+                .expect("parameter 1 is registered");
         }
 
         bits.apply_shape_environment_variants(

@@ -8,6 +8,106 @@ pub const CEYLON_SIMPLE_SHADER_KEY_LENGTH: usize = 18;
 pub const SEA_EMBEDDED_SHADER_SOURCE_XOR: u32 = 0x5963_4649;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonSimpleSelectorParameterDescriptor {
+    pub parameter_id: u32,
+    /// Feature positions are ordered by source value bit, starting at bit 0.
+    pub positions: &'static [u8],
+}
+
+const SIMPLE_PARAMETER_1_POSITIONS: &[u8] = &[2];
+const SIMPLE_PARAMETER_6_POSITIONS: &[u8] = &[41, 42, 43, 44, 45, 46];
+const SIMPLE_PARAMETER_7_POSITIONS: &[u8] = &[47, 48, 49, 50];
+const SIMPLE_PARAMETER_8_POSITIONS: &[u8] = &[51, 52, 53];
+const SIMPLE_PARAMETER_9_POSITIONS: &[u8] = &[16, 17];
+const SIMPLE_PARAMETER_11_POSITIONS: &[u8] = &[19];
+const SIMPLE_PARAMETER_22_POSITIONS: &[u8] = &[27];
+const SIMPLE_PARAMETER_23_POSITIONS: &[u8] = &[25];
+const SIMPLE_PARAMETER_24_POSITIONS: &[u8] = &[39, 40];
+const SIMPLE_PARAMETER_30_POSITIONS: &[u8] = &[26];
+const SIMPLE_PARAMETER_40_POSITIONS: &[u8] = &[34, 35];
+const SIMPLE_PARAMETER_52_POSITIONS: &[u8] = &[28, 29];
+const SIMPLE_PARAMETER_53_POSITIONS: &[u8] = &[30, 31];
+const SIMPLE_PARAMETER_61_POSITIONS: &[u8] = &[32, 33];
+const SIMPLE_PARAMETER_66_POSITIONS: &[u8] = &[69];
+const SIMPLE_PARAMETER_68_POSITIONS: &[u8] = &[70];
+
+/// Complete integer selector-parameter table constructed by
+/// `sea_simple_shader_selector_construct` (`0x65ED50`). This table describes
+/// how a final parameter-set value becomes Simple feature bits; it does not
+/// imply that any particular provider is active for an SRD draw.
+pub const CEYLON_SIMPLE_SELECTOR_PARAMETERS: [CeylonSimpleSelectorParameterDescriptor; 16] = [
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 1,
+        positions: SIMPLE_PARAMETER_1_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 6,
+        positions: SIMPLE_PARAMETER_6_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 7,
+        positions: SIMPLE_PARAMETER_7_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 8,
+        positions: SIMPLE_PARAMETER_8_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 9,
+        positions: SIMPLE_PARAMETER_9_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 11,
+        positions: SIMPLE_PARAMETER_11_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 22,
+        positions: SIMPLE_PARAMETER_22_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 23,
+        positions: SIMPLE_PARAMETER_23_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 24,
+        positions: SIMPLE_PARAMETER_24_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 30,
+        positions: SIMPLE_PARAMETER_30_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 40,
+        positions: SIMPLE_PARAMETER_40_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 52,
+        positions: SIMPLE_PARAMETER_52_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 53,
+        positions: SIMPLE_PARAMETER_53_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 61,
+        positions: SIMPLE_PARAMETER_61_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 66,
+        positions: SIMPLE_PARAMETER_66_POSITIONS,
+    },
+    CeylonSimpleSelectorParameterDescriptor {
+        parameter_id: 68,
+        positions: SIMPLE_PARAMETER_68_POSITIONS,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedCeylonSimpleSelectorParameter {
+    pub parameter_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedShaderSourceLengthError {
     pub encoded_length: usize,
 }
@@ -235,6 +335,27 @@ impl CeylonSimpleShaderBits {
         }
     }
 
+    /// Applies one final integer selector-parameter value using the exact
+    /// parameter-ID to feature-position vector registered by the binary.
+    /// Activation and provider accumulation are intentionally outside this
+    /// method; callers must supply the value present after those steps.
+    pub fn set_selector_parameter_value(
+        &mut self,
+        parameter_id: u32,
+        value: u32,
+    ) -> Result<(), UnsupportedCeylonSimpleSelectorParameter> {
+        let Some(descriptor) = CEYLON_SIMPLE_SELECTOR_PARAMETERS
+            .iter()
+            .find(|descriptor| descriptor.parameter_id == parameter_id)
+        else {
+            return Err(UnsupportedCeylonSimpleSelectorParameter { parameter_id });
+        };
+        for (value_bit, position) in descriptor.positions.iter().copied().enumerate() {
+            self.set(usize::from(position), value & (1 << value_bit) != 0);
+        }
+        Ok(())
+    }
+
     /// Applies the vertex inputs produced by Ceylon vertex format 14:
     /// COLOR0/COLOR1 and TEXCOORD0/TEXCOORD1. The selector records each pair
     /// as a two-bit count with value 2.
@@ -260,9 +381,12 @@ impl CeylonSimpleShaderBits {
         multi_tex0_blend_mode: u32,
         multi_tex1_blend_mode: u32,
     ) {
-        self.set_parameter(41, 6, blend_mode);
-        self.set_parameter(47, 4, multi_tex0_blend_mode);
-        self.set_parameter(51, 3, multi_tex1_blend_mode);
+        self.set_selector_parameter_value(6, blend_mode)
+            .expect("parameter 6 is registered");
+        self.set_selector_parameter_value(7, multi_tex0_blend_mode)
+            .expect("parameter 7 is registered");
+        self.set_selector_parameter_value(8, multi_tex1_blend_mode)
+            .expect("parameter 8 is registered");
     }
 
     /// Exact nibble encoding used by `sub_65EB40`: four feature positions per
@@ -410,6 +534,59 @@ mod tests {
         assert!(bits.contains(51));
         assert!(!bits.contains(52));
         assert!(bits.contains(53));
+    }
+
+    #[test]
+    fn complete_selector_parameter_table_matches_constructor_order_and_widths() {
+        assert_eq!(
+            CEYLON_SIMPLE_SELECTOR_PARAMETERS
+                .iter()
+                .map(|descriptor| (descriptor.parameter_id, descriptor.positions))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, &[2][..]),
+                (6, &[41, 42, 43, 44, 45, 46][..]),
+                (7, &[47, 48, 49, 50][..]),
+                (8, &[51, 52, 53][..]),
+                (9, &[16, 17][..]),
+                (11, &[19][..]),
+                (22, &[27][..]),
+                (23, &[25][..]),
+                (24, &[39, 40][..]),
+                (30, &[26][..]),
+                (40, &[34, 35][..]),
+                (52, &[28, 29][..]),
+                (53, &[30, 31][..]),
+                (61, &[32, 33][..]),
+                (66, &[69][..]),
+                (68, &[70][..]),
+            ]
+        );
+    }
+
+    #[test]
+    fn selector_parameter_values_set_only_their_registered_value_bits() {
+        for descriptor in CEYLON_SIMPLE_SELECTOR_PARAMETERS {
+            let mut bits = CeylonSimpleShaderBits::default();
+            let value = 0xaaaa_aaaa;
+            bits.set_selector_parameter_value(descriptor.parameter_id, value)
+                .unwrap();
+            for position in 0..CEYLON_SIMPLE_SHADER_FEATURE_COUNT {
+                let expected = descriptor
+                    .positions
+                    .iter()
+                    .position(|candidate| usize::from(*candidate) == position)
+                    .is_some_and(|value_bit| value & (1 << value_bit) != 0);
+                assert_eq!(bits.contains(position), expected);
+            }
+        }
+
+        let mut bits = CeylonSimpleShaderBits::default();
+        assert_eq!(
+            bits.set_selector_parameter_value(67, 1),
+            Err(UnsupportedCeylonSimpleSelectorParameter { parameter_id: 67 })
+        );
+        assert_eq!(bits, CeylonSimpleShaderBits::default());
     }
 
     #[test]

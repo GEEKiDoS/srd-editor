@@ -2,7 +2,7 @@
 
 本页记录 SRD/Ceylon ShapeEnv 实际选择的 selector、Simple 键的字节编码、完整 71 项 descriptor，以及已经闭环的 ShapeEnv 模块参数映射。结论来自游戏二进制调用链，并以完整游戏 data 目录中的 shader collection 作独立语料校验。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `893CD6866DAE3C958988FAA9F3D2AA32405CD6E5927819D8310BC5AE080C11CE`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `63CFC0D28318D936CF0F134B0C7328047D21C3488565C0E97F6CFED1DEFEA187`。
 
 ## selector 槽位 9
 
@@ -126,17 +126,30 @@ Simple selector 的 virtual `+0x10` 先由 `sea_simple_shader_decode_compact_key
 #define <UPPERCASE_REGISTERED_NAME> <signed_decimal_value>\n
 ```
 
-## ShapeEnv 参数 ID 6/7/8
+## 完整 integer selector parameter 映射
 
-Simple 构造函数建立 parameter ID 到 position vector 的精确映射：
+`sea_simple_shader_selector_construct` 建立了 16 个 parameter ID 到 position vector 的精确映射。下表是完整集合，不是只列出当前 SRD direct key 会触发的子集：
 
-| ShapeEnv parameter ID | positions | emitted parameter |
+| integer parameter ID | positions | emitted parameter |
 |---:|---|---|
+| 1 | `2` | `SSF_2DTransform` |
 | 6 | `41..46` | `SSF_BLENDMODE`，6 位 |
 | 7 | `47..50` | `SSF_MULTITEX0BLENDMODE`，4 位 |
 | 8 | `51..53` | `SSF_MULTITEX1BLENDMODE`，3 位 |
+| 9 | `16..17` | `SSF_OUTCOLOR_MODE`，2 位 |
+| 11 | `19` | `SSF_OutDistance_Color0RD2G` |
+| 22 | `27` | `SSF_ReductionMode` |
+| 23 | `25` | `SSF_SoftEdge` |
+| 24 | `39..40` | `SSF_REFRACTIONMAP`，2 位 |
+| 30 | `26` | `SSF_ParticleShader` |
+| 40 | `34..35` | `SSF_LIGHTPARALLEL`，2 位 |
+| 52 | `28..29` | `SSF_FOG_MODE`，2 位 |
+| 53 | `30..31` | `SSF_VTF_FOG_MODE`，2 位 |
+| 61 | `32..33` | `SSF_LIGHTEFFECTMODE`，2 位 |
+| 66 | `69` | `SSF_DepthWrite` |
+| 68 | `70` | `SSF_Debug` |
 
-`sea_simple_shader_apply_parameter_positions` (`0x65E950`) 对每个 parameter value 从 bit 0 开始检查；置位的 value bit 设置对应 vector 元素指向的 feature position。此前 ShapeEnv 模块调用链已经证明 Blend、MultiTex0、MultiTex1 分别写 parameter ID `6/7/8`，所以三项 variant 到最终 Simple define 的映射现已闭环。
+`sea_simple_shader_apply_parameter_positions` (`0x65E950`) 对每个 parameter value 从 bit 0 开始检查；置位的 value bit 设置对应 vector 元素指向的 feature position。Rust 的 `CEYLON_SIMPLE_SELECTOR_PARAMETERS` 与 `set_selector_parameter_value` 保存这张完整映射，但不自行假定 provider 激活。此前 ShapeEnv 模块调用链已经证明 Blend、MultiTex0、MultiTex1 分别写 parameter ID `6/7/8`，base SoftEdge/Refraction/DepthWrite 写 `23/24/66`，可选 ShapeEnv2D 写 `1`；其余 ID 的 SRD context 可达性继续单独取证。
 
 例如 MultiTex0 variant `9` 的二进制值为 `1001b`，因此设置 positions `47` 与 `50`。在紧凑键中 position 47 是第 12 个字符的 bit 3，position 50 是第 13 个字符的 bit 2，局部编码恰为 `I`、`E`。
 
@@ -177,7 +190,7 @@ Rust 已实现：
 - Simple 的完整 71 项 descriptor；
 - 18 字节键的逐位编解码；
 - 所有 uppercase define 的清零、累加和有序前缀输出；
-- ShapeEnv parameter `6/7/8` 到 positions `41..53` 的映射；
+- 全部 16 个 integer selector parameter ID 到 Simple positions 的映射 API；
 - base environment `0..4` 与 low bit `3` 的 `ShapeEnv2D -> SSF_2DTransform` 映射，并拒绝未构造的 base `5..7`；
 - 完整 data 中 82 个 Simple key 的回归。
 
