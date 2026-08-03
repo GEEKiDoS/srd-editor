@@ -41,6 +41,129 @@ pub struct Hierarchy {
     pub roots: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceTarget {
+    pub scene_index: usize,
+    pub layer_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scene {
+    pub name: Vec<u8>,
+    pub declared_layer_count: u32,
+    pub declared_animation_set_count: u32,
+    pub layers: Vec<Layer>,
+}
+
+impl Scene {
+    pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, SceneError> {
+        if !block.is_tag(b"SCN ") {
+            return Err(SceneError("block is not SCN ".into()));
+        }
+
+        let name = fixed_name(file, block, 0x03, 64, "SCN  0x03")?;
+        let declared_layer_count = read_unsigned(file, block, 0x10)?;
+        let declared_animation_set_count = read_unsigned(file, block, 0x17)?;
+        let layers = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"LAYR"))
+            .map(|child| Layer::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        let animation_set_count = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"ANMS"))
+            .count();
+
+        validate_declared_count(
+            declared_layer_count,
+            layers.len(),
+            "SCN  LAYR",
+            block.offset,
+        )?;
+        validate_declared_count(
+            declared_animation_set_count,
+            animation_set_count,
+            "SCN  ANMS",
+            block.offset,
+        )?;
+
+        Ok(Self {
+            name,
+            declared_layer_count,
+            declared_animation_set_count,
+            layers,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Project {
+    pub name: Vec<u8>,
+    pub declared_scene_count: u32,
+    pub scenes: Vec<Scene>,
+}
+
+impl Project {
+    pub fn from_file(file: &SrdFile) -> Result<Self, SceneError> {
+        if &file.format != b"SRFF" {
+            return Err(SceneError("VTBF file format is not SRFF".into()));
+        }
+        let mut selected = None;
+        for srck in file.blocks.iter().filter(|block| block.is_tag(b"SRCK")) {
+            for project in srck.children.iter().filter(|block| block.is_tag(b"PROJ")) {
+                selected = Some(project);
+            }
+        }
+        let block = selected.ok_or_else(|| SceneError("SRFF has no SRCK/PROJ block".into()))?;
+        let name = block
+            .last_property(0x03)
+            .map(|property| {
+                property
+                    .string_bytes(file)
+                    .ok_or_else(|| SceneError("PROJ 0x03 is not a string".into()))
+                    .map(|bytes| bytes.iter().copied().take(64).collect())
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let declared_scene_count = read_unsigned(file, block, 0x00)?;
+        let scenes = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"SCN "))
+            .map(|child| Scene::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_declared_count(
+            declared_scene_count,
+            scenes.len(),
+            "PROJ SCN ",
+            block.offset,
+        )?;
+
+        Ok(Self {
+            name,
+            declared_scene_count,
+            scenes,
+        })
+    }
+
+    pub fn resolve_reference(&self, reference: &ReferenceDefinition) -> Option<ReferenceTarget> {
+        let scene_index = self
+            .scenes
+            .iter()
+            .position(|scene| scene.name == reference.source_name)?;
+        let layer_index = self.scenes[scene_index]
+            .layers
+            .iter()
+            .position(|layer| layer.name == reference.layer_name)?;
+        Some(ReferenceTarget {
+            scene_index,
+            layer_index,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RawTransform {
     Trs2(SpatialTransform),
@@ -603,6 +726,35 @@ fn required_property(block: &Block, code: u8) -> Result<&Property, SceneError> {
     block
         .last_property(code)
         .ok_or_else(|| SceneError(format!("missing property {code:#04x}")))
+}
+
+fn fixed_name(
+    file: &SrdFile,
+    block: &Block,
+    code: u8,
+    capacity: usize,
+    label: &str,
+) -> Result<Vec<u8>, SceneError> {
+    required_property(block, code)?
+        .string_bytes(file)
+        .ok_or_else(|| SceneError(format!("{label} is not a string")))
+        .map(|bytes| bytes.iter().copied().take(capacity).collect())
+}
+
+fn validate_declared_count(
+    declared: u32,
+    parsed: usize,
+    label: &str,
+    offset: usize,
+) -> Result<(), SceneError> {
+    let declared = usize::try_from(declared)
+        .map_err(|_| SceneError(format!("{label} count does not fit usize")))?;
+    if declared != parsed {
+        return Err(SceneError(format!(
+            "{label} count mismatch at {offset:#x}: declared {declared}, parsed {parsed}"
+        )));
+    }
+    Ok(())
 }
 
 fn read_unsigned(file: &SrdFile, block: &Block, code: u8) -> Result<u32, SceneError> {

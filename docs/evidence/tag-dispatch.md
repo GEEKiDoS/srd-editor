@@ -15,6 +15,8 @@
 
 `0xA9F370` 仅在其当前子块为 `PROJ` 时分配项目记录并处理内部子块。因此 `PROJ` 是 `SRCK` 内的实际项目容器，而不是与 `SRCK` 平级的入口。
 
+`PROJ 0x00` 是直接 `SCN ` 数量；`SCN  0x03` 是 64 字节场景名，`0x10/0x17` 分别是直接 `LAYR/ANMS` 数量。该同文件场景表与 CRFD 两级引用查找已经闭环，见 [`project-scene-reference.md`](project-scene-reference.md)。
+
 ## CAST 数据
 
 `CAST` 解析函数 `0xAA0130`：

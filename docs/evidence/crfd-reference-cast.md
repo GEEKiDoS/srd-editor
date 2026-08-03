@@ -3,7 +3,7 @@
 本页记录引用 CAST 的数据记录、运行时指针链和通道 `23` 的已闭环行为。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`441E312ED5EA8B4A7A4BFE7601332923A7E10D32DC88A4D6CA9D8B8489EC6502`。
+- 保存后的 IDB SHA-256：`952E0690DC74B3B34C64C6B060488D4335E2706E16578EDE0028142F7EFCF394`。
 
 ## CRFD 记录
 
@@ -18,7 +18,7 @@
 | `0x83` | `+0x404`，`char[0x200]` | 被引用动画名 |
 | `0x84` | `+0x604`，f32 | 通道值为有序负数时使用的默认帧 |
 
-`srd_resolve_reference_cast_resource` (`0xADB550`) 用 `+0x000` 与已加载资源名逐项比较，匹配后用 `+0x200` 查找其中的层并建立引用运行时对象。因此前两个字符串不是根据样本名称推断出的标签。
+`srd_resolve_reference_cast_resource` (`0xADB550`) 用 `+0x000` 与当前 SRD 的运行时 SCN 场景名逐项作完整字节比较，匹配后用 `+0x200` 查找其中的层并建立引用运行时对象。因此前两个字符串不是根据样本名称推断出的标签。场景表来源和两级首次匹配见 [`project-scene-reference.md`](project-scene-reference.md)。
 
 ## NODE 到 SrRefCast 的指针链
 
@@ -60,4 +60,4 @@ Rust 当前已经实现：
 - CRFD 到 NODE 的连接及 NODE 类型回归；
 - 通道 `23` 的原始位求值、非零 gate、负值默认帧和动画名请求。
 
-尚未实现的是按 `source_name` 加载或复用另一个 SRD、按 `layer_name` 建立引用层运行时对象、在其中查找 `animation_name` 并递归提交最终绘制。证据页不把“能够产生请求”写成“引用场景已经渲染”。
+`source_name/layer_name` 现在已经按游戏的同文件 `PROJ -> SCN  -> LAYR` 表解析，53 个样本中的 1090 个 CRFD 全部命中。尚未实现的是建立引用层的独立运行时状态、在其中查找并驱动 `animation_name` 对应动画，以及递归提交最终绘制。证据页不把“能够解析目标并产生请求”写成“引用场景已经渲染”。

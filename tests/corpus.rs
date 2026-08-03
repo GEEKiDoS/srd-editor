@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
-use srd_editor::scene::Layer;
+use srd_editor::scene::{Layer, Project};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -88,6 +88,54 @@ fn parses_local_corpus_with_binary_proven_boundaries() {
         let bytes = fs::read(&path).unwrap();
         SrdFile::parse(bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     }
+}
+
+#[test]
+fn reference_casts_resolve_inside_the_binary_project_scene_table() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut scene_count = 0usize;
+    let mut reference_count = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project =
+            Project::from_file(&file).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        scene_count += project.scenes.len();
+        for scene in &project.scenes {
+            for layer in &scene.layers {
+                for reference in layer.reference_by_node.iter().flatten() {
+                    let target = project.resolve_reference(reference).unwrap_or_else(|| {
+                        panic!(
+                            "{}: unresolved CRFD scene {:?}, layer {:?}",
+                            path.display(),
+                            String::from_utf8_lossy(&reference.source_name),
+                            String::from_utf8_lossy(&reference.layer_name)
+                        )
+                    });
+                    assert_eq!(
+                        project.scenes[target.scene_index].name,
+                        reference.source_name
+                    );
+                    assert_eq!(
+                        project.scenes[target.scene_index].layers[target.layer_index].name,
+                        reference.layer_name
+                    );
+                    reference_count += 1;
+                }
+            }
+        }
+    }
+
+    assert!(scene_count > 0);
+    assert_eq!(reference_count, 1090);
+    eprintln!("project scenes={scene_count}, resolved CRFD references={reference_count}");
 }
 
 #[test]
