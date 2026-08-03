@@ -99,7 +99,8 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 
 - CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成、父级偏移、active 单元局部四顶点以及用于 packed color 插值的单元归一化坐标已经闭环，详见 [`evidence/slice-geometry.md`](evidence/slice-geometry.md)。
 - CSLI CREF 每条记录的两个 signed i16、SLIC `0x46` 选择、运行时图像/矩形下标、flags flip/order 以及两个相同最终 UV 通道已经闭环。
-- packed vertex color、运行时图像矩形表的文件来源、纹理对象和最终 draw call 状态仍未闭环。
+- CSLI/SLIC packed color 的零默认、双线性插值、逐通道乘法和饱和加法公式已经闭环；CAST 两种 tint 的来源仍未闭环。
+- 运行时图像矩形表的文件来源、纹理对象和最终 draw call 状态仍未闭环。
 - CIMG、CREF、CRE1、CROP、CNUM 的资源与运行时关系尚未完成二进制证据闭环。
 - DDS 图集裁剪、runtime-bound 资源、数字排版与 sliced sprite 均不得依据旧预览器的表现直接实现。
 
@@ -110,4 +111,4 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 3. 颜色和 CAST 专属动画通道。
 4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
 5. CIMG/CRE1/CROP 到运行时图像矩形表与实际纹理对象的建立流程。
-6. CNUM 和 CSLI/CREF 的 packed color、纹理选择与最终 D3D9 绘制语义。
+6. CNUM、CAST tint/default color 与最终 D3D9 绘制语义。

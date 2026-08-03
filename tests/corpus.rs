@@ -146,6 +146,10 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut csli_count = 0usize;
     let mut cref_count = 0usize;
     let mut resolved_cell_crefs = 0usize;
+    let mut active_color_cells = 0usize;
+    let mut missing_3a = 0usize;
+    let mut missing_33 = 0usize;
+    let mut non_four_44 = 0usize;
     let mut indexed_children = 0usize;
     let mut active_indexed_children = 0usize;
     for path in files {
@@ -169,6 +173,16 @@ fn parses_and_links_binary_proven_csli_grids() {
                 resolved_cell_crefs += (0..definition.cells.len())
                     .filter(|cell_index| definition.cell_cref(*cell_index).is_some())
                     .count();
+                for cell in definition
+                    .cells
+                    .iter()
+                    .filter(|cell| (cell.flags >> 8) & 1 != 0)
+                {
+                    missing_3a += usize::from(cell.field_3a.is_none());
+                    missing_33 += usize::from(cell.field_33.is_none());
+                    non_four_44 += usize::from(cell.field_44.len() != 4);
+                    active_color_cells += 1;
+                }
                 let explicit_first_row_widths = definition
                     .cells
                     .iter()
@@ -244,11 +258,15 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
     assert!(resolved_cell_crefs > 0);
+    assert!(active_color_cells > 0);
+    assert_eq!(missing_3a, 0);
+    assert_eq!(missing_33, active_color_cells);
+    assert_eq!(non_four_44, 0);
     assert!(indexed_children > 0);
 }
 

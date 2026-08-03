@@ -3,7 +3,7 @@
 本页只记录已经由 `surfride::SrSliceCast` RTTI、虚表入口和最终顶点写入共同闭环的几何结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`5B812E07874112C5C3F4C96E4293EC4E9203C4C6EE91CAD2F6C2902BAD3A622F`
+- 本轮保存后的 IDB SHA-256：`7C27FA448CD8C2C8D0AF5BA8C4A5B6C46B7413A42889E74ED016CB9BFF906355`
 
 ## 渲染入口归属
 
@@ -100,8 +100,34 @@ rectangle_index = entry.signed_i16[1]
 
 53 个本地 SRD 中，799 个 CSLI 共解析出 4813 条 CREF；按每个 SLIC 的 signed `0x46` 和声明数量执行与游戏相同的边界检查后，有 4997 个单元能够选择到一条实际 CREF 记录。
 
+## 两个 packed vertex color
+
+`srd_render_slice_cast` 对每个顶点先加载 CSLI 的四个 `0x44`。它用该顶点的单元归一化 Y 对 `0/1` 和 `2/3` 两对颜色分别调用 `srd_lerp_color_u8` (`0x5FEFA0`)，再用归一化 X 对两项结果插值，形成双线性 CSLI 基色。该插值逐通道使用 f32：
+
+```text
+value = first * (1.0 - factor) + second * factor
+result = truncate(clamp(value, 0, 255))
+```
+
+随后两个写入顶点的 packed color 为：
+
+```text
+primary = SLIC per-vertex 0x44
+        * SLIC 0x3A
+        * bilinear CSLI 0x44
+        * CAST multiplicative tint
+
+secondary = saturating_add(CAST additive tint, SLIC 0x33)
+```
+
+每次乘法都调用 `srd_multiply_color_u8` (`0x5FEA70`)，逐通道执行 `u32(a) * u32(b) / 255`；加法调用 `srd_add_color_saturating_u8` (`0x5FEB90`)，和大于等于 255 时写 255。primary/secondary 分别写入 36 字节顶点的 `+12` 和 `+16`。
+
+Rust 已实现这些精确组合器以及需要显式 CAST 乘法色/加法色的 `slice_vertex_colors`。它不会擅自填入尚未证明的 CAST tint。
+
+样本方面，5145 个 active SLIC 全部有 `0x3A` 和恰好四个 `0x44`，但全部没有显式 `0x33`。缺省值由 `SrProject` 虚表槽 `+4` 的 `srd_project_allocate_zeroed` (`0xA9F310`) 闭环：它对每次请求的完整分配区执行 `memset(pointer, 0, size)`，然后才返回给 CSLI/SLIC 解析器。因此缺失 `0x3A/0x33/0x44` 对应的运行时字节均为零，包括 104 字节 CSLI 模板复制范围之外的后续单元。Rust 的 runtime color 访问器复现该零默认。
+
 ## 仍未闭环
 
-- SLIC `0x3A`、`0x33`、四个 `0x44` 和 CSLI 四个 `0x44` 共同生成两个 packed vertex color 的完整组合语义。
+- CAST multiplicative/additive tint 的初始化和动画来源。
 - 运行时图像对象及其 16 字节矩形表如何由 CIMG/外部纹理资源建立。
 - 图集资源自身的尺寸修正、采样状态、混合状态、索引顺序和最终 D3D9 draw call 参数。

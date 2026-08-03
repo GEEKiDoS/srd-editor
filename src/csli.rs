@@ -24,6 +24,25 @@ pub struct SlicCell {
     pub cref_index: i16,
 }
 
+impl SlicCell {
+    pub fn runtime_color_3a(&self) -> [u8; 4] {
+        self.field_3a.unwrap_or([0; 4])
+    }
+
+    pub fn runtime_color_33(&self) -> [u8; 4] {
+        self.field_33.unwrap_or([0; 4])
+    }
+
+    pub fn runtime_vertex_colors(&self) -> Result<[[u8; 4]; 4], CsliError> {
+        if self.field_44.len() > 4 {
+            return Err(CsliError("SLIC cell has more than four 0x44 colors".into()));
+        }
+        let mut colors = [[0; 4]; 4];
+        colors[..self.field_44.len()].copy_from_slice(&self.field_44);
+        Ok(colors)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrefEntry {
     pub image_index: i16,
@@ -62,6 +81,12 @@ pub struct SliceQuad {
     pub cell_index: usize,
     pub positions: [[f32; 3]; 4],
     pub normalized_cell_coordinates: [[f32; 2]; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SliceVertexColors {
+    pub primary: [u8; 4],
+    pub secondary: [u8; 4],
 }
 
 impl CsliDefinition {
@@ -313,6 +338,60 @@ pub fn slice_texture_coordinates(rectangle: [f32; 4], flags: u32) -> [[f32; 2]; 
         0xc0 => [[x0, y1], [x1, y1], [x0, y0], [x1, y0]],
         _ => [[x0, y0], [x0, y1], [x1, y0], [x1, y1]],
     }
+}
+
+pub fn slice_vertex_colors(
+    definition: &CsliDefinition,
+    cell: &SlicCell,
+    normalized_cell_coordinates: [[f32; 2]; 4],
+    multiplicative_tint: [u8; 4],
+    additive_tint: [u8; 4],
+) -> Result<[SliceVertexColors; 4], CsliError> {
+    let cell_multiply = cell.runtime_color_3a();
+    let cell_add = cell.runtime_color_33();
+    let per_vertex = cell.runtime_vertex_colors()?;
+
+    Ok(std::array::from_fn(|vertex_index| {
+        let [x, y] = normalized_cell_coordinates[vertex_index];
+        let first_edge = lerp_color_game(definition.field_44[0], definition.field_44[1], y);
+        let second_edge = lerp_color_game(definition.field_44[2], definition.field_44[3], y);
+        let base = lerp_color_game(first_edge, second_edge, x);
+        let primary = multiply_color_game(
+            multiply_color_game(
+                multiply_color_game(per_vertex[vertex_index], cell_multiply),
+                base,
+            ),
+            multiplicative_tint,
+        );
+        let secondary = add_color_saturating_game(additive_tint, cell_add);
+        SliceVertexColors { primary, secondary }
+    }))
+}
+
+pub fn lerp_color_game(first: [u8; 4], second: [u8; 4], factor: f32) -> [u8; 4] {
+    let inverse = 1.0f32 - factor;
+    std::array::from_fn(|index| {
+        let value = f32::from(first[index]) * inverse + f32::from(second[index]) * factor;
+        if value <= 255.0 {
+            value.max(0.0) as u8
+        } else {
+            255
+        }
+    })
+}
+
+pub fn multiply_color_game(first: [u8; 4], second: [u8; 4]) -> [u8; 4] {
+    std::array::from_fn(|index| {
+        let product = u32::from(first[index]) * u32::from(second[index]);
+        (product / 255) as u8
+    })
+}
+
+pub fn add_color_saturating_game(first: [u8; 4], second: [u8; 4]) -> [u8; 4] {
+    std::array::from_fn(|index| {
+        let sum = u16::from(first[index]) + u16::from(second[index]);
+        if sum >= 255 { 255 } else { sum as u8 }
+    })
 }
 
 pub fn parent_cell_center_offset(
@@ -708,6 +787,90 @@ mod tests {
         assert_eq!(
             slice_texture_coordinates(rectangle, 0xc0),
             [[1.0, 4.0], [3.0, 4.0], [1.0, 2.0], [3.0, 2.0]]
+        );
+    }
+
+    #[test]
+    fn color_helpers_match_binary_truncation_multiply_and_saturating_add() {
+        assert_eq!(
+            lerp_color_game([0, 10, 250, 255], [255, 20, 10, 0], 0.5),
+            [127, 15, 130, 127]
+        );
+        assert_eq!(
+            multiply_color_game([255, 128, 1, 0], [128, 128, 255, 255]),
+            [128, 64, 1, 0]
+        );
+        assert_eq!(
+            add_color_saturating_game([200, 254, 255, 0], [54, 1, 1, 0]),
+            [254, 255, 255, 0]
+        );
+    }
+
+    #[test]
+    fn slice_vertex_color_chain_uses_bilinear_base_and_two_game_combiners() {
+        let definition = CsliDefinition {
+            field_80: 0,
+            width: 0.0,
+            height: 0.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [
+                [0, 0, 0, 0],
+                [100, 100, 100, 100],
+                [200, 200, 200, 200],
+                [255, 255, 255, 255],
+            ],
+            origin_mode: 0,
+            columns: 1,
+            rows: 1,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
+            cref_count: 0,
+            crefs: Vec::new(),
+            node_index: 0,
+            cells: Vec::new(),
+        };
+        let cell = SlicCell {
+            flags: 0,
+            explicit_width: 0.0,
+            explicit_height: 0.0,
+            field_3a: Some([255, 255, 255, 255]),
+            field_33: Some([5, 6, 7, 8]),
+            field_44: vec![[255, 255, 255, 255]; 4],
+            cref_index: 0,
+        };
+        let colors = slice_vertex_colors(
+            &definition,
+            &cell,
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+            [255, 255, 255, 255],
+            [10, 20, 30, 40],
+        )
+        .unwrap();
+
+        assert_eq!(colors[0].primary, [0, 0, 0, 0]);
+        assert_eq!(colors[1].primary, [100, 100, 100, 100]);
+        assert_eq!(colors[2].primary, [200, 200, 200, 200]);
+        assert_eq!(colors[3].primary, [255, 255, 255, 255]);
+        assert_eq!(colors[0].secondary, [15, 26, 37, 48]);
+        assert_eq!(colors[3].secondary, [15, 26, 37, 48]);
+    }
+
+    #[test]
+    fn omitted_slic_colors_use_zeroed_project_allocation_defaults() {
+        let cell = SlicCell {
+            flags: 0,
+            explicit_width: 0.0,
+            explicit_height: 0.0,
+            field_3a: None,
+            field_33: None,
+            field_44: vec![[1, 2, 3, 4]],
+            cref_index: 0,
+        };
+        assert_eq!(cell.runtime_color_3a(), [0; 4]);
+        assert_eq!(cell.runtime_color_33(), [0; 4]);
+        assert_eq!(
+            cell.runtime_vertex_colors().unwrap(),
+            [[1, 2, 3, 4], [0; 4], [0; 4], [0; 4]]
         );
     }
 }
