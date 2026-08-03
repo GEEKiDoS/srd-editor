@@ -10,7 +10,10 @@ use srd_editor::dds::{
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
-use srd_editor::render::select_srd_image_render_preset;
+use srd_editor::render::{
+    CeylonDrawPacketPresetState, apply_srd_image_field_0c_shader_bits,
+    select_srd_image_render_preset,
+};
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -436,6 +439,141 @@ fn parses_cast_attribute_lists_and_ext_params() {
     assert_eq!(render_preset_overrides, expected_overrides);
     eprintln!(
         "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
+    );
+}
+
+#[test]
+fn initial_srd_image_draws_select_binary_shader_keys() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+
+    let mut image_count = 0usize;
+    let mut field_0c_counts = std::collections::BTreeMap::new();
+    let mut texture_presence_counts = std::collections::BTreeMap::new();
+    let mut shader_keys = std::collections::BTreeMap::new();
+    let mut base_variants = std::collections::BTreeMap::new();
+    let mut optional_modules = std::collections::BTreeMap::new();
+    let mut multi_tex0_variants = std::collections::BTreeMap::new();
+    let mut multi_tex1_variants = std::collections::BTreeMap::new();
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let textures = TextureList::from_file(&file)
+            .unwrap()
+            .unwrap_or(TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            });
+        let project = Project::from_file(&file).unwrap();
+        for layer in project.scenes.iter().flat_map(|scene| &scene.layers) {
+            for node_index in 0..layer.nodes.len() {
+                let Some(image) = (match layer.nodes[node_index].cast_type() {
+                    Some(1) => layer.image_by_node[node_index].clone(),
+                    Some(2) => layer.csli_by_node[node_index]
+                        .as_ref()
+                        .map(ImageDefinition::from_csli_runtime_base),
+                    Some(4) => layer.number_by_node[node_index]
+                        .as_ref()
+                        .map(NumberDefinition::image_base),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let mut state = image.initial_runtime_state();
+                if let Some(ext_param) = layer.ext_param_for_node(node_index) {
+                    state.render_preset_override = ext_param.render_preset_override;
+                }
+                let Some(preset) = select_srd_image_render_preset(
+                    image.flags,
+                    state.render_preset_override,
+                    false,
+                ) else {
+                    continue;
+                };
+                let slots = image
+                    .resolve_texture_slots(
+                        &state,
+                        &textures,
+                        ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                        [false; 2],
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{} NODE {node_index}: {error}", path.display())
+                    });
+                let texture_present = slots.texture_present();
+                let presence_mask = texture_present
+                    .iter()
+                    .enumerate()
+                    .fold(0u8, |mask, (slot, present)| {
+                        mask | (u8::from(*present) << slot)
+                    });
+
+                let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+                packet.set_render_preset_id(preset);
+                apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
+                let key = packet.srd_quad_shader_key(texture_present);
+                *field_0c_counts.entry(state.field_0c).or_insert(0usize) += 1;
+                *texture_presence_counts
+                    .entry(presence_mask)
+                    .or_insert(0usize) += 1;
+                *shader_keys.entry(key).or_insert(0usize) += 1;
+                *base_variants.entry(key.low & 7).or_insert(0usize) += 1;
+                *optional_modules.entry((key.low >> 3) & 1).or_insert(0usize) += 1;
+                *multi_tex0_variants
+                    .entry((key.low >> 26) & 0x0f)
+                    .or_insert(0usize) += 1;
+                *multi_tex1_variants.entry(key.high & 7).or_insert(0usize) += 1;
+                image_count += 1;
+            }
+        }
+    }
+
+    let (expected_images, expected_field_0c, expected_texture_masks, expected_key_count) =
+        match profile {
+            CorpusProfile::Legacy53 => (
+                15_124,
+                [(0, 14_534), (1, 3), (2, 3), (3, 79), (4, 505)]
+                    .into_iter()
+                    .collect(),
+                [(0, 2_125), (1, 12_433), (2, 12), (3, 554)]
+                    .into_iter()
+                    .collect(),
+                23,
+            ),
+            CorpusProfile::Complete91 => (
+                19_484,
+                [(0, 18_720), (1, 3), (2, 3), (3, 89), (4, 669)]
+                    .into_iter()
+                    .collect(),
+                [(0, 2_387), (1, 16_357), (2, 22), (3, 718)]
+                    .into_iter()
+                    .collect(),
+                65,
+            ),
+        };
+    assert_eq!(image_count, expected_images);
+    assert_eq!(field_0c_counts, expected_field_0c);
+    assert_eq!(texture_presence_counts, expected_texture_masks);
+    assert_eq!(shader_keys.len(), expected_key_count);
+    assert_eq!(base_variants, [(0, image_count)].into_iter().collect());
+    assert_eq!(optional_modules, [(0, image_count)].into_iter().collect());
+    assert_eq!(
+        multi_tex0_variants,
+        [(0, image_count - 3), (9, 3)].into_iter().collect()
+    );
+    assert_eq!(
+        multi_tex1_variants,
+        [(0, image_count)].into_iter().collect()
+    );
+    eprintln!(
+        "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct keys={}, MultiTex0={multi_tex0_variants:?}",
+        shader_keys.len()
     );
 }
 

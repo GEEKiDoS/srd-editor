@@ -48,6 +48,24 @@ pub struct ResolvedImageCoordinates {
     pub selected_sampler: Option<TextureSamplerState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrdTextureBindingSource {
+    ExplicitOverride,
+    TextureList(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedImageTextureSlots {
+    pub channels: [ResolvedImageCoordinates; 2],
+    pub slots: [Option<SrdTextureBindingSource>; 3],
+}
+
+impl ResolvedImageTextureSlots {
+    pub fn texture_present(self) -> [bool; 3] {
+        self.slots.map(|slot| slot.is_some())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageQuad {
     pub positions: [[f32; 3]; 4],
@@ -63,6 +81,7 @@ pub struct ImageGeometryState {
 pub struct RuntimeImageState {
     pub geometry: ImageGeometryState,
     pub coordinates: [ImageCoordinateState; 2],
+    pub field_0c: u32,
     pub field_10: i32,
     pub field_14: u32,
     pub field_18: u8,
@@ -215,6 +234,7 @@ impl ImageDefinition {
                 self.initial_coordinate_state(ImageReferenceChannel::Cref),
                 self.initial_coordinate_state(ImageReferenceChannel::Cre1),
             ],
+            field_0c: u32::from(self.field_4c),
             field_10: 0,
             field_14: 0,
             field_18: 0,
@@ -646,6 +666,45 @@ impl ImageDefinition {
             selected_sampler,
         })
     }
+
+    /// Reproduces `srd_select_render_texture_pair` and the embedded draw-packet
+    /// layout: CREF selects packet texture slot 0, CRE1 selects slot 1, and SRD
+    /// leaves slot 2 null. A non-null explicit override wins over the TEXL index.
+    pub fn resolve_texture_slots(
+        &self,
+        state: &RuntimeImageState,
+        textures: &TextureList,
+        offset_scale: f32,
+        explicit_override_present: [bool; 2],
+    ) -> Result<ResolvedImageTextureSlots, ImageError> {
+        let channels = [
+            self.resolve_coordinates(
+                ImageReferenceChannel::Cref,
+                state.coordinate_state(ImageReferenceChannel::Cref),
+                textures,
+                offset_scale,
+            )?,
+            self.resolve_coordinates(
+                ImageReferenceChannel::Cre1,
+                state.coordinate_state(ImageReferenceChannel::Cre1),
+                textures,
+                offset_scale,
+            )?,
+        ];
+        let slots = std::array::from_fn(|slot| {
+            if slot >= 2 {
+                return None;
+            }
+            if explicit_override_present[slot] {
+                return Some(SrdTextureBindingSource::ExplicitOverride);
+            }
+            usize::try_from(channels[slot].image_index)
+                .ok()
+                .filter(|index| *index < textures.textures.len())
+                .map(SrdTextureBindingSource::TextureList)
+        });
+        Ok(ResolvedImageTextureSlots { channels, slots })
+    }
 }
 
 pub fn premultiply_additive_color_game(color: [u8; 4]) -> [u8; 4] {
@@ -873,6 +932,55 @@ mod tests {
         assert_eq!(first.coordinates[0], [0.6, 1.2]);
         assert_eq!(second.coordinates[0], [2.1, 4.2]);
         assert_eq!(first.selected_sampler, second.selected_sampler);
+    }
+
+    #[test]
+    fn cref_and_cre1_map_to_packet_texture_slots_zero_and_one() {
+        let mut definition = definition();
+        definition.cre1_index = 0;
+        definition.cre1_count = 1;
+        definition.cre1s = vec![CrefEntry {
+            image_index: 1,
+            rectangle_index: 0,
+        }];
+        let mut textures = textures();
+        textures.declared_count = 2;
+        textures.textures.push(textures.textures[0].clone());
+        let state = definition.initial_runtime_state();
+
+        let resolved = definition
+            .resolve_texture_slots(&state, &textures, 1.0, [false, false])
+            .unwrap();
+        assert_eq!(
+            resolved.slots,
+            [
+                Some(SrdTextureBindingSource::TextureList(0)),
+                Some(SrdTextureBindingSource::TextureList(1)),
+                None,
+            ]
+        );
+        assert_eq!(resolved.texture_present(), [true, true, false]);
+
+        let overridden = definition
+            .resolve_texture_slots(&state, &textures, 1.0, [false, true])
+            .unwrap();
+        assert_eq!(
+            overridden.slots[1],
+            Some(SrdTextureBindingSource::ExplicitOverride)
+        );
+
+        let mut out_of_range_state = state;
+        out_of_range_state.coordinates[ImageReferenceChannel::Cre1.index()]
+            .uses_explicit_rectangle = true;
+        out_of_range_state.coordinates[ImageReferenceChannel::Cre1.index()].explicit_image_index =
+            2;
+        let out_of_range = definition
+            .resolve_texture_slots(&out_of_range_state, &textures, 1.0, [false, false])
+            .unwrap();
+        assert_eq!(
+            out_of_range.slots,
+            [Some(SrdTextureBindingSource::TextureList(0)), None, None]
+        );
     }
 
     #[test]

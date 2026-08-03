@@ -3,7 +3,7 @@
 本页记录 TEX `0x62` 到实际 D3D9 纹理/采样器状态的完整闭环。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`
+- 保存后的 IDB SHA-256：`D863D930AF8CDF263D8CB172E7824D7D1F48C212444F3098B625B49951435E09`
 - D3D9 常量对照：本机 Windows SDK `10.0.26100.0/shared/d3d9types.h`
 
 ## 包装对象的类型与成对建立
@@ -85,12 +85,25 @@ selector != 0  -> pair[1] -> Point
 
 因此 `SrSliceCast +0x100` 的渲染语义可以精确命名为 Point 采样选择标志，而无需从画面或旧编辑器行为猜测。
 
+## CREF/CRE1 到绘制包槽位
+
+`srd_construct_renderer` (`0xAC4010`) 在 renderer `+0xF0` 构造 vertex builder；builder 构造函数 `0x6DE3F0` 又在自身 `+0x20` 构造 304 字节绘制包。因此 renderer 内嵌绘制包的起点是 `+0x110`，而 `srd_select_render_texture_pair` 写入的 renderer `+0x140/+0x144` 精确对应 packet `+0x30/+0x34`：
+
+| SRD 通道 | renderer 偏移 | packet 偏移 | D3D9 stage |
+| --- | --- | --- | --- |
+| CREF / TEXCOORD0 | `+0x140` | `+0x30` | `0` |
+| CRE1 / TEXCOORD1 | `+0x144` | `+0x34` | `1` |
+
+这两个指针没有在提交过程中重排。`ceylon_submit_vertex_batch` (`0x6DF020`) 把 builder `+0x20` 传入 `ceylon_enqueue_draw_packet` (`0x670BE0`)；后者从 packet `+0x30` 起遍历恰好三个纹理槽并保留非空资源，随后 `ceylon_copy_draw_packet_prefix` (`0x66F200`) 原位复制 `+0x30/+0x34/+0x38`。
+
+packet 构造函数 `0x6CD8A0` 把三个槽全部初始化为空，而 SRD 路径只写前两个槽。因此当前已证明的 SRD 映射是 CREF -> slot/stage 0、CRE1 -> slot/stage 1、slot/stage 2 保持空。显式覆盖只改变对应槽的资源来源，不改变槽号。
+
 ## Rust 对应
 
-`TextureDefinition::sampler_pair` 保留原始 `field_62`，同时生成已证明的 Wrap/Clamp 与 Linear/Point 状态。`ResolvedSliceTexture` 携带整对状态；调用方以 `TextureSamplerPair::select(point_sampled)` 复现 `SrSliceCast +0x100` 的选择。枚举的 `repr(u32)` 数值就是 Windows SDK 的 D3D9 常量，可供后续 D3D9 后端直接提交。
+`TextureDefinition::sampler_pair` 保留原始 `field_62`，同时生成已证明的 Wrap/Clamp 与 Linear/Point 状态。`ResolvedSliceTexture` 携带整对状态；调用方以 `TextureSamplerPair::select(point_sampled)` 复现 `SrSliceCast +0x100` 的选择。`ImageDefinition::resolve_texture_slots` 进一步把两个独立坐标结果解析为 packet slot 0/1，并保留“显式覆盖优先、否则按 TEXL 下标选择”的来源。枚举的 `repr(u32)` 数值就是 Windows SDK 的 D3D9 常量，可供后续 D3D9 后端直接提交。
 
 ## 仍未闭环
 
 - DDS 资源对象、格式选择、mipmap、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；剩余的是内部格式转换、cube request 和设备丢失生命周期。
-- CIMG/CRE1 已闭环到 TEXL 条目与 Linear/Point pair 选择；双 UV 的 shader/固定管线消费仍未闭环。
+- CIMG/CRE1 已闭环到 TEXL 条目、Linear/Point pair 选择以及 packet/D3D9 stage 0/1；双 UV 的像素公式仍未闭环。
 - 绘制包的 36 字节顶点格式、非索引 triangle strip 和 `DrawPrimitive` 参数已经闭环，见 [`render-vertex-submission.md`](render-vertex-submission.md)；混合、alpha/depth/stencil 和 scissor 状态也已分别闭环，剩余 shader 与其他 draw state。

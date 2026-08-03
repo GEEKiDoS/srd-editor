@@ -499,6 +499,20 @@ pub struct CeylonDrawPacketPresetState {
 }
 
 impl CeylonDrawPacketPresetState {
+    /// State left by the Ceylon draw-packet constructor followed by
+    /// `srd_construct_renderer`'s packet mask. This is separate from Rust's
+    /// zero `Default` because callers also use the type for isolated overrides.
+    pub const fn srd_renderer_initial() -> Self {
+        Self {
+            draw_flags_00: 0x0029_e000,
+            packed_08: 0,
+            flags_0c: 0,
+            field_2c: 0,
+            flags_58: 0xff,
+            flags_60: 0x4000,
+        }
+    }
+
     pub fn encoded_preset_id(self) -> u8 {
         (self.draw_flags_00 & 0x3f) as u8
     }
@@ -537,6 +551,18 @@ impl CeylonDrawPacketPresetState {
         if requested_preset_id > 32 {
             self.flags_60 |= 0x20;
         }
+    }
+
+    pub fn srd_quad_shader_key(self, texture_present: [bool; 3]) -> CeylonShaderKey {
+        CeylonShaderKeyInput {
+            draw_flags_00: self.draw_flags_00,
+            field_28: 31,
+            field_2c: self.field_2c as u32,
+            flags_60: self.flags_60,
+            vertex_format_70: 14,
+            texture_present,
+        }
+        .shader_key()
     }
 }
 
@@ -742,6 +768,20 @@ pub fn apply_srd_special_depth_packet_fields(
     packet.field_2c = 4;
 }
 
+/// Reproduces the `SrImage+0x0C` branch at the start of
+/// `srd_begin_quad_draw`. The five-entry stack table is formed by the exact
+/// `paddd` constants at `0x18A5130` and `0x190D8B0` before bits 6..9 are
+/// replaced in the draw flags.
+pub fn apply_srd_image_field_0c_shader_bits(
+    packet: &mut CeylonDrawPacketPresetState,
+    image_field_0c: i32,
+) {
+    const TABLE: [u32; 5] = [0, 9, 0x0a00, 0x000b_0000, 0x0c00_0000];
+    let index = image_field_0c.clamp(0, 4) as usize;
+    let encoded = TABLE[index].wrapping_shl(6) & 0x3c0;
+    packet.draw_flags_00 = (packet.draw_flags_00 & !0x3c0) | encoded;
+}
+
 pub fn select_srd_image_render_preset(
     image_flags: u32,
     render_preset_override: i32,
@@ -938,6 +978,35 @@ mod tests {
             let mut input = base;
             input.texture_present = std::array::from_fn(|index| index < texture_count);
             assert_eq!((input.shader_key().low >> 13) & 3, texture_count as u32);
+        }
+    }
+
+    #[test]
+    fn srd_renderer_packet_defaults_feed_format_14_shader_keys() {
+        let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+        assert_eq!(packet.draw_flags_00, 0x0029_e000);
+        assert_eq!(packet.field_2c, 0);
+        assert_eq!(packet.flags_58, 0xff);
+        assert_eq!(packet.flags_60, 0x4000);
+
+        packet.set_render_preset_id(3);
+        let key = packet.srd_quad_shader_key([true, true, false]);
+        assert_eq!((key.low >> 8) & 0x1f, 31);
+        assert_eq!((key.low >> 13) & 3, 2);
+        assert_eq!((key.low >> 15) & 0x1f, 14);
+        assert_eq!((key.low >> 20) & 0x3f, 3);
+    }
+
+    #[test]
+    fn srimage_field_0c_replaces_only_draw_flag_bits_six_through_nine() {
+        for (value, expected) in [(-1, 0), (0, 0), (1, 0x240), (2, 0), (3, 0), (4, 0), (5, 0)] {
+            let mut packet = CeylonDrawPacketPresetState {
+                draw_flags_00: u32::MAX,
+                ..CeylonDrawPacketPresetState::default()
+            };
+            apply_srd_image_field_0c_shader_bits(&mut packet, value);
+            assert_eq!(packet.draw_flags_00 & 0x3c0, expected);
+            assert_eq!(packet.draw_flags_00 & !0x3c0, !0x3c0);
         }
     }
 

@@ -3,7 +3,7 @@
 本页只记录已经由解析器、运行时对象初始化和最终 `SrImageCast` 绘制入口共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`。
+- 保存后的 IDB SHA-256：`D863D930AF8CDF263D8CB172E7824D7D1F48C212444F3098B625B49951435E09`。
 
 ## CIMG 解析布局
 
@@ -18,7 +18,7 @@
 | 重复 `0x44` | `+0x18..+0x27` | 四个重排后的 packed vertex color |
 | `0x46` | `+0x28` i16 | CREF 选择器 |
 | `0x45` | `+0x2A` u16 | CREF 声明数量 |
-| `0x4C` | `+0x34` u16 | 保留字段，复制到 SrImage `+0x0C` |
+| `0x4C` | `+0x34` u16 | 复制到 SrImage `+0x0C`，控制 shader key 的 MultiTex0 variant 位 |
 | `0x4E` | `+0x36` i16 | CRE1 选择器 |
 | `0x4D` | `+0x38` u16 | CRE1 声明数量 |
 | `0x83/0x85` | `+0x40/+0x48` f32 | CREF 通道 U/V 后加偏移 |
@@ -72,7 +72,15 @@ channel 1: u = CIMG.0x84 * CAST[+0x210] + u
 
 `srd_init_srimage_from_cimg` 从 CIMG flags 的第四个字节取 bit 0 写入 CAST `+0x100`。结合已闭环的纹理 pair 选择，这等价于 `flags & 0x01000000 != 0` 时选择 Point 包装对象，否则选择 Linear 包装对象。
 
-`srd_select_render_texture_pair` (`0xAC6E90`) 先把两个显式覆盖分别写入渲染器 `+0x140/+0x144`。覆盖为空时，它分别对 CREF 和 CRE1 输出的 signed 图像下标执行 unsigned 范围检查，并从对应 TEX pair 选择 Linear 或 Point 包装对象写回这两个槽。两槽共享同一个 Point/Linear 标志，但彼此的图像下标和覆盖指针独立。当前证据足以称为 CREF/CRE1 渲染纹理槽；在闭合下游绘制包前，不把第二槽直接命名为某个 D3D9 stage。
+`srd_select_render_texture_pair` (`0xAC6E90`) 先把两个显式覆盖分别写入渲染器 `+0x140/+0x144`。覆盖为空时，它分别对 CREF 和 CRE1 输出的 signed 图像下标执行 unsigned 范围检查，并从对应 TEX pair 选择 Linear 或 Point 包装对象写回这两个槽。两槽共享同一个 Point/Linear 标志，但彼此的图像下标和覆盖指针独立。
+
+renderer `+0xF0` 内嵌 vertex builder，builder `+0x20` 内嵌绘制包，因此上述地址分别是 packet `+0x30/+0x34`。提交和 packet copy 均保留原顺序，最终精确对应 D3D9 stage 0/1。packet `+0x38` 的第三槽由构造函数清零，SRD 路径不写入。详见 [`texture-binding.md`](texture-binding.md)。
+
+## 属性 0x4C 与 MultiTex0 variant
+
+`srd_init_srimage_from_cimg` 把 CIMG `+0x34` 的 `0x4C` 值复制到 `SrImage+0x0C`；CNUM 执行同样复制，CSLI 则保持 `srd_srimage_construct` 写入的零。`srd_begin_quad_draw` 读取这个字段并按 signed 规则夹到 `0..4`，选择 `[0, 9, 0xA00, 0xB0000, 0x0C000000]`，左移 6 后以 `0x3C0` 掩码替换 draw flags bits `6..9`。
+
+因此在最终 shader key 中只有原值 `1` 选择 `ShapeEnvMultiTex0BlendMode` variant `9`，原值 `0/2/3/4` 都选择 variant `0`。完整 `surfboard` 语料中 19,484 个初始 image node 只有 3 个值为 `1`，并由 key 回归确认恰好产生 3 个 variant `9`；这不是依据字段名称猜测的业务含义。
 
 ## SrImageCast 顶点颜色
 
@@ -103,7 +111,7 @@ secondary = [add.r * add.a / 255,
 ## 仍未闭环
 
 - TEXT 子块的完整字段、字体资源、排版和 glyph 绘制；
-- 两个 UV 通道进入 shader/固定管线后的精确组合；
+- 两个 UV 通道进入像素 shader 后的精确组合；它们的 D3D9 stage 0/1 资源绑定已经闭环；
 - 最终混合状态如何消费 primary/secondary 两个 packed color；其运行时来源和 Image/Number 的 additive 预乘已经闭环。
 
 坐标描述符的动画通道 `17/20` 已另行闭环，见 [`image-coordinate-animation.md`](image-coordinate-animation.md)。
