@@ -1,0 +1,73 @@
+# TEXL/TEX/CROP 纹理矩形表证据
+
+本页只记录已经由 SRD 解析器、`SrProject` 分配器、CREF 消费端和外部 DDS 路径构造共同闭环的结论。分析对象为：
+
+- `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
+- 本轮保存后的 IDB SHA-256：`4F880FF13FAC587A75048CB74D34E93744BA9F6E68FE09C690EDE39355D823B6`
+
+## TEXL 表
+
+`srd_parse_texl` (`0xAA3E50`) 读取 TEXL 属性 `0x60`。`j_vtbf_read_unsigned_scalar` 的结果先经 `AX` 截断，再零扩展保存到上下文 `+0x44`，因此运行时声明数量是 `u16`。
+
+解析器随后通过 `SrProject` 虚表槽 `+4` 分配：
+
+```text
+declared_count * 0x21C
+```
+
+该虚表槽已闭环到会清零整个分配区的 `srd_project_allocate_zeroed`，所以缺少 TEX 子块时，对应记录保持全零。表基址保存于上下文 `+0x48`。解析器只在子块标签恰为 `TEX ` 时调用 `srd_parse_tex` (`0xAA3A70`)，并将目标指针增加 `0x21C`；其他子块不会占用记录。
+
+## 540 字节 TEX 记录
+
+`srd_parse_tex` 对已证明字段的写入为：
+
+| 记录偏移 | VTBF 属性 | 运行时表示 |
+| --- | --- | --- |
+| `+0x204` | `0x61` | 分配并复制后的文件名字节指针 |
+| `+0x208` | `0x40` | 截断为 `u16` 的纹理宽度 |
+| `+0x20A` | `0x41` | 截断为 `u16` 的纹理高度 |
+| `+0x20C` | `0x62` | `u32`；语义尚未证明 |
+| `+0x210` | `0x63` | `u32` CROP 记录数量 |
+| `+0x214` | — | `crop_count * 0x10` 分配区的指针 |
+
+属性 `0x61` 先由 `vtbf_copy_prefixed_bytes` 类读取逻辑复制到 256 字节、保证 NUL 结尾的栈缓冲区，再按实际 `strlen + 1` 分配和复制。因此游戏实际保留的文件名内容最多 255 字节；Rust 解析器执行相同截断，但以不含尾部 NUL 的字节向量保存语义内容。
+
+`0x62` 目前只使用中性字段名 `field_62`，没有根据样本值猜测用途。
+
+## CROP 归一化矩形
+
+`srd_parse_crop` (`0xAA3CF0`) 对每个属性 `0x65` 建立一个 16 字节、四个 `f32` 的记录。局部四值缓冲区在读取前清零；读取循环使用属性描述符给出的标量数。设原始值为 `raw[0..4]`，TEX 记录尺寸为 `width/height`，写入结果为：
+
+```text
+rectangle[0] = (1.0f / float(width))  * raw[0]
+rectangle[1] = (1.0f / float(height)) * raw[1]
+rectangle[2] = (1.0f / float(width))  * raw[2]
+rectangle[3] = (1.0f / float(height)) * raw[3]
+```
+
+二进制中 X 分量的写入顺序是 `2, 0`，Y 分量是 `3, 1`，但最终 16 字节布局确定为 `[x0, y0, x1, y1]`。每处理一个 `0x65`，目标指针增加 `0x10`。
+
+这正是 `srd_resolve_cref_texture_coordinates` (`0x129B8D0`) 使用的表：它以 CREF 的 signed `image_index` 选择 `0x21C` 字节 TEX 记录，再从该记录 `+0x214` 取矩形表并以 signed `rectangle_index * 0x10` 选择矩形。因此 TEXL/CROP 到 SrSliceCast 最终 UV 的数据路径已闭环。
+
+## 外部 DDS 路径
+
+`sub_AA55C0` 在解析 SRFF 后取得同一 TEXL 上下文。`0xAA568C` 从每条 `0x21C` 字节记录的 `+0x204` 读取文件名，`0xAA56A0` 追加字面量 `.dds`，通过 `sub_419BEB` 检查路径存在，然后在 `0xAA570C` 把路径与对象 `+0xE0` 传给该对象虚表槽 `+0x4C`。循环在 `0xAA572B` 使用相同的 `0x21C` 步长。
+
+这证明 TEX `0x61` 是不含 `.dds` 后缀的外部纹理路径基础名，也证明运行时按 TEXL 声明顺序逐项提交存在的 DDS。虚表槽 `+0x4C` 的对象类型、返回资源存放位置及 D3D9 纹理创建参数尚未证明，因此目前不对该函数命名，也不实现推测性的资源加载状态。
+
+## 样本回归
+
+53 个本地 SRD 中共解析出：
+
+- 1170 条 TEX 记录；
+- 24167 条 CROP 矩形；
+- 4994 个 image/rectangle 下标均非负的 active SLIC CREF 选择。
+
+4994 个非负选择全部能在同文件 TEXL/CROP 表中解析到实际矩形。Rust 的 `TextureList` 保留声明数量造成的零记录、文件名 255 字节截断、尺寸、未知 `0x62`、声明 CROP 数量及归一化矩形，并把结果连接到 CSLI/SLIC 的最终 UV 顺序。
+
+## 仍未闭环
+
+- `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确资源加载语义。
+- DDS 解码/创建参数、纹理对象数组的布局与生命周期。
+- CIMG/CRE1 与 TEXL 纹理条目之间的运行时关联。
+- 采样、寻址、混合、深度/裁剪状态和最终 D3D9 draw call。

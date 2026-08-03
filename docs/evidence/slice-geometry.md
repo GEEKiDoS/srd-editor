@@ -96,7 +96,7 @@ rectangle_index = entry.signed_i16[1]
 0xC0: (x0,y1) (x1,y1) (x0,y0) (x1,y0)
 ```
 
-因此两个最终 UV 通道的选择和顺序已经闭环；CSLI 单元归一化坐标仍只用于 packed color 插值。Rust 现在解析 CREF 的两个 signed i16、按 SLIC `0x46` 选择记录，并由 `slice_texture_coordinates` 复现所有 flip/order 分支。实际纹理资源对象和 16 字节矩形表的文件来源仍需继续追踪。
+因此两个最终 UV 通道的选择和顺序已经闭环；CSLI 单元归一化坐标仍只用于 packed color 插值。Rust 现在解析 CREF 的两个 signed i16、按 SLIC `0x46` 选择记录，并由 `slice_texture_coordinates` 复现所有 flip/order 分支。16 字节矩形表已经进一步闭环到 TEXL/TEX/CROP，详见 [`texture-table.md`](texture-table.md)；实际 D3D9 纹理资源对象仍需继续追踪。
 
 53 个本地 SRD 中，799 个 CSLI 共解析出 4813 条 CREF；按每个 SLIC 的 signed `0x46` 和声明数量执行与游戏相同的边界检查后，有 4997 个单元能够选择到一条实际 CREF 记录。
 
@@ -129,5 +129,5 @@ Rust 已实现这些精确组合器以及需要显式 CAST 乘法色/加法色�
 ## 仍未闭环
 
 - CAST multiplicative/additive tint 的初始化和动画来源。
-- 运行时图像对象及其 16 字节矩形表如何由 CIMG/外部纹理资源建立。
+- CIMG/CRE1 如何关联 TEXL 条目与实际 D3D9 纹理资源对象。
 - 图集资源自身的尺寸修正、采样状态、混合状态、索引顺序和最终 D3D9 draw call 参数。

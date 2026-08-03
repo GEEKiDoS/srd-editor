@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
 use srd_editor::scene::Layer;
+use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
 
@@ -150,10 +151,27 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut missing_3a = 0usize;
     let mut missing_33 = 0usize;
     let mut non_four_44 = 0usize;
+    let mut texture_count = 0usize;
+    let mut crop_count = 0usize;
+    let mut nonnegative_cell_crefs = 0usize;
+    let mut resolved_cell_textures = 0usize;
     let mut indexed_children = 0usize;
     let mut active_indexed_children = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let textures = TextureList::from_file(&file).unwrap();
+        if let Some(textures) = &textures {
+            texture_count += textures.textures.len();
+            crop_count += textures
+                .textures
+                .iter()
+                .map(|texture| texture.crops.len())
+                .sum::<usize>();
+            for texture in &textures.textures {
+                assert!(texture.filename.len() <= 255);
+                assert_eq!(texture.crops.len(), texture.crop_count as usize);
+            }
+        }
         for block in file
             .blocks_depth_first()
             .filter(|block| block.is_tag(b"LAYR"))
@@ -173,6 +191,22 @@ fn parses_and_links_binary_proven_csli_grids() {
                 resolved_cell_crefs += (0..definition.cells.len())
                     .filter(|cell_index| definition.cell_cref(*cell_index).is_some())
                     .count();
+                for cell_index in 0..definition.cells.len() {
+                    let Some(cref) = definition.cell_cref(cell_index) else {
+                        continue;
+                    };
+                    if cref.image_index >= 0 && cref.rectangle_index >= 0 {
+                        nonnegative_cell_crefs += 1;
+                        resolved_cell_textures += usize::from(
+                            textures
+                                .as_ref()
+                                .and_then(|textures| {
+                                    textures.resolve_slice_cell(definition, cell_index)
+                                })
+                                .is_some(),
+                        );
+                    }
+                }
                 for cell in definition
                     .cells
                     .iter()
@@ -258,11 +292,15 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
     assert!(resolved_cell_crefs > 0);
+    assert!(texture_count > 0);
+    assert!(crop_count > 0);
+    assert!(nonnegative_cell_crefs > 0);
+    assert_eq!(resolved_cell_textures, nonnegative_cell_crefs);
     assert!(active_color_cells > 0);
     assert_eq!(missing_3a, 0);
     assert_eq!(missing_33, active_color_cells);

@@ -189,7 +189,16 @@ impl Property {
     }
 
     pub fn read_scalar_as_f32(&self, file: &SrdFile) -> Option<f32> {
-        let value = self.value_bytes(file);
+        self.read_scalar_as_f32_at(file, 0)
+    }
+
+    pub fn read_scalar_as_f32_at(&self, file: &SrdFile, index: usize) -> Option<f32> {
+        let size = usize::try_from(*TYPE_SIZES.get(usize::from(self.type_code))?).ok()?;
+        if size == 0 {
+            return None;
+        }
+        let offset = index.checked_mul(size)?;
+        let value = self.value_bytes(file).get(offset..)?;
         match self.type_code {
             1 | 4 => value.first().copied().map(f32::from),
             3 => value.first().copied().map(|v| f32::from(v as i8)),
