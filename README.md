@@ -23,12 +23,12 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
 - 公共空间动画通道、游戏自有 sin/cos 近似、局部 3x4 仿射矩阵和 `parent_world * local` 乘法。
 - CSLI/SLIC 记录、`surfride::SrSliceCast` 链接、尺寸/origin 计算、网格单元生成、NODE `0x32` 父级单元索引及其完整偏移链。
-- SrSliceCast active 单元的局部四顶点、2D/3D Y 轴分支、36 字节游戏顶点顺序及用于颜色插值的单元归一化坐标。
+- SrSliceCast active 单元的局部四顶点、2D/3D Y 轴分支、36 字节游戏顶点顺序、CSLI CREF 选择、flags flip/order 与两个相同最终 UV 通道。
 - `surfride::SrPlayer -> SrPlayer::Impl -> SrRenderer` 对象链、精确 4x4 乘法、Width/Height 视口矩阵以及 2D/3D CAST 最终屏幕 X/Y 映射。
 - 本地 53 个 SRD 的结构解析回归。
 - 53 个样本中的 799 个 CSLI 和 23 个实际父级单元索引关系回归。
 - avatar 样本 MOT target、公共 rotation Z 通道和游戏三次曲线结果回归。
 
-尚未实现：SRD 写回、颜色及 CAST 专属通道、投影矩阵的上游 camera/backend 输入、CREF/CRE1 运行时选择、CSLI packed color 与纹理提交、深度/裁剪提交、D3D9 渲染和 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。ImGui、窗口系统、D3D9 绑定与纹理解码依赖尚未选定。
+尚未实现：SRD 写回、颜色及 CAST 专属通道、投影矩阵的上游 camera/backend 输入、CIMG/CRE1 到运行时图像矩形和纹理对象的建立、CSLI packed color 与纹理提交、深度/裁剪提交、D3D9 渲染和 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。ImGui、窗口系统、D3D9 绑定与纹理解码依赖尚未选定。
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

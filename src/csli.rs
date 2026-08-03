@@ -21,7 +21,13 @@ pub struct SlicCell {
     pub field_3a: Option<[u8; 4]>,
     pub field_33: Option<[u8; 4]>,
     pub field_44: Vec<[u8; 4]>,
-    pub field_46: i16,
+    pub cref_index: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrefEntry {
+    pub image_index: i16,
+    pub rectangle_index: i16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +43,7 @@ pub struct CsliDefinition {
     pub explicit_width_cell_count: u16,
     pub explicit_height_cell_count: u16,
     pub cref_count: u16,
+    pub crefs: Vec<CrefEntry>,
     pub node_index: i32,
     pub cells: Vec<SlicCell>,
 }
@@ -75,6 +82,7 @@ impl CsliDefinition {
             explicit_width_cell_count: 0,
             explicit_height_cell_count: 0,
             cref_count: 0,
+            crefs: Vec::new(),
             node_index: -1,
             cells: Vec::new(),
         };
@@ -120,6 +128,20 @@ impl CsliDefinition {
         }
         if let Some(slic) = slic_blocks.first() {
             result.cells = parse_slic(file, slic)?;
+        }
+
+        let cref_blocks = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"CREF"))
+            .collect::<Vec<_>>();
+        if cref_blocks.len() > 1 {
+            return Err(CsliError("CSLI has more than one CREF child".into()));
+        }
+        if result.cref_count != 0
+            && let Some(cref) = cref_blocks.first()
+        {
+            result.crefs = parse_cref(file, cref)?;
         }
 
         Ok(result)
@@ -262,6 +284,35 @@ impl CsliDefinition {
 
         Ok(quads)
     }
+
+    pub fn cell_cref(&self, cell_index: usize) -> Option<CrefEntry> {
+        let selector = usize::try_from(self.cells.get(cell_index)?.cref_index).ok()?;
+        if selector >= usize::from(self.cref_count) {
+            return None;
+        }
+        self.crefs.get(selector).copied()
+    }
+}
+
+pub fn slice_texture_coordinates(rectangle: [f32; 4], flags: u32) -> [[f32; 2]; 4] {
+    let mut x0 = rectangle[0];
+    let mut y0 = rectangle[1];
+    let mut x1 = rectangle[2];
+    let mut y1 = rectangle[3];
+
+    if flags & 0x10 != 0 {
+        std::mem::swap(&mut x0, &mut x1);
+    }
+    if flags & 0x20 != 0 {
+        std::mem::swap(&mut y0, &mut y1);
+    }
+
+    match flags & 0xc0 {
+        0x40 => [[x1, y0], [x0, y0], [x1, y1], [x0, y1]],
+        0x80 => [[x1, y1], [x1, y0], [x0, y1], [x0, y0]],
+        0xc0 => [[x0, y1], [x1, y1], [x0, y0], [x1, y0]],
+        _ => [[x0, y0], [x0, y1], [x1, y0], [x1, y1]],
+    }
 }
 
 pub fn parent_cell_center_offset(
@@ -306,7 +357,7 @@ fn parse_slic(file: &SrdFile, block: &Block) -> Result<Vec<SlicCell>, CsliError>
                 field_3a: None,
                 field_33: None,
                 field_44: Vec::new(),
-                field_46: 0,
+                cref_index: 0,
             };
             for property in properties {
                 match property.code {
@@ -322,7 +373,7 @@ fn parse_slic(file: &SrdFile, block: &Block) -> Result<Vec<SlicCell>, CsliError>
                     0x44 => cell
                         .field_44
                         .push(reordered_four_bytes(file, property, "SLIC 0x44")?),
-                    0x46 => cell.field_46 = signed_scalar(file, property, "SLIC 0x46")? as i16,
+                    0x46 => cell.cref_index = signed_scalar(file, property, "SLIC 0x46")? as i16,
                     _ => {}
                 }
             }
@@ -332,6 +383,25 @@ fn parse_slic(file: &SrdFile, block: &Block) -> Result<Vec<SlicCell>, CsliError>
             Ok(cell)
         })
         .collect()
+}
+
+fn parse_cref(file: &SrdFile, block: &Block) -> Result<Vec<CrefEntry>, CsliError> {
+    let mut entries = Vec::new();
+    for property in block.properties_with_code(0x4a) {
+        let image_index = property
+            .read_signed_scalar_at(file, 0)
+            .ok_or_else(|| CsliError("invalid CREF 0x4a image index".into()))?
+            as i16;
+        let rectangle_index = property
+            .read_signed_scalar_at(file, 1)
+            .ok_or_else(|| CsliError("invalid CREF 0x4a rectangle index".into()))?
+            as i16;
+        entries.push(CrefEntry {
+            image_index,
+            rectangle_index,
+        });
+    }
+    Ok(entries)
 }
 
 fn split_records(properties: &[Property]) -> Vec<Vec<&Property>> {
@@ -391,7 +461,7 @@ mod tests {
             field_3a: None,
             field_33: None,
             field_44: Vec::new(),
-            field_46: 0,
+            cref_index: 0,
         }
     }
 
@@ -409,6 +479,7 @@ mod tests {
             explicit_width_cell_count: 0,
             explicit_height_cell_count: 0,
             cref_count: 0,
+            crefs: Vec::new(),
             node_index: 0,
             cells: vec![
                 cell(0x102, 99.0, 7.0),
@@ -502,6 +573,7 @@ mod tests {
             explicit_width_cell_count: 0,
             explicit_height_cell_count: 0,
             cref_count: 0,
+            crefs: Vec::new(),
             node_index: 0,
             cells: Vec::new(),
         };
@@ -526,6 +598,7 @@ mod tests {
             explicit_width_cell_count: 2,
             explicit_height_cell_count: 1,
             cref_count: 0,
+            crefs: Vec::new(),
             node_index: 0,
             cells: vec![cell(0x103, 4.0, 8.0), cell(0x103, 12.0, 8.0)],
         };
@@ -572,10 +645,69 @@ mod tests {
             explicit_width_cell_count: 1,
             explicit_height_cell_count: 1,
             cref_count: 0,
+            crefs: Vec::new(),
             node_index: 0,
             cells: vec![cell(0x203, 4.0, 2.0)],
         };
 
         assert!(definition.generate_active_quads(true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cref_selector_uses_signed_slic_index_and_declared_count() {
+        let mut definition = CsliDefinition {
+            field_80: 0,
+            width: 0.0,
+            height: 0.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 0,
+            columns: 1,
+            rows: 1,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
+            cref_count: 1,
+            crefs: vec![CrefEntry {
+                image_index: 3,
+                rectangle_index: 7,
+            }],
+            node_index: 0,
+            cells: vec![cell(0x100, 0.0, 0.0)],
+        };
+
+        assert_eq!(definition.cell_cref(0), Some(definition.crefs[0]));
+        definition.cells[0].cref_index = -1;
+        assert_eq!(definition.cell_cref(0), None);
+        definition.cells[0].cref_index = 1;
+        assert_eq!(definition.cell_cref(0), None);
+    }
+
+    #[test]
+    fn texture_coordinate_flags_match_all_binary_ordering_branches() {
+        let rectangle = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0),
+            [[1.0, 2.0], [1.0, 4.0], [3.0, 2.0], [3.0, 4.0]]
+        );
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0x10),
+            [[3.0, 2.0], [3.0, 4.0], [1.0, 2.0], [1.0, 4.0]]
+        );
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0x20),
+            [[1.0, 4.0], [1.0, 2.0], [3.0, 4.0], [3.0, 2.0]]
+        );
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0x40),
+            [[3.0, 2.0], [1.0, 2.0], [3.0, 4.0], [1.0, 4.0]]
+        );
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0x80),
+            [[3.0, 4.0], [3.0, 2.0], [1.0, 4.0], [1.0, 2.0]]
+        );
+        assert_eq!(
+            slice_texture_coordinates(rectangle, 0xc0),
+            [[1.0, 4.0], [3.0, 4.0], [1.0, 2.0], [3.0, 2.0]]
+        );
     }
 }

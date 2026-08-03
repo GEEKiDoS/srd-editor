@@ -167,7 +167,16 @@ impl Property {
     }
 
     pub fn read_signed_scalar(&self, file: &SrdFile) -> Option<i32> {
-        let value = self.value_bytes(file);
+        self.read_signed_scalar_at(file, 0)
+    }
+
+    pub fn read_signed_scalar_at(&self, file: &SrdFile, index: usize) -> Option<i32> {
+        let size = usize::try_from(*TYPE_SIZES.get(usize::from(self.type_code))?).ok()?;
+        if size == 0 {
+            return None;
+        }
+        let offset = index.checked_mul(size)?;
+        let value = self.value_bytes(file).get(offset..)?;
         match self.type_code {
             1 | 4 => value.first().copied().map(i32::from),
             3 => value.first().copied().map(|v| i32::from(v as i8)),

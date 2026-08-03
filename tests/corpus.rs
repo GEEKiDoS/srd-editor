@@ -144,6 +144,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     files.sort();
 
     let mut csli_count = 0usize;
+    let mut cref_count = 0usize;
+    let mut resolved_cell_crefs = 0usize;
     let mut indexed_children = 0usize;
     let mut active_indexed_children = 0usize;
     for path in files {
@@ -162,6 +164,11 @@ fn parses_and_links_binary_proven_csli_grids() {
                 };
                 assert_eq!(layer.nodes[node_index].cast_type(), Some(2));
                 assert_eq!(definition.cells.len(), definition.expected_cell_count());
+                assert_eq!(definition.crefs.len(), usize::from(definition.cref_count));
+                cref_count += definition.crefs.len();
+                resolved_cell_crefs += (0..definition.cells.len())
+                    .filter(|cell_index| definition.cell_cref(*cell_index).is_some())
+                    .count();
                 let explicit_first_row_widths = definition
                     .cells
                     .iter()
@@ -237,9 +244,11 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
+    assert!(cref_count > 0);
+    assert!(resolved_cell_crefs > 0);
     assert!(indexed_children > 0);
 }
 

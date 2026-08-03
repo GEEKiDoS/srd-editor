@@ -37,7 +37,7 @@ NODE_base + 92 * node_index + 80 = parsed_csli_pointer
 | `0x45` | `+56` | unsigned 后保留低 16 位；CREF 记录数 |
 | `0x51` | 临时变量 | unsigned NODE 下标，用于写 NODE `+80` |
 
-解析器计算 `cell_count = columns * rows`。仅当结果大于零时分配 `64 + 40 * cell_count` 字节，并从模板复制 104 字节。`CREF` 子块按 `0x45 * 4` 字节另行分配并调用 `srd_parse_cref_like`；其记录内容和运行时选择仍未闭环。`SLIC` 子块从 CSLI `+64` 开始写 40 字节记录。
+解析器计算 `cell_count = columns * rows`。仅当结果大于零时分配 `64 + 40 * cell_count` 字节，并从模板复制 104 字节。`CREF` 子块按 `0x45 * 4` 字节另行分配并调用 `srd_parse_cref_like`；每个属性 `0x4A` 被标量读取器连续读取两次，形成两个 signed i16：运行时图像下标和该图像的矩形下标。`SLIC` 子块从 CSLI `+64` 开始写 40 字节记录。
 
 ## SLIC 记录
 
@@ -51,7 +51,7 @@ NODE_base + 92 * node_index + 80 = parsed_csli_pointer
 | `0x3A` | `+12` | 四字节重排为 `[1,2,3,0]` |
 | `0x33` | `+16` | 四字节重排为 `[1,2,3,0]` |
 | `0x44` | `+20` 起 | 重复四字节重排，目标每次前移 4 字节 |
-| `0x46` | `+36` | signed 后保留低 16 位 |
+| `0x46` | `+36` | signed 后保留低 16 位；SrSliceCast 渲染时作为 CREF 记录下标 |
 
 每遇到属性 `0xFE`，解析器先检查当前 flags：若 `0x200` 清零，则设置 `0x100`；随后目标推进 40 字节。属性循环结束后还会对当前记录执行一次相同的 flags 收尾。这里的 `0x100` 业务名称来自它在下游生成记录时被直接转成 active 字节，而不是从旧编辑器继承。
 
@@ -147,4 +147,4 @@ y      = (first + second) * 0.5
 
 每个 active 网格单元的局部四顶点、2D/3D Y 分支、36 字节顶点步长和用于颜色插值的单元归一化坐标已经继续闭环，详见 [`slice-geometry.md`](slice-geometry.md)。
 
-最终两个 UV 通道已确认来自资源相关辅助函数的同一份输出，但 CREF 选择和具体 UV 仍未闭环；packed color 组合、`0x46` 和其余字段的最终渲染语义也仍在追踪。
+SLIC `0x46` 到 CSLI CREF、运行时图像/矩形下标以及最终四组纹理坐标的选择链已经闭环，详见后续文档。仍未闭环的是 packed color 最终组合和其余字段的渲染语义。

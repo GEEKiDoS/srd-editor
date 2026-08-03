@@ -3,7 +3,7 @@
 本页只记录已经由 `surfride::SrSliceCast` RTTI、虚表入口和最终顶点写入共同闭环的几何结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`FE18BFE0E0F162713BA62AE1A3F17CA402768CC8F9CB640800743FDE05109D6A`
+- 本轮保存后的 IDB SHA-256：`5B812E07874112C5C3F4C96E4293EC4E9203C4C6EE91CAD2F6C2902BAD3A622F`
 
 ## 渲染入口归属
 
@@ -71,14 +71,37 @@ v1 = (cell.y + cell.height) * (1.0 / image_height)
 
 Rust 的 `CsliDefinition::generate_active_quads` 复现上述 active 过滤、运算分组、顶点顺序、2D/3D Y 分支和单元归一化坐标顺序。
 
-## 最终 UV 来源仍在追踪
+## CREF 与最终 UV
 
-`srd_render_slice_cast` 在 `0xADAB48..0xADAB5E` 以 SrSliceCast 为 `this` 调用 `sub_AD7EE0`，输入 SLIC flags 和若干运行时资源字段，并把结果写到栈上的 32 字节数组。`0xADAEA0..0xADAEE2` 从该数组按四组 8 字节读取坐标，并把同一对结果分别复制到顶点 `+20/+24` 和 `+28/+32` 两个 UV 通道。
+`srd_render_slice_cast` 在 `0xADAB48..0xADAB5E` 以 SrSliceCast 为 `this` 调用 `srd_build_image_texture_coordinates` (`0xAD7EE0`)，输入 SLIC flags 和 SLIC `0x46`，并把结果写到栈上的 32 字节数组。`0xADAEA0..0xADAEE2` 从该数组按四组 8 字节读取坐标，并把同一对结果分别复制到顶点 `+20/+24` 和 `+28/+32` 两个 UV 通道。
 
-因此目前可以确认“两个 UV 通道相同”和“最终 UV 来自 `sub_AD7EE0` 的资源相关输出”，但尚不能把 CSLI 单元归一化坐标命名为最终 UV。`sub_AD7EE0` 内部进一步调用 `sub_129B8D0`，并读取 CAST `+0x1A4..+0x1B0`、原始 SLIC flags 及运行时图像字段；该资源选择链仍需继续闭环。
+该函数用参数 `0` 选择 SrImage 中的 CSLI CREF 指针与数量，并调用 `srd_resolve_cref_texture_coordinates` (`0x129B8D0`)。后者执行：
+
+```text
+selector = signed SLIC 0x46
+if selector < 0 or selector >= CSLI 0x45 count: no CREF rectangle
+entry = CREF[selector]
+image_index     = entry.signed_i16[0]
+rectangle_index = entry.signed_i16[1]
+```
+
+若两个下标均非负，运行时图像表使用 540 字节步长；记录 `+532` 指向 16 字节矩形表，并读取 `rectangle_index` 对应的四个 f32 端点。输出开头的 signed i16 是 `image_index`，随后是四对最终纹理坐标。
+
+设矩形为 `[x0,y0,x1,y1]`。SLIC flags `0x10` 交换 X 端点，`0x20` 交换 Y 端点；flags `& 0xC0` 再选择固定顺序：
+
+```text
+0x00: (x0,y0) (x0,y1) (x1,y0) (x1,y1)
+0x40: (x1,y0) (x0,y0) (x1,y1) (x0,y1)
+0x80: (x1,y1) (x1,y0) (x0,y1) (x0,y0)
+0xC0: (x0,y1) (x1,y1) (x0,y0) (x1,y0)
+```
+
+因此两个最终 UV 通道的选择和顺序已经闭环；CSLI 单元归一化坐标仍只用于 packed color 插值。Rust 现在解析 CREF 的两个 signed i16、按 SLIC `0x46` 选择记录，并由 `slice_texture_coordinates` 复现所有 flip/order 分支。实际纹理资源对象和 16 字节矩形表的文件来源仍需继续追踪。
+
+53 个本地 SRD 中，799 个 CSLI 共解析出 4813 条 CREF；按每个 SLIC 的 signed `0x46` 和声明数量执行与游戏相同的边界检查后，有 4997 个单元能够选择到一条实际 CREF 记录。
 
 ## 仍未闭环
 
 - SLIC `0x3A`、`0x33`、四个 `0x44` 和 CSLI 四个 `0x44` 共同生成两个 packed vertex color 的完整组合语义。
-- CSLI `CREF`、CIMG `CREF/CRE1` 到实际纹理对象和最终 UV 的选择链。
+- 运行时图像对象及其 16 字节矩形表如何由 CIMG/外部纹理资源建立。
 - 图集资源自身的尺寸修正、采样状态、混合状态、索引顺序和最终 D3D9 draw call 参数。
