@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -17,11 +18,17 @@ impl std::error::Error for SceneError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRecord {
     pub name: Option<Vec<u8>>,
-    pub field_30: Option<u32>,
-    pub field_32: Option<i32>,
+    pub type_flags: Option<u32>,
+    pub parent_csli_cell_index: Option<i32>,
     pub first_child_index: i16,
     pub next_sibling_index: i16,
     pub field_a0: Option<i32>,
+}
+
+impl NodeRecord {
+    pub fn cast_type(&self) -> Option<u8> {
+        self.type_flags.map(|value| value as u8)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +60,14 @@ pub struct Layer {
     pub field_23: Vec<u8>,
     pub nodes: Vec<NodeRecord>,
     pub transforms: Vec<RawTransform>,
+    pub csli_by_node: Vec<Option<CsliDefinition>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CsliRuntimeLayoutInputs {
+    pub extent_inputs: [f32; 4],
+    pub parent_size: [f32; 2],
+    pub axis_mode: bool,
 }
 
 impl Layer {
@@ -130,6 +145,31 @@ impl Layer {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let mut csli_by_node = vec![None; node_count];
+        for csli_block in cast
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"DATA"))
+            .flat_map(|data| data.children.iter())
+            .filter(|child| child.is_tag(b"CSLI"))
+        {
+            let csli = CsliDefinition::from_block(file, csli_block)
+                .map_err(|error| SceneError(error.to_string()))?;
+            let index = usize::try_from(csli.node_index).map_err(|_| {
+                SceneError(format!(
+                    "CSLI at {:#x} has negative NODE index {}",
+                    csli_block.offset, csli.node_index
+                ))
+            })?;
+            let destination = csli_by_node.get_mut(index).ok_or_else(|| {
+                SceneError(format!(
+                    "CSLI at {:#x} references NODE {index} outside {node_count} nodes",
+                    csli_block.offset
+                ))
+            })?;
+            *destination = Some(csli);
+        }
+
         Ok(Self {
             name,
             flags,
@@ -137,6 +177,7 @@ impl Layer {
             field_23,
             nodes,
             transforms,
+            csli_by_node,
         })
     }
 
@@ -225,6 +266,64 @@ impl Layer {
         }
         Ok(worlds)
     }
+
+    pub fn compute_parent_csli_offsets(
+        &self,
+        runtime_inputs: &[CsliRuntimeLayoutInputs],
+    ) -> Result<Vec<[f32; 2]>, SceneError> {
+        let count = self.nodes.len();
+        if runtime_inputs.len() != count {
+            return Err(SceneError(format!(
+                "CSLI offset calculation needs {count} runtime input records, got {}",
+                runtime_inputs.len()
+            )));
+        }
+        let hierarchy = self.build_hierarchy()?;
+        let generated = self
+            .csli_by_node
+            .iter()
+            .zip(runtime_inputs)
+            .map(|(definition, inputs)| {
+                definition
+                    .as_ref()
+                    .map(|definition| definition.generate_cell_rects(inputs.extent_inputs))
+                    .transpose()
+                    .map_err(|error| SceneError(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut offsets = vec![[0.0, 0.0]; count];
+        for (node_index, node) in self.nodes.iter().enumerate() {
+            let Some(cell_index) = node.parent_csli_cell_index else {
+                continue;
+            };
+            let Some(parent_index) = hierarchy.parents[node_index] else {
+                continue;
+            };
+            let Some(parent_cells) = generated[parent_index].as_deref() else {
+                continue;
+            };
+            let parent_inputs = runtime_inputs[parent_index];
+            offsets[node_index] = parent_cell_center_offset(
+                cell_index,
+                parent_cells,
+                parent_inputs.parent_size,
+                parent_inputs.axis_mode,
+            );
+        }
+        Ok(offsets)
+    }
+
+    pub fn compose_world_matrices_with_csli_layout(
+        &self,
+        transforms: &[SpatialTransform],
+        root_matrix: Affine3x4,
+        flip_y: bool,
+        runtime_inputs: &[CsliRuntimeLayoutInputs],
+    ) -> Result<Vec<Affine3x4>, SceneError> {
+        let offsets = self.compute_parent_csli_offsets(runtime_inputs)?;
+        self.compose_world_matrices(transforms, root_matrix, flip_y, &offsets)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -281,8 +380,8 @@ fn split_records<'a>(
 fn parse_node(file: &SrdFile, properties: &[&Property]) -> Result<NodeRecord, SceneError> {
     let mut record = NodeRecord {
         name: None,
-        field_30: None,
-        field_32: None,
+        type_flags: None,
+        parent_csli_cell_index: None,
         first_child_index: -1,
         next_sibling_index: -1,
         field_a0: None,
@@ -300,8 +399,8 @@ fn parse_node(file: &SrdFile, properties: &[&Property]) -> Result<NodeRecord, Sc
                         .collect(),
                 )
             }
-            0x30 => record.field_30 = property.read_unsigned_scalar(file),
-            0x32 => record.field_32 = property.read_signed_scalar(file),
+            0x30 => record.type_flags = property.read_unsigned_scalar(file),
+            0x32 => record.parent_csli_cell_index = property.read_signed_scalar(file),
             0x3c => {
                 record.first_child_index = property
                     .read_signed_scalar(file)

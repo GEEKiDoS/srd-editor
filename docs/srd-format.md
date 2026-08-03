@@ -15,6 +15,7 @@
 - 标签分派图：[`evidence/tag-dispatch.md`](evidence/tag-dispatch.md)
 - 动画记录布局：[`evidence/animation-records.md`](evidence/animation-records.md)
 - LAYR/NODE/TRS、公共动画通道和矩阵链：[`evidence/scene-transform.md`](evidence/scene-transform.md)
+- CSLI/SLIC 网格、NODE `0x32` 与父级单元偏移：[`evidence/csli-layout.md`](evidence/csli-layout.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 
@@ -85,11 +86,12 @@ sub_A9FD60              Animation
 
 LAYR flags 位 0、NODE/TRS2/TRS3 记录、公共运行时变换、游戏三角函数、局部 3x4 仿射矩阵以及 `parent_world * local` 世界组合顺序已经完成二进制闭环，详见 [`evidence/scene-transform.md`](evidence/scene-transform.md)。
 
-NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现。NODE `0x32`、二维 offset/pivot 来源、packed 颜色字段与 CAST 专属通道尚未闭环；当前 Rust 代码仍要求调用方传入已计算 offset，不为 `0x32` 或 pivot 赋予猜测语义。
+NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现。NODE `0x32` 在父节点 type 2 时索引父级 CSLI 生成单元，其越界、active、中心偏移分支也已闭环并实现。父 CAST 几何输入和轴向模式的上游含义仍未知，因此 Rust 要求调用方以中性结构显式提供，未把它们猜测命名为 pivot 或坐标系方向。
 
 ## 图像与特殊 CAST（待验证线索）
 
-- CIMG、CREF、CRE1、CROP、CNUM、CSLI 等标签存在于样本或旧代码中，但它们之间的索引和运行时关系尚未完成二进制证据闭环。
+- CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成与父级偏移已经闭环。其 CREF 资源选择和最终顶点/UV 生成仍未闭环。
+- CIMG、CREF、CRE1、CROP、CNUM 的资源与运行时关系尚未完成二进制证据闭环。
 - DDS 图集裁剪、runtime-bound 资源、数字排版与 sliced sprite 均不得依据旧预览器的表现直接实现。
 
 ## 待验证问题
@@ -97,6 +99,6 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 1. VTBF/SRFF 文件头、块长度、子块布局和全部属性编码。
 2. 各标签的构造/解析分派函数及运行时对象类型。
 3. 颜色和 CAST 专属动画通道。
-4. NODE `0x32`、二维 offset/pivot 和投影/视口逻辑。
+4. 父 CAST 几何输入、轴向虚函数和投影/视口逻辑。
 5. CIMG/CREF/CRE1/CROP 的资源与图集选择流程。
-6. CNUM 和 CSLI 的精确渲染语义。
+6. CNUM 和 CSLI/CREF 的最终 D3D9 顶点、UV 与绘制语义。

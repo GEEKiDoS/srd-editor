@@ -3,7 +3,7 @@
 本页只记录从游戏二进制闭环得到的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`F94968144059379BD4B0F2C89DD9B1B1B4FF0D976A6231E381FF15BC18C6527F`
+- 本轮保存后的 IDB SHA-256：`B4C9D857618B44DF808F84D3590CC5A004193D4AD83B4C3B5A9A51F2A0D4495E`
 
 ## 原始记录
 
@@ -24,13 +24,13 @@
 | 属性 | 偏移 | 读取方式 |
 | --- | ---: | --- |
 | `0x03` | `+0x00` | 最多 64 字节 |
-| `0x30` | `+0x48` | unsigned 标量 |
-| `0x32` | `+0x4C` | signed 标量 |
+| `0x30` | `+0x48` | unsigned 标量；运行时工厂读取低字节作为 CAST 类型分派码 |
+| `0x32` | `+0x4C` | signed 标量；父节点为 type 2 时索引父级 CSLI 生成单元 |
 | `0x3C` | `+0x54` | signed 标量后截断为 16 位；首子节点下标 |
 | `0x3D` | `+0x56` | signed 标量后截断为 16 位；下一同级节点下标 |
 | `0xA0` | `+0x58` | signed 标量 |
 
-`0x32` 尚未获得足以命名为 parent、pivot 或其他业务概念的完整证据。`0x3C/0x3D` 的层级语义则由下述最终构建函数闭环证明。
+`0x32` 的完整限定条件、越界/active 分支和二维中心偏移公式已闭环，详见 [`csli-layout.md`](csli-layout.md)。它不是层级 parent 字段；`0x3C/0x3D` 的层级语义由下述最终构建函数闭环证明。
 
 `srd_parse_trs2` (`0xAA0970`) 与初始化器 `0xA9F120`：
 
@@ -137,6 +137,6 @@ Rust `Layer::build_hierarchy` 已按该首子/同级链构建 parents、children
 
 ## 尚未闭环
 
-- `0xABF140` 计算的二维 offset 会读取 CAST `+0x194`、父 CAST 尺寸和一个全局 20 字节记录表；表来源与字段语义尚未证明，因此 Rust API 只接收已计算 offset，不自行计算 pivot/anchor。
+- `srd_compute_parent_csli_cell_offset` 的记录来源和公式已经闭环并接入 Rust；但父 CAST `+0x178` 输入与虚表槽 `+0x30` 模式的上游含义尚未证明，API 要求调用方显式提供中性运行时输入。
 - 两个 packed 字段及通道 `9/19/21/22` 的精确颜色分量语义未实现。
 - CAST 专属动画通道与投影、视口映射尚未实现。

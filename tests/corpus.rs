@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
-use srd_editor::scene::Layer;
+use srd_editor::scene::{CsliRuntimeLayoutInputs, Layer};
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
 
@@ -130,6 +130,97 @@ fn parses_binary_selected_layer_transform_records() {
     }
     assert!(layer_count > 0);
     assert!(node_count > 0);
+}
+
+#[test]
+fn parses_and_links_binary_proven_csli_grids() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut csli_count = 0usize;
+    let mut indexed_children = 0usize;
+    let mut active_indexed_children = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file
+            .blocks_depth_first()
+            .filter(|block| block.is_tag(b"LAYR"))
+        {
+            let layer = Layer::from_block(&file, block).unwrap_or_else(|error| {
+                panic!("{} at {:#x}: {error}", path.display(), block.offset)
+            });
+            let hierarchy = layer.build_hierarchy().unwrap();
+            for (node_index, definition) in layer.csli_by_node.iter().enumerate() {
+                let Some(definition) = definition else {
+                    continue;
+                };
+                assert_eq!(layer.nodes[node_index].cast_type(), Some(2));
+                assert_eq!(definition.cells.len(), definition.expected_cell_count());
+                assert_eq!(
+                    definition
+                        .generate_cell_rects([100.0, 100.0, 0.0, 0.0])
+                        .unwrap()
+                        .len(),
+                    definition.expected_cell_count()
+                );
+                csli_count += 1;
+            }
+            for (node_index, node) in layer.nodes.iter().enumerate() {
+                let Some(cell_index) = node.parent_csli_cell_index.filter(|index| *index >= 0)
+                else {
+                    continue;
+                };
+                let parent_index = hierarchy.parents[node_index].unwrap_or_else(|| {
+                    panic!(
+                        "{} NODE {node_index} has CSLI cell index but no parent",
+                        path.display()
+                    )
+                });
+                assert_eq!(layer.nodes[parent_index].cast_type(), Some(2));
+                let definition = layer.csli_by_node[parent_index]
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} parent NODE {parent_index} has no linked CSLI",
+                            path.display()
+                        )
+                    });
+                let cell = definition
+                    .cells
+                    .get(cell_index as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} NODE {node_index} indexes CSLI cell {cell_index} outside {} cells",
+                            path.display(),
+                            definition.cells.len()
+                        )
+                    });
+                indexed_children += 1;
+                active_indexed_children += usize::from((cell.flags >> 8) & 1 != 0);
+            }
+            let runtime_inputs = vec![
+                CsliRuntimeLayoutInputs {
+                    extent_inputs: [100.0, 100.0, 0.0, 0.0],
+                    parent_size: [0.0, 0.0],
+                    axis_mode: true,
+                };
+                layer.nodes.len()
+            ];
+            let offsets = layer.compute_parent_csli_offsets(&runtime_inputs).unwrap();
+            assert_eq!(offsets.len(), layer.nodes.len());
+        }
+    }
+    eprintln!(
+        "CSLI definitions={csli_count}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+    );
+    assert!(csli_count > 0);
+    assert!(indexed_children > 0);
 }
 
 #[test]
