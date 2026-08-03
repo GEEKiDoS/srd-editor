@@ -1,7 +1,7 @@
 use std::fmt;
 
-use crate::csli::{CrefEntry, slice_texture_coordinates};
-use crate::texture::TextureList;
+use crate::csli::{CrefEntry, multiply_color_game, slice_texture_coordinates};
+use crate::texture::{TextureList, TextureSamplerState};
 use crate::vtbf::{Block, Property, SrdFile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,11 +43,18 @@ pub struct ImageCoordinateState {
 pub struct ResolvedImageCoordinates {
     pub image_index: i16,
     pub coordinates: [[f32; 2]; 4],
+    pub selected_sampler: Option<TextureSamplerState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageQuad {
     pub positions: [[f32; 3]; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageVertexColors {
+    pub primary: [u8; 4],
+    pub secondary: [u8; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -210,6 +217,20 @@ impl ImageDefinition {
         }
     }
 
+    pub fn vertex_colors(
+        &self,
+        state: ImageCoordinateState,
+        vertex_index: usize,
+        multiplicative_tint: [u8; 4],
+        additive_tint: [u8; 4],
+    ) -> Option<ImageVertexColors> {
+        let color = *state.vertex_colors.get(vertex_index)?;
+        Some(ImageVertexColors {
+            primary: multiply_color_game(color, multiplicative_tint),
+            secondary: additive_tint,
+        })
+    }
+
     #[allow(clippy::assign_op_pattern)]
     pub fn resolve_coordinates(
         &self,
@@ -271,9 +292,14 @@ impl ImageDefinition {
             coordinate[0] = offset[0] * offset_scale + coordinate[0];
             coordinate[1] = offset[1] * offset_scale + coordinate[1];
         }
+        let selected_sampler = usize::try_from(image_index)
+            .ok()
+            .and_then(|index| textures.textures.get(index))
+            .map(|texture| texture.sampler_pair().select(self.point_sampled()));
         Ok(ResolvedImageCoordinates {
             image_index,
             coordinates,
+            selected_sampler,
         })
     }
 }
@@ -411,6 +437,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.coordinates[0], [0.6, 1.2]);
         assert_eq!(second.coordinates[0], [2.1, 4.2]);
+        assert_eq!(first.selected_sampler, second.selected_sampler);
     }
 
     #[test]
@@ -428,6 +455,7 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.image_index, -1);
         assert_eq!(resolved.coordinates, [[0.0; 2]; 4]);
+        assert_eq!(resolved.selected_sampler, None);
     }
 
     #[test]
@@ -450,6 +478,32 @@ mod tests {
                 [7.0, 2.0, 0.0],
                 [7.0, -4.0, 0.0],
             ]
+        );
+    }
+
+    #[test]
+    fn image_colors_multiply_primary_and_copy_additive_secondary() {
+        let mut definition = definition();
+        definition.vertex_colors[2] = [255, 128, 64, 32];
+        let colors = definition
+            .vertex_colors(
+                definition.initial_coordinate_state(ImageReferenceChannel::Cref),
+                2,
+                [128, 255, 32, 255],
+                [1, 2, 3, 4],
+            )
+            .unwrap();
+        assert_eq!(colors.primary, [128, 128, 8, 32]);
+        assert_eq!(colors.secondary, [1, 2, 3, 4]);
+        assert!(
+            definition
+                .vertex_colors(
+                    definition.initial_coordinate_state(ImageReferenceChannel::Cref),
+                    4,
+                    [0; 4],
+                    [0; 4],
+                )
+                .is_none()
         );
     }
 }
