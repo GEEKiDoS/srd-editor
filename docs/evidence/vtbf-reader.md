@@ -7,7 +7,8 @@
 当前文件：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- `chusanApp.exe.i64` SHA-256：`323D5AA53B859197C89D48ED3E7444A8F0829538BACA2ECC92A55563D0A8254A`
+- IDA 数据库调查前 SHA-256：`323D5AA53B859197C89D48ED3E7444A8F0829538BACA2ECC92A55563D0A8254A`
+- IDA 数据库在加入 38 个已证明函数名并保存后 SHA-256：`95D2ED3702528E90BEA70B921EBC8EA021E95C1502A9047C988A52D172286C89`
 - PE image base：`0x400000`
 - PE SizeOfImage：`0x1EA4000`
 
@@ -25,6 +26,8 @@ IDA 数据库记录的原始输入路径位于旧 H 盘，不能只据路径声�
 | `0xA9F220` | `0xBD` | Surfride `SRFF`/`SRCK` 顶层分派 |
 
 因此本文对这些函数的结论同时适用于当前 `chusanApp.exe`。这不等于数据库中所有函数均已完成同样验证。
+
+保存后的数据库仅增加了保守的函数名，如 `vtbf_parse_file_header`、`srd_parse_trk`；没有修改程序字节。
 
 ## 文件头：`0x1298EB0`
 
@@ -124,4 +127,3 @@ type code 的业务名称不能仅由这些转换函数推断；需要结合每�
 - type 2 与 count/mult 同时出现时的合法性；当前边界读取函数只跳过一个长度前缀值。
 - 各属性 code 的名称和目标对象字段含义。
 - Surfride 节点、动画和渲染语义。
-
