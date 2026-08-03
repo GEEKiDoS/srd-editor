@@ -1,4 +1,4 @@
-use crate::shader::CeylonSimpleShaderBits;
+use crate::shader::{CeylonShadowParallelParameters, CeylonSimpleShaderBits};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -659,6 +659,19 @@ impl CeylonShaderKey {
         );
         Ok(bits)
     }
+
+    /// Combines the direct SRD ShapeEnv contributions with an explicitly
+    /// supplied renderer-global `LightShadowParallel` parameter context.
+    /// This does not assume that such a graph node is active for every SRD
+    /// draw; callers must provide the context established by their scene.
+    pub fn srd_simple_shader_with_shadow_parallel(
+        self,
+        parameters: CeylonShadowParallelParameters,
+    ) -> Result<CeylonSimpleShaderBits, SrdSimpleShaderContributionError> {
+        let mut bits = self.srd_simple_shader_direct_contributions()?;
+        bits.set_shadow_parallel_contribution(parameters, self.low & (1 << 6) != 0);
+        Ok(bits)
+    }
 }
 
 impl CeylonShaderKeyInput {
@@ -1135,6 +1148,39 @@ mod tests {
         .unwrap();
         assert!(optional_2d.contains(2));
         assert!(!optional_2d.contains(69));
+    }
+
+    #[test]
+    fn srd_shadow_context_is_global_but_shape_key_low_bit_6_gates_details() {
+        let parameters = CeylonShadowParallelParameters::from_light_shadow_parallel(2, 4, true, 2);
+        let ungated = CeylonShaderKey {
+            low: 14 << 15,
+            high: 0,
+        }
+        .srd_simple_shader_with_shadow_parallel(parameters)
+        .unwrap();
+        assert!(ungated.contains(54));
+        assert!((55..=68).all(|position| !ungated.contains(position)));
+
+        let gated = CeylonShaderKey {
+            low: (1 << 6) | (14 << 15),
+            high: 0,
+        }
+        .srd_simple_shader_with_shadow_parallel(parameters)
+        .unwrap();
+        assert!(gated.contains(54));
+        assert!(!gated.contains(55));
+        assert!(gated.contains(56));
+        assert!(gated.contains(57));
+        assert!(!gated.contains(58));
+        assert!(gated.contains(59));
+        assert!(!gated.contains(60));
+        assert!(!gated.contains(61));
+        assert!(gated.contains(62));
+        assert!(gated.contains(63));
+        assert!(!gated.contains(64));
+        assert!(!gated.contains(65));
+        assert!((66..=68).all(|position| !gated.contains(position)));
     }
 
     #[test]

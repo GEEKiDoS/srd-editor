@@ -107,6 +107,46 @@ pub struct UnsupportedCeylonSimpleSelectorParameter {
     pub parameter_id: u32,
 }
 
+/// Final integer selector-parameter values appended by
+/// `sea::LightShadowParallel` before `SimpleShaderSelector` builds its key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CeylonShadowParallelParameters {
+    /// Parameter 43. The provider raises this once per live cascade node.
+    pub cascade_count: u32,
+    /// Parameter 44. Any non-zero value enables edge hiding.
+    pub edge_hide: u32,
+    /// Parameter 45. The selector clamps this value to 3.
+    pub color_shadow: u32,
+    /// Parameters 46, 47 and 48. The selector clamps each value to 7.
+    pub cascade_modes: [u32; 3],
+}
+
+impl CeylonShadowParallelParameters {
+    /// Reproduces the values emitted by `sea::LightShadowParallel` from its
+    /// authored `CascadeNum`, `Softness`, `EdgeHide` and `ColorShadow`
+    /// properties. `CascadeNum` is normalized by the binary to 1..=3 before
+    /// the cascade-node vector is resized.
+    pub fn from_light_shadow_parallel(
+        cascade_num: u32,
+        softness: u32,
+        edge_hide: bool,
+        color_shadow: u32,
+    ) -> Self {
+        let cascade_count = if cascade_num == 0 {
+            1
+        } else {
+            cascade_num.min(3)
+        };
+        let next_mode = if softness >= 2 { 1 } else { 0 };
+        Self {
+            cascade_count,
+            edge_hide: u32::from(edge_hide),
+            color_shadow,
+            cascade_modes: [softness, if cascade_count >= 2 { next_mode } else { 0 }, 0],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedShaderSourceLengthError {
     pub encoded_length: usize,
@@ -370,6 +410,46 @@ impl CeylonSimpleShaderBits {
         self.set(18, parameter_10_value != 0 && !alpha_blend_enabled);
     }
 
+    /// Reproduces the special parameter 43..48 branch in
+    /// `sea_simple_shader_selector_build_compact_key`.
+    ///
+    /// Parameter 43 alone enables `SSF_ShadowParallel`. The remaining bits
+    /// are read only when the shape's shadow-detail flag is enabled (the
+    /// Ceylon ShapeEnv cache key's low bit 6). The binary clamps values with
+    /// `min(value, 3)` or `min(value, 7)` before extracting their bits.
+    pub fn set_shadow_parallel_contribution(
+        &mut self,
+        parameters: CeylonShadowParallelParameters,
+        shadow_detail_enabled: bool,
+    ) {
+        let active = parameters.cascade_count != 0;
+        self.set(54, active);
+
+        let detailed = active && shadow_detail_enabled;
+        self.set_parameter(
+            55,
+            2,
+            if detailed {
+                parameters.cascade_count.min(3)
+            } else {
+                0
+            },
+        );
+        self.set(57, detailed && parameters.edge_hide != 0);
+        self.set_parameter(
+            58,
+            2,
+            if detailed {
+                parameters.color_shadow.min(3)
+            } else {
+                0
+            },
+        );
+        for (cascade, mode) in parameters.cascade_modes.into_iter().enumerate() {
+            self.set_parameter(60 + cascade * 3, 3, if detailed { mode.min(7) } else { 0 });
+        }
+    }
+
     /// Applies the vertex inputs produced by Ceylon vertex format 14:
     /// COLOR0/COLOR1 and TEXCOORD0/TEXCOORD1. The selector records each pair
     /// as a two-bit count with value 2.
@@ -614,6 +694,71 @@ mod tests {
 
         bits.set_write_distance_target_contribution(0, false);
         assert!(!bits.contains(18));
+    }
+
+    #[test]
+    fn light_shadow_parallel_properties_emit_exact_selector_parameters() {
+        assert_eq!(
+            CeylonShadowParallelParameters::from_light_shadow_parallel(0, 4, true, 2),
+            CeylonShadowParallelParameters {
+                cascade_count: 1,
+                edge_hide: 1,
+                color_shadow: 2,
+                cascade_modes: [4, 0, 0],
+            }
+        );
+        assert_eq!(
+            CeylonShadowParallelParameters::from_light_shadow_parallel(2, 4, false, 3),
+            CeylonShadowParallelParameters {
+                cascade_count: 2,
+                edge_hide: 0,
+                color_shadow: 3,
+                cascade_modes: [4, 1, 0],
+            }
+        );
+        assert_eq!(
+            CeylonShadowParallelParameters::from_light_shadow_parallel(9, 1, false, 0),
+            CeylonShadowParallelParameters {
+                cascade_count: 3,
+                edge_hide: 0,
+                color_shadow: 0,
+                cascade_modes: [1, 0, 0],
+            }
+        );
+    }
+
+    #[test]
+    fn shadow_parallel_selector_branch_matches_gate_and_clamps() {
+        let parameters = CeylonShadowParallelParameters {
+            cascade_count: 4,
+            edge_hide: 7,
+            color_shadow: 4,
+            cascade_modes: [8, 2, 1],
+        };
+
+        let mut ungated = CeylonSimpleShaderBits::default();
+        ungated.set_shadow_parallel_contribution(parameters, false);
+        assert!(ungated.contains(54));
+        assert!((55..=68).all(|position| !ungated.contains(position)));
+
+        let mut gated = CeylonSimpleShaderBits::default();
+        gated.set_shadow_parallel_contribution(parameters, true);
+        assert!(gated.contains(54));
+        assert!(gated.contains(55));
+        assert!(gated.contains(56));
+        assert!(gated.contains(57));
+        assert!(gated.contains(58));
+        assert!(gated.contains(59));
+        assert!((60..=62).all(|position| gated.contains(position)));
+        assert!(!gated.contains(63));
+        assert!(gated.contains(64));
+        assert!(!gated.contains(65));
+        assert!(gated.contains(66));
+        assert!(!gated.contains(67));
+        assert!(!gated.contains(68));
+
+        gated.set_shadow_parallel_contribution(CeylonShadowParallelParameters::default(), true);
+        assert!((54..=68).all(|position| !gated.contains(position)));
     }
 
     #[test]

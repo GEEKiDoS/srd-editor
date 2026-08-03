@@ -2,7 +2,7 @@
 
 本页记录 SRD/Ceylon ShapeEnv 实际选择的 selector、Simple 键的字节编码、完整 71 项 descriptor，以及已经闭环的 ShapeEnv 模块参数映射。结论来自游戏二进制调用链，并以完整游戏 data 目录中的 shader collection 作独立语料校验。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `FAEA68422D3C7C60646BBADBDD5C878F73CF4796143750B1A2A023C192306D6A`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `0229B02CB4932EFE4576BE5AE7EC9E46ABA7470B9B430585FB5D858B238EC672`。
 
 ## selector 槽位 9
 
@@ -153,6 +153,25 @@ Simple selector 的 virtual `+0x10` 先由 `sea_simple_shader_decode_compact_key
 
 parameter ID `10` 是这张表之外的特殊分支。`sea_simple_shader_selector_build_compact_key` (`0x660120`) 在 ID `10` 非零且 shape alpha blend 关闭时直接设置 position `18` (`SSF_OutDistance_Color0A`)。唯一注册类 RTTI 为 `sea::AppendParamWriteDistanceTarget`；`sea::PassEnvWriteDistance` 的应用方法把该值提升为 `1`。其构造函数唯一调用点位于 `sea::FilterSrcMsaa` 的内嵌 pass 对象，因此它不是 ShapeEnv 64-bit cache key 的直接贡献，而是特定 render-pass context。Rust 以 `set_write_distance_target_contribution` 显式暴露该分支，但 SRD direct-key 方法不默认启用它。
 
+## `LightShadowParallel` 与 parameters 43..48
+
+parameters `43..48` 同样不是上述 16 项普通 position vector，而是 `sea_simple_shader_selector_build_compact_key` (`0x660120`) 的专用 shadow 分支。其 provider 已由 executable 闭环到 RTTI `sea::LightShadowParallel`：
+
+1. `sea_append_param_util_shadow_parallel_register` (`0x681360`) 的 RTTI 为 `sea::AppendParamUtilShadowParallel`，把 local slots `1/2/3` 注册为 integer IDs `43/44/45`，把三个 cascade 的 local slots `8/13/18` 注册为 IDs `46/47/48`；其余 slots 是 `lightShadow*`、`textureShadow{0..2}`、`lightShadowSize{0..2}`、`lightShadowMatrix{0..2}` named resources；
+2. `sea_light_shadow_parallel_construct` (`0x681B60`) 注册的 authored property 索引精确为：`9 = Softness`（默认 0、范围 0..4）、`10 = EdgeHide`（默认 false）、`11 = ColorShadow`（默认 0、范围 0..3）、`12 = CascadeNum`（默认 2、范围 1..3）；
+3. `sea_light_shadow_parallel_rebuild_cascades` (`0x684B00`) 读取 property `12`，按 `0 -> 1`、`>3 -> 3` 归一化后把 live cascade-node vector 调整为 1..3 项；
+4. `sea_light_shadow_parallel_append_parameters` (`0x687920`) 仅在其 pass 参数为 0 时写入 provider。它把 `EdgeHide != 0` 覆盖到 ID `44`，把 `ColorShadow` 覆盖到 ID `45`；遍历每个 live cascade 时，以 1-based cascade index 逐次提升 ID `43`，因此最终 ID `43` 等于 live cascade count；
+5. 同一循环把首级 `Softness` 原值写入 ID `46`。后一级模式为 `max(min(previous, 2) - 1, 0)`：只有存在第二个 cascade 且首级 `Softness >= 2` 时 ID `47 = 1`；第三个 cascade 的 ID `48 = 0`。
+
+Simple selector 对这六个值的消费顺序也已精确闭环：
+
+- ID `43 == 0` 时 positions `54..68` 全部不由 shadow 分支设置；
+- ID `43 != 0` 时 position `54` (`SSF_ShadowParallel`) 无条件设置；
+- 只有 shape `+0x90` bit `3` 非零时才继续设置 positions `55..68`。`ceylon_create_shape_environment` 证明该位来自 ShapeEnv cache key low bit `6`；
+- ID `43` 先取 `min(value, 3)`，其 bits 0/1 写 positions `55/56`；ID `44 != 0` 写 position `57`；ID `45` 先取 `min(value, 3)`，写 positions `58/59`；IDs `46/47/48` 分别先取 `min(value, 7)`，再写 `60..62`、`63..65`、`66..68`。
+
+Rust 因而提供 `CeylonShadowParallelParameters::from_light_shadow_parallel`、`set_shadow_parallel_contribution` 与 `srd_simple_shader_with_shadow_parallel`。最后一个 API 只在调用者明确提供场景级 shadow provider 时组合该上下文；它不会因为 key low bit `6` 单独存在就虚构 `LightShadowParallel`。完整 data 语料中只有 `acroarts/st_effect_use_list.afb`、`A000/stage/stage000058/st_00058.afb`、`A000/stage/stage000063/st_00063.afb` 含有 `LightShadowParallel` 类名，证明该 graph node 确实存在于发布资源，但类名语料不被反向当作任意 SRD draw 激活它的证据。
+
 例如 MultiTex0 variant `9` 的二进制值为 `1001b`，因此设置 positions `47` 与 `50`。在紧凑键中 position 47 是第 12 个字符的 bit 3，position 50 是第 13 个字符的 bit 2，局部编码恰为 `I`、`E`。
 
 ## 两套参数表与 `ShapeEnv2D` 的 position 2 来源
@@ -194,7 +213,8 @@ Rust 已实现：
 - 所有 uppercase define 的清零、累加和有序前缀输出；
 - 全部 16 个 integer selector parameter ID 到 Simple positions 的映射 API；
 - parameter `10` 的 non-blended write-distance pass 特殊分支；
+- `LightShadowParallel` authored properties、cascade 构造、parameters `43..48` provider、Simple positions `54..68` 与 key low bit `6` gate；
 - base environment `0..4` 与 low bit `3` 的 `ShapeEnv2D -> SSF_2DTransform` 映射，并拒绝未构造的 base `5..7`；
 - 完整 data 中 82 个 Simple key 的回归。
 
-`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。
+`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。shadow provider 现在可以显式组合，但不能在没有场景 graph 证据时默认附加到独立 SRD 预览。

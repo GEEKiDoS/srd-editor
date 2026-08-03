@@ -2,7 +2,7 @@
 
 本页记录 SRD 绘制包如何选择 Ceylon `sea::ShapeEnv*` 模块组合。它闭环的是 shader cache key 和模块索引，不把尚未还原的生成源码或像素公式写成结论。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `FAEA68422D3C7C60646BBADBDD5C878F73CF4796143750B1A2A023C192306D6A`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `0229B02CB4932EFE4576BE5AE7EC9E46ABA7470B9B430585FB5D858B238EC672`。
 
 ## 绘制包默认值与 SRD vertex format
 
@@ -68,6 +68,8 @@ cache miss 进入 `sub_670680`，建立 328 字节组合资源并按 key 选择�
 - manager `+0x174` 的 8 项 `sea::ShapeEnvMultiTex1BlendMode`：`high & 7`。
 
 构造函数 `ceylon_environment_manager_construct` (`0x66E4D0`) 的 push 顺序、各对象 RTTI/vtable 和每个对象保存的 variant index 共同证明上述模块类型及数量。`ceylon_create_shape_environment` 对 base vector 使用未经取模或边界检查的 `low & 7` 原始索引；因为构造器只建立 5 项，所以 `5..7` 不是可接受的已构造 variant，Rust 明确拒绝它们，而不虚构映射。`ShapeEnvBlendMode`、`MultiTex0`、`MultiTex1` 分别通过参数描述符 `0x1CAF86C/0x1CAF87C/0x1CAF88C` 把 variant 请求送入组合器。
+
+low bit `6` 不是 shadow provider 的开关。`ceylon_create_shape_environment` 只把它复制到 shape `+0x90` bit `3`；Simple selector 在独立的 parameter `43` 已经非零时，才用该 shape 位允许 parameters `43..48` 继续生成 positions `55..68`。parameter `43` 由场景 graph 的 `sea::LightShadowParallel` 按 live cascade 数提供；即使 low bit `6` 为零，非零 parameter `43` 仍会单独设置 position `54`。Rust 因此把 direct ShapeEnv key 与显式 shadow context 分开，详见 [`render-simple-selector.md`](render-simple-selector.md)。
 
 ## 完整游戏数据的初始 key 回归
 
