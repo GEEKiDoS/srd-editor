@@ -26,6 +26,7 @@
 - TEXL/TEX/CROP 记录、归一化矩形与外部 DDS 路径：[`evidence/texture-table.md`](evidence/texture-table.md)
 - SrImage render-preset 选择、62 项混合表、draw packet 编码与 D3D9 blend state：[`evidence/render-blend-state.md`](evidence/render-blend-state.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
+- Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 
@@ -109,7 +110,7 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 - CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成、父级偏移、active 单元局部四顶点以及用于 packed color 插值的单元归一化坐标已经闭环，详见 [`evidence/slice-geometry.md`](evidence/slice-geometry.md)。
 - CSLI CREF 每条记录的两个 signed i16、SLIC `0x46` 选择、运行时图像/矩形下标、flags flip/order 以及两个相同最终 UV 通道已经闭环。
 - CSLI/SLIC packed color 的零默认、双线性插值、逐通道乘法和饱和加法公式已经闭环；CAST 两种 tint 的来源仍未闭环。
-- TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；36 字节双 UV 顶点、四顶点 triangle strip 和最终 `DrawPrimitive` 参数也已闭环，详见 [`evidence/render-vertex-submission.md`](evidence/render-vertex-submission.md)。SrImage 的完整 render-preset 选择、特殊序列副作用、62 项 Ceylon blend 表、packet 低六位编码及最终 D3D9 blend/alpha-enable 状态也已闭环，详见 [`evidence/render-blend-state.md`](evidence/render-blend-state.md)。SrImage 原始 `+0x10/+0x14/+0x18` 分支、packet alpha/stencil 覆盖、深度 flags、comparison/stencil-op 表以及最终 D3D9 alpha/depth/stencil states 已闭环，详见 [`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)。基础 alpha ref/function 与 depth-bias 值的更上游来源、实际 DDS 解码、纹理创建、scissor 和其余 draw state 尚未闭环。
+- TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；36 字节双 UV 顶点、四顶点 triangle strip 和最终 `DrawPrimitive` 参数也已闭环，详见 [`evidence/render-vertex-submission.md`](evidence/render-vertex-submission.md)。SrImage 的完整 render-preset 选择、特殊序列副作用、62 项 Ceylon blend 表、packet 低六位编码及最终 D3D9 blend/alpha-enable 状态也已闭环，详见 [`evidence/render-blend-state.md`](evidence/render-blend-state.md)。SrImage 原始 `+0x10/+0x14/+0x18` 分支、packet alpha/stencil 覆盖、深度 flags、comparison/stencil-op 表以及最终 D3D9 alpha/depth/stencil states 已闭环，详见 [`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)。draw/material scissor 的两个独立 override 位、命令传递和最终 D3D9 `SCISSORTESTENABLE`/`SetScissorRect` 也已闭环，详见 [`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)。基础 alpha ref/function、depth-bias 和 scissor 输入的更上游来源、实际 DDS 解码、纹理创建和其余 draw state 尚未闭环。
 - CIMG 的 CREF/CRE1 双表保存、选择器、TEXL/CROP 坐标解析、坐标偏移、Point/Linear 选择与 Image/Text cast 分类已经闭环；TEXT 内部仍未完成。
 - CNUM 的结构布局、CREF/CRE1 双表、NumberCast 初值、完整静态格式化、数字及四种特殊字符的 glyph 映射、逐字符 quad 排版和每 glyph 纹理坐标已经闭环；历史 glyph 动画与最终绘制状态仍未完成。
 - CAST 专属通道 `11/12` 的尺寸/origin、`13..16` 的 packed vertex color、`17/20` 的 selector/CREF/CRE1，以及 SrRefCast 专属 `23` 的 CRFD 动画帧请求已经闭环并接入独立状态。CRFD 的 `source_name/layer_name` 已证明是在同一 SRD 的 `PROJ -> SCN  -> LAYR` 表内两级匹配，不是外部 SRD 路径；每个 RefCast 的独立复制层、顶层/复制层通道 `23` 递归动画、世界状态和递归绘制调用关系已经闭环，但实际 D3D9 draw submission 尚未实现。

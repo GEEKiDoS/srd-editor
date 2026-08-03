@@ -127,4 +127,4 @@ Rust 单元测试覆盖两个完整映射表、移位计数 `8` 的 x86 低字�
 
 ## 当前证据边界
 
-本页闭环的是上述 alpha/depth/stencil packet 字段及其最终 D3D9 状态。基础 RenderState 中 alpha reference/function 和 depth-bias 数值的更上游来源、renderer 私有排序字段、scissor、纹理创建、shader 与 draw 前后完整状态恢复仍需分别追踪。Rust API 因而要求调用者提供基础 alpha/stencil 状态，并继续用原始偏移名保存未命名字段。
+本页闭环的是上述 alpha/depth/stencil packet 字段及其最终 D3D9 状态。后续已经闭环的 draw/material scissor 状态见 [`render-scissor-state.md`](render-scissor-state.md)。基础 RenderState 中 alpha reference/function 和 depth-bias 数值的更上游来源、renderer 私有排序字段、纹理创建、shader 与 draw 前后完整状态恢复仍需分别追踪。Rust API 因而要求调用者提供基础 alpha/stencil 状态，并继续用原始偏移名保存未命名字段。

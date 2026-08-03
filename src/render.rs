@@ -25,6 +25,7 @@ pub enum D3d9RenderState {
     StencilMask = 58,
     StencilWriteMask = 59,
     BlendOperation = 171,
+    ScissorTestEnable = 174,
     SlopeScaleDepthBias = 175,
     BlendFactor = 193,
     DepthBias = 195,
@@ -103,6 +104,85 @@ pub fn d3d9_depth_bias_bits(value: i32) -> u32 {
 /// mask. Flipping the bit directly also preserves signed zero and NaN payloads.
 pub const fn d3d9_slope_scale_depth_bias_bits(value: f32) -> u32 {
     value.to_bits() ^ (-0.0_f32).to_bits()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct D3d9Rect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CeylonMaterialScissorSource {
+    /// Only bit 0x20 has a proven scissor meaning in this source record.
+    pub flags_00: u8,
+    /// Four LONGs copied from source offset +0x24.
+    pub rectangle_24: D3d9Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CeylonScissorStateCommand {
+    pub enabled: bool,
+    pub rectangle: D3d9Rect,
+}
+
+pub const CEYLON_MATERIAL_OVERRIDE_SCISSOR_ENABLE: u32 = 0x0200_0000;
+pub const CEYLON_MATERIAL_OVERRIDE_SCISSOR_RECTANGLE: u32 = 0x0400_0000;
+
+/// Reproduces the two independent source selections in
+/// `sea_material_sync_render_commands`. The enable and rectangle do not have
+/// to come from the same source record.
+pub const fn ceylon_select_material_scissor_command(
+    base: CeylonMaterialScissorSource,
+    override_source: CeylonMaterialScissorSource,
+    override_mask: u32,
+) -> CeylonScissorStateCommand {
+    let enable_source = if override_mask & CEYLON_MATERIAL_OVERRIDE_SCISSOR_ENABLE != 0 {
+        override_source
+    } else {
+        base
+    };
+    let rectangle_source = if override_mask & CEYLON_MATERIAL_OVERRIDE_SCISSOR_RECTANGLE != 0 {
+        override_source
+    } else {
+        base
+    };
+    CeylonScissorStateCommand {
+        enabled: enable_source.flags_00 & 0x20 != 0,
+        rectangle: rectangle_source.rectangle_24,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonRenderScissorState {
+    pub enabled: bool,
+    pub rectangle: D3d9Rect,
+}
+
+impl Default for CeylonRenderScissorState {
+    /// Exact fields written by `ceylon_reset_render_state_defaults`. The
+    /// disabled rectangle's left value is still preserved even though D3D9
+    /// does not consume the rectangle while the test is disabled.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rectangle: D3d9Rect {
+                left: 5,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+        }
+    }
+}
+
+impl CeylonRenderScissorState {
+    pub fn apply_command(&mut self, command: CeylonScissorStateCommand) {
+        self.enabled = command.enabled;
+        self.rectangle = command.rectangle;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1009,6 +1089,99 @@ mod tests {
             d3d9_slope_scale_depth_bias_bits(nan),
             nan.to_bits() ^ (-0.0_f32).to_bits()
         );
+    }
+
+    #[test]
+    fn material_scissor_sources_are_selected_independently() {
+        let base = CeylonMaterialScissorSource {
+            flags_00: 0x20,
+            rectangle_24: D3d9Rect {
+                left: 1,
+                top: 2,
+                right: 30,
+                bottom: 40,
+            },
+        };
+        let override_source = CeylonMaterialScissorSource {
+            flags_00: 0,
+            rectangle_24: D3d9Rect {
+                left: -5,
+                top: -6,
+                right: 70,
+                bottom: 80,
+            },
+        };
+
+        assert_eq!(
+            ceylon_select_material_scissor_command(base, override_source, 0),
+            CeylonScissorStateCommand {
+                enabled: true,
+                rectangle: base.rectangle_24,
+            }
+        );
+        assert_eq!(
+            ceylon_select_material_scissor_command(
+                base,
+                override_source,
+                CEYLON_MATERIAL_OVERRIDE_SCISSOR_ENABLE,
+            ),
+            CeylonScissorStateCommand {
+                enabled: false,
+                rectangle: base.rectangle_24,
+            }
+        );
+        assert_eq!(
+            ceylon_select_material_scissor_command(
+                base,
+                override_source,
+                CEYLON_MATERIAL_OVERRIDE_SCISSOR_RECTANGLE,
+            ),
+            CeylonScissorStateCommand {
+                enabled: true,
+                rectangle: override_source.rectangle_24,
+            }
+        );
+        assert_eq!(
+            ceylon_select_material_scissor_command(
+                base,
+                override_source,
+                CEYLON_MATERIAL_OVERRIDE_SCISSOR_ENABLE
+                    | CEYLON_MATERIAL_OVERRIDE_SCISSOR_RECTANGLE,
+            ),
+            CeylonScissorStateCommand {
+                enabled: false,
+                rectangle: override_source.rectangle_24,
+            }
+        );
+    }
+
+    #[test]
+    fn scissor_command_replaces_the_exact_render_state_fields() {
+        assert_eq!(
+            CeylonScissorStateCommand::default(),
+            CeylonScissorStateCommand {
+                enabled: false,
+                rectangle: D3d9Rect::default(),
+            }
+        );
+
+        let mut state = CeylonRenderScissorState::default();
+        assert!(!state.enabled);
+        assert_eq!(state.rectangle.left, 5);
+
+        let command = CeylonScissorStateCommand {
+            enabled: true,
+            rectangle: D3d9Rect {
+                left: -10,
+                top: 20,
+                right: 300,
+                bottom: 400,
+            },
+        };
+        state.apply_command(command);
+        assert_eq!(state.enabled, command.enabled);
+        assert_eq!(state.rectangle, command.rectangle);
+        assert_eq!(D3d9RenderState::ScissorTestEnable as u32, 174);
     }
 
     #[test]
