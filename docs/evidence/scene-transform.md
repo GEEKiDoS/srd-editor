@@ -102,7 +102,7 @@ TRS2 复制把二维位置放入 X/Y、旋转放入 Z、缩放放入 X/Y，其�
 | `6..8` | scale X/Y/Z |
 | `10` | visibility 的 4 字节存储 |
 
-标量求值函数直接向目标地址写入 4 字节；它不会按目标字段类型转换。因此 Rust 的公共通道应用也保留 `f32`、`i32` 或四字节结果的原始位型。通道 `9`、`19`、`21`、`22` 会进入打包字段的分量 setter，但颜色/alpha 的确切命名尚未闭环，当前不实现。CAST 专属通道 `11..17` 与 `20` 已闭环到尺寸、顶点色和双坐标描述符，详见 [`image-coordinate-animation.md`](image-coordinate-animation.md)；`23` 尚未完整实现。
+标量求值函数直接向目标地址写入 4 字节；它不会按目标字段类型转换。因此 Rust 的公共通道应用也保留 `f32`、`i32` 或四字节结果的原始位型。通道 `9`、`19`、`21`、`22` 会进入打包字段的分量 setter，但颜色/alpha 的确切命名尚未闭环，当前不实现。CAST 专属通道 `11..17` 与 `20` 已闭环到尺寸、顶点色和双坐标描述符，详见 [`image-coordinate-animation.md`](image-coordinate-animation.md)；`23` 已闭环为 SrRefCast 的引用动画帧请求，详见 [`crfd-reference-cast.md`](crfd-reference-cast.md)。
 
 本地 avatar 样本已闭环验证：`001_Default_loop` 的 MOT target `61` 选择第 61 个 CAST，target `5` 在 frame `50` 求值得到 `349`，并写入该 CAST 公共变换的 rotation Z。
 
@@ -139,4 +139,4 @@ Rust `Layer::build_hierarchy` 已按该首子/同级链构建 parents、children
 
 - `srd_compute_parent_csli_cell_offset` 的 SrSliceCast 尺寸、origin、显式单元累计、2D flags 分支与公式均已闭环并由 Rust 从 SRD 数据自行计算。
 - 两个 packed 字段及通道 `9/19/21/22` 的精确颜色分量语义未实现。
-- CAST 专属动画通道 `11..17/20` 与投影、视口映射已闭环；通道 `23` 及公共 packed color/alpha 通道仍未实现。
+- CAST 专属动画通道 `11..17/20/23` 与投影、视口映射已闭环；引用资源递归实例化及公共 packed color/alpha 通道仍未实现。

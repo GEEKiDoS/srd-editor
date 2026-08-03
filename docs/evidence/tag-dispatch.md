@@ -44,6 +44,7 @@
 - `CNUM` (`0xAA2440`) 分别处理 `CREF`、`CRE1`；遇到 `TEXT` 时只执行标签比较，没有调用 `0xAA18F0` 或其他文本解析函数。
 - `CSLI` (`0xAA3320`) 处理 `CREF` → `0xAA1390`、`SLIC` → `0xAA37A0`。
 - `CATL` (`0xAA0380`) 处理 `CATR`。
+- `CRFD` (`0xAA2DE0`) 的 `0x51/0x80..0x84` 已闭环到 SrRefCast 引用资源、层、动画和默认帧，见 [`crfd-reference-cast.md`](crfd-reference-cast.md)。
 
 后续运行时证据已经证明 CIMG 两表同时保留，并由 UV 通道参数最低位分别选择；详见 [`cimg-image-cast.md`](cimg-image-cast.md)。CNUM 的两表、SrNumberCast 建立和 glyph 映射见 [`cnum-number-cast.md`](cnum-number-cast.md)。
 

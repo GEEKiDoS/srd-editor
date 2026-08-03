@@ -28,6 +28,51 @@ fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
 }
 
 #[test]
+fn cast_channel_23_only_targets_reference_casts() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut count = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file
+            .blocks_depth_first()
+            .filter(|block| block.is_tag(b"LAYR"))
+        {
+            let layer = Layer::from_block(&file, block).unwrap();
+            for animation in block.children.iter().filter(|child| child.is_tag(b"ANIM")) {
+                for motion_block in animation
+                    .children
+                    .iter()
+                    .filter(|child| child.is_tag(b"MOT "))
+                {
+                    let motion = Motion::from_block(&file, motion_block).unwrap();
+                    let Ok(node_index) = usize::try_from(motion.target) else {
+                        continue;
+                    };
+                    let Some(node) = layer.nodes.get(node_index) else {
+                        continue;
+                    };
+                    for track in motion.tracks.iter().filter(|track| track.target == 23) {
+                        assert_eq!(node.cast_type(), Some(3));
+                        assert_eq!(track.format, 0x13);
+                        assert!(matches!(track.keys, KeyData::Key20F32(_)));
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(count, 111);
+}
+
+#[test]
 fn parses_local_corpus_with_binary_proven_boundaries() {
     let root = corpus_root();
     if !root.exists() {
@@ -176,6 +221,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut resolved_animated_image_references = 0usize;
     let mut animated_vertex_color_evaluations = 0usize;
     let mut animated_image_size_evaluations = 0usize;
+    let mut reference_count = 0usize;
+    let mut animated_reference_frame_evaluations = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file).unwrap();
@@ -400,6 +447,16 @@ fn parses_and_links_binary_proven_csli_grids() {
                     resolved_number_glyph_textures += 1;
                 }
             }
+            for (node_index, definition) in layer.reference_by_node.iter().enumerate() {
+                let Some(definition) = definition else {
+                    continue;
+                };
+                assert_eq!(layer.nodes[node_index].cast_type(), Some(3));
+                assert!(definition.source_name.len() <= 512);
+                assert!(definition.layer_name.len() <= 512);
+                assert!(definition.animation_name.len() <= 512);
+                reference_count += 1;
+            }
             for animation in block.children.iter().filter(|child| child.is_tag(b"ANIM")) {
                 for motion_block in animation
                     .children
@@ -410,6 +467,42 @@ fn parses_and_links_binary_proven_csli_grids() {
                     let Ok(node_index) = usize::try_from(motion.target) else {
                         continue;
                     };
+                    for track in motion.tracks.iter().filter(|track| track.target == 23) {
+                        let definition = layer
+                            .reference_by_node
+                            .get(node_index)
+                            .and_then(|definition| definition.as_ref())
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{} channel 23 NODE {node_index} has no CRFD",
+                                    path.display()
+                                )
+                            });
+                        let KeyData::Key20F32(keys) = &track.keys else {
+                            panic!("reference frame track has non-f32 KEY data");
+                        };
+                        for (index, key) in keys.iter().enumerate() {
+                            let request = definition
+                                .animation_request(track, key.frame as f32)
+                                .expect("enabled reference track produced no request");
+                            assert_eq!(request.source_name, definition.source_name);
+                            assert_eq!(request.layer_name, definition.layer_name);
+                            assert_eq!(request.animation_name, definition.animation_name);
+                            animated_reference_frame_evaluations += 1;
+                            if let Some(next) = keys.get(index + 1) {
+                                let request = definition
+                                    .animation_request(
+                                        track,
+                                        (key.frame as f32 + next.frame as f32) * 0.5,
+                                    )
+                                    .expect("enabled reference midpoint produced no request");
+                                assert_eq!(request.source_name, definition.source_name);
+                                assert_eq!(request.layer_name, definition.layer_name);
+                                assert_eq!(request.animation_name, definition.animation_name);
+                                animated_reference_frame_evaluations += 1;
+                            }
+                        }
+                    }
                     let base = layer
                         .image_by_node
                         .get(node_index)
@@ -595,7 +688,7 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, animated image reference evaluations={animated_image_reference_evaluations}, resolved animated image references={resolved_animated_image_references}, animated vertex color evaluations={animated_vertex_color_evaluations}, animated image size evaluations={animated_image_size_evaluations}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, animated image reference evaluations={animated_image_reference_evaluations}, resolved animated image references={resolved_animated_image_references}, animated vertex color evaluations={animated_vertex_color_evaluations}, animated image size evaluations={animated_image_size_evaluations}, CRFD definitions={reference_count}, animated reference frame evaluations={animated_reference_frame_evaluations}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
@@ -616,6 +709,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     assert!(resolved_animated_image_references > 0);
     assert!(animated_vertex_color_evaluations > 0);
     assert!(animated_image_size_evaluations > 0);
+    assert!(reference_count > 0);
+    assert!(animated_reference_frame_evaluations > 0);
     assert!(texture_count > 0);
     assert!(crop_count > 0);
     assert!(nonnegative_cell_crefs > 0);

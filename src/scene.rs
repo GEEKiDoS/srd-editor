@@ -3,6 +3,7 @@ use std::fmt;
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
 use crate::number::NumberDefinition;
+use crate::reference::ReferenceDefinition;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -64,6 +65,7 @@ pub struct Layer {
     pub transforms: Vec<RawTransform>,
     pub image_by_node: Vec<Option<ImageDefinition>>,
     pub number_by_node: Vec<Option<NumberDefinition>>,
+    pub reference_by_node: Vec<Option<ReferenceDefinition>>,
     pub csli_by_node: Vec<Option<CsliDefinition>>,
 }
 
@@ -149,6 +151,7 @@ impl Layer {
             .flat_map(|data| data.children.iter());
         let mut image_by_node = vec![None; node_count];
         let mut number_by_node = vec![None; node_count];
+        let mut reference_by_node = vec![None; node_count];
         let mut csli_by_node = vec![None; node_count];
         for data_block in data_children {
             if data_block.is_tag(b"CIMG") {
@@ -187,6 +190,24 @@ impl Layer {
                 *destination = Some(number);
                 continue;
             }
+            if data_block.is_tag(b"CRFD") {
+                let reference = ReferenceDefinition::from_block(file, data_block)
+                    .map_err(|error| SceneError(error.to_string()))?;
+                let index = usize::try_from(reference.node_index).map_err(|_| {
+                    SceneError(format!(
+                        "CRFD at {:#x} has negative NODE index {}",
+                        data_block.offset, reference.node_index
+                    ))
+                })?;
+                let destination = reference_by_node.get_mut(index).ok_or_else(|| {
+                    SceneError(format!(
+                        "CRFD at {:#x} references NODE {index} outside {node_count} nodes",
+                        data_block.offset
+                    ))
+                })?;
+                *destination = Some(reference);
+                continue;
+            }
             if !data_block.is_tag(b"CSLI") {
                 continue;
             }
@@ -217,6 +238,7 @@ impl Layer {
             transforms,
             image_by_node,
             number_by_node,
+            reference_by_node,
             csli_by_node,
         })
     }

@@ -3,6 +3,7 @@ pub mod csli;
 pub mod image;
 pub mod number;
 pub mod projection;
+pub mod reference;
 pub mod scene;
 pub mod texture;
 pub mod transform;
