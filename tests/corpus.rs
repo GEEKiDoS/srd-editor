@@ -174,6 +174,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     let mut resolved_number_glyph_textures = 0usize;
     let mut animated_image_reference_evaluations = 0usize;
     let mut resolved_animated_image_references = 0usize;
+    let mut animated_vertex_color_evaluations = 0usize;
+    let mut animated_image_size_evaluations = 0usize;
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let textures = TextureList::from_file(&file).unwrap();
@@ -423,6 +425,54 @@ fn parses_and_links_binary_proven_csli_grids() {
                     let Some(base) = base else {
                         continue;
                     };
+                    let mut geometry = base.initial_geometry_state();
+                    for track in motion
+                        .tracks
+                        .iter()
+                        .filter(|track| matches!(track.target, 11 | 12))
+                    {
+                        let KeyData::Key20F32(keys) = &track.keys else {
+                            panic!("image size track has non-f32 KEY data");
+                        };
+                        for (index, key) in keys.iter().enumerate() {
+                            assert!(base.apply_size_track(&mut geometry, track, key.frame as f32));
+                            animated_image_size_evaluations += 1;
+                            if let Some(next) = keys.get(index + 1) {
+                                assert!(base.apply_size_track(
+                                    &mut geometry,
+                                    track,
+                                    (key.frame as f32 + next.frame as f32) * 0.5,
+                                ));
+                                animated_image_size_evaluations += 1;
+                            }
+                        }
+                    }
+                    for track in motion
+                        .tracks
+                        .iter()
+                        .filter(|track| matches!(track.target, 13..=16))
+                    {
+                        let KeyData::Key8Bytes4(keys) = &track.keys else {
+                            panic!("vertex color track has non-byte4 KEY data");
+                        };
+                        let mut state = base.initial_coordinate_state(ImageReferenceChannel::Cref);
+                        for (index, key) in keys.iter().enumerate() {
+                            assert!(base.apply_vertex_color_track(
+                                &mut state,
+                                track,
+                                key.frame as f32
+                            ));
+                            animated_vertex_color_evaluations += 1;
+                            if let Some(next) = keys.get(index + 1) {
+                                assert!(base.apply_vertex_color_track(
+                                    &mut state,
+                                    track,
+                                    (key.frame as f32 + next.frame as f32) * 0.5,
+                                ));
+                                animated_vertex_color_evaluations += 1;
+                            }
+                        }
+                    }
                     for track in motion
                         .tracks
                         .iter()
@@ -545,7 +595,7 @@ fn parses_and_links_binary_proven_csli_grids() {
         }
     }
     eprintln!(
-        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, animated image reference evaluations={animated_image_reference_evaluations}, resolved animated image references={resolved_animated_image_references}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
+        "CSLI definitions={csli_count}, CREF records={cref_count}, resolved cell CREFs={resolved_cell_crefs}, CIMG definitions={image_count}, CIMG CREF records={image_cref_count}, CIMG CRE1 records={image_cre1_count}, resolved CIMG channels={resolved_image_channels}, text casts={text_cast_count}, CNUM definitions={number_count}, CNUM CREF records={number_cref_count}, CNUM CRE1 records={number_cre1_count}, resolved CNUM channels={resolved_number_channels}, valid CNUM special glyphs={valid_number_special_glyphs}, CNUM glyphs={number_glyph_count}, drawable CNUM glyphs={drawable_number_glyph_count}, resolved CNUM glyph textures={resolved_number_glyph_textures}, animated image reference evaluations={animated_image_reference_evaluations}, resolved animated image references={resolved_animated_image_references}, animated vertex color evaluations={animated_vertex_color_evaluations}, animated image size evaluations={animated_image_size_evaluations}, TEX records={texture_count}, CROP records={crop_count}, nonnegative cell CREFs={nonnegative_cell_crefs}, resolved cell textures={resolved_cell_textures}, active color cells={active_color_cells}, missing 0x3A={missing_3a}, missing 0x33={missing_33}, non-four 0x44={non_four_44}, indexed children={indexed_children}, active indexed children={active_indexed_children}"
     );
     assert!(csli_count > 0);
     assert!(cref_count > 0);
@@ -564,6 +614,8 @@ fn parses_and_links_binary_proven_csli_grids() {
     assert!(resolved_number_glyph_textures > 0);
     assert!(animated_image_reference_evaluations > 0);
     assert!(resolved_animated_image_references > 0);
+    assert!(animated_vertex_color_evaluations > 0);
+    assert!(animated_image_size_evaluations > 0);
     assert!(texture_count > 0);
     assert!(crop_count > 0);
     assert!(nonnegative_cell_crefs > 0);

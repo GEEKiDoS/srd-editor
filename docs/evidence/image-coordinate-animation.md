@@ -1,9 +1,9 @@
-# CIMG/CNUM 双坐标描述符动画证据
+# SrImage CAST 动画通道证据
 
-本页记录 CAST 专属动画通道到 SrImage 两份 48 字节坐标描述符的已闭环路径。分析对象为：
+本页记录 CAST 专属动画通道到 SrImage 尺寸、顶点色和两份 48 字节坐标描述符的已闭环路径。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`CE6CC7A75EDE1FA4EE7830736486B7BF71C64C03A8366344BE9A5C194046C6C5`。
+- 保存后的 IDB SHA-256：`2A8312352934C3A1CE061D2AC594392AD6D32F2E4DD41F566BAB95CE5316624D`。
 
 ## CAST 专属通道分派
 
@@ -17,7 +17,40 @@
 | `20` | 坐标描述符通道 1，即 CRE1 |
 | `23` | CAST 虚表槽 `+0x7C`；具体语义依派生 CAST 而异 |
 
-Rust 本轮只实现已经继续闭环到 key、引用表和 TEXL/CROP 的 `17/20`。尺寸、颜色和通道 `23` 保留在后续任务中，不因定位到目标偏移就提前赋予完整编辑语义。
+Rust 已实现 `11..17` 与 `20`。通道 `23` 保留在后续任务中，不因定位到虚表槽就提前赋予统一编辑语义。
+
+## 尺寸通道 11/12
+
+通道 `11` 和 `12` 分别复制当前 SrImage `[width,height]`，把公共标量求值器的四个结果字节原样写入 width 或 height，再调用 `srd_set_srimage_size_and_origin` (`0xAD2EB0`)。因此它们不进行目标类型转换，随后会同时更新：
+
+- SrImage 当前尺寸；
+- 两份坐标描述符中的尺寸副本；
+- origin mode `0..8` 对应的 `factor * current_size`；
+- mode 超出表范围时保留的自定义 origin。
+
+`ImageGeometryState` 保存动画后的 size/origin；`apply_size_track` 与 `build_quad_with_geometry` 复现该写回和最终 Image/Number quad。样本中的通道 `11/12` 使用 format `0x13/0x113`，在 key 与相邻中点共完成 5712 次 CIMG/CNUM 尺寸求值。
+
+## 顶点色通道 13..16
+
+四个通道写入第一份坐标描述符的四个 packed color，但通道编号按二维网格而不是内存顶点顺序排列：
+
+```text
+13 -> vertex 0 (left/top)
+14 -> vertex 2 (right/top)
+15 -> vertex 1 (left/bottom)
+16 -> vertex 3 (right/bottom)
+```
+
+样本使用 Key8 family `0x50`（format `0x51/0x151`）。`srd_eval_key8_bytes4_linear` (`0x129A500`) 在端点外保持端点值；区间内调用 `srd_lerp_packed_color_bytes` (`0x129BAA0`)。每个字节严格执行：
+
+```text
+left_unit  = f32(left)  * f32::from_bits(0x3B808081)
+right_unit = f32(right) * f32::from_bits(0x3B808081)
+out = cvtt_i32((left_unit * (1-t) + right_unit * t)
+               * f32::from_bits(0x437F0000))
+```
+
+Rust 的 `ScalarValue::Bytes4` 保留 KEY 解析后的四字节顺序，并由 `apply_vertex_color_track` 写入上述顶点。53 个样本在 CIMG/CNUM 上的 key 和相邻中点共完成 19424 次顶点色求值。
 
 ## 标量轨道
 
@@ -59,13 +92,11 @@ selector 最终写入描述符 `+0x18`。`srd_lookup_cref_rectangle` (`0x129B2C0
 
 ## Rust 对应与样本验证
 
-`ImageDefinition::apply_coordinate_track` 同时支持标量原始位写入和 20 字节引用 key。它直接修改 `ImageCoordinateState`，保留 wrap、端点、mode 0 hold、`cvtt` selector、左右查询顺序、显式 image 选择、矩形 f32 插值及无效查询时的旧矩形。
+`ImageDefinition` 的运行时辅助现在覆盖 size/origin、四个 packed vertex color 和双坐标描述符。`apply_coordinate_track` 同时支持标量原始位写入和 20 字节引用 key，保留 wrap、端点、mode 0 hold、`cvtt` selector、左右查询顺序、显式 image 选择、矩形 f32 插值及无效查询时的旧矩形。
 
 53 个本地 SRD 中，通道 `17` 只出现 format `0x23/0x123`，通道 `20` 同样只出现 `0x23/0x123`。对已连接到 CIMG/CNUM 的轨道，在每个 key 和相邻 key 中点共执行 183432 次求值，其中 183016 次得到能够继续通过 `resolve_coordinates` 的显式纹理引用。差额来自游戏允许返回显式状态、但 selector 或 image index 在该时刻不可绘制的情况。
 
 ## 仍未闭环
 
-- 通道 `11/12` 的尺寸动画写回 Rust 运行时状态；
-- 通道 `13..16` 的 packed color key 插值和四顶点绑定；
 - 通道 `23` 在各派生 CAST 中的虚函数语义；
 - 动画后的双 UV 在 shader/固定管线中的最终组合与 D3D9 draw 状态。

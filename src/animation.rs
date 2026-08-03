@@ -48,6 +48,7 @@ pub struct Key20<T> {
 pub enum ScalarValue {
     F32(f32),
     I32(i32),
+    Bytes4([u8; 4]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,7 +147,7 @@ impl Track {
         match (&self.keys, self.format & 0x70) {
             (KeyData::Key8F32(keys), 0x10) => evaluate_key8_f32(keys, frame),
             (KeyData::Key8I32(keys), 0x40) => evaluate_key8_i32_linear(keys, frame),
-            (KeyData::Key8Bytes4(_), 0x50) => Evaluation::Unsupported,
+            (KeyData::Key8Bytes4(keys), 0x50) => evaluate_key8_bytes4(keys, frame),
             _ => Evaluation::Unsupported,
         }
     }
@@ -363,6 +364,33 @@ fn evaluate_key8_i32_linear(keys: &[Key8<i32>], frame: f32) -> Evaluation {
     }
 }
 
+fn evaluate_key8_bytes4(keys: &[Key8<[u8; 4]>], frame: f32) -> Evaluation {
+    const BYTE_TO_UNIT: f32 = f32::from_bits(0x3b80_8081);
+    const UNIT_TO_BYTE: f32 = f32::from_bits(0x437f_0000);
+
+    match segment8(keys, frame) {
+        Segment8::Empty => Evaluation::Unsupported,
+        Segment8::Value(value) => Evaluation::Value(ScalarValue::Bytes4(value)),
+        Segment8::Pair(left, right) => {
+            let t = normalized(frame, left.frame, right.frame);
+            let inverse = 1.0 - t;
+            let mut value = [0u8; 4];
+            for (index, destination) in value.iter_mut().enumerate() {
+                let mut component = left.value[index] as f32;
+                component *= BYTE_TO_UNIT;
+                component *= inverse;
+                let mut right_component = right.value[index] as f32;
+                right_component *= BYTE_TO_UNIT;
+                right_component *= t;
+                component += right_component;
+                component *= UNIT_TO_BYTE;
+                *destination = cvtt_f32_to_i32(component) as u8;
+            }
+            Evaluation::Value(ScalarValue::Bytes4(value))
+        }
+    }
+}
+
 fn evaluate_key20_f32(keys: &[Key20<f32>], frame: f32) -> Evaluation {
     match segment20(keys, frame) {
         Segment20::Empty => Evaluation::Unsupported,
@@ -514,5 +542,39 @@ pub(crate) fn cvtt_f32_to_i32(value: f32) -> i32 {
         i32::MIN
     } else {
         value.trunc() as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte4_keys_use_the_binary_normalize_lerp_and_truncate_chain() {
+        let track = Track {
+            target: 13,
+            key_count: 2,
+            format: 0x51,
+            range_start: 0,
+            range_end: 10,
+            keys: KeyData::Key8Bytes4(vec![
+                Key8 {
+                    frame: 0,
+                    value: [0, 64, 128, 255],
+                },
+                Key8 {
+                    frame: 10,
+                    value: [255, 128, 0, 0],
+                },
+            ]),
+        };
+        assert_eq!(
+            track.evaluate(5.0),
+            Evaluation::Value(ScalarValue::Bytes4([127, 96, 64, 127]))
+        );
+        assert_eq!(
+            track.evaluate(0.0),
+            Evaluation::Value(ScalarValue::Bytes4([0, 64, 128, 255]))
+        );
     }
 }

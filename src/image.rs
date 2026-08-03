@@ -52,6 +52,12 @@ pub struct ImageQuad {
     pub positions: [[f32; 3]; 4],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageGeometryState {
+    pub size: [f32; 2],
+    pub origin: [f32; 2],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageVertexColors {
     pub primary: [u8; 4],
@@ -160,21 +166,7 @@ impl ImageDefinition {
     }
 
     pub fn runtime_origin_offset(&self) -> [f32; 2] {
-        const FACTORS: [[f32; 2]; 9] = [
-            [0.0, 0.0],
-            [0.5, 0.0],
-            [1.0, 0.0],
-            [0.0, 0.5],
-            [0.5, 0.5],
-            [1.0, 0.5],
-            [0.0, 1.0],
-            [0.5, 1.0],
-            [1.0, 1.0],
-        ];
-        let Some(factors) = FACTORS.get(usize::from(self.origin_mode)) else {
-            return self.custom_origin;
-        };
-        [factors[0] * self.width, factors[1] * self.height]
+        self.origin_for_size([self.width, self.height])
     }
 
     pub fn point_sampled(&self) -> bool {
@@ -199,11 +191,47 @@ impl ImageDefinition {
     }
 
     pub fn build_quad(&self, axis_mode: bool) -> ImageQuad {
-        let origin = self.runtime_origin_offset();
-        let left = -origin[0];
-        let right = self.width - origin[0];
-        let mut first_y = -origin[1];
-        let mut second_y = self.height - origin[1];
+        self.build_quad_with_geometry(self.initial_geometry_state(), axis_mode)
+    }
+
+    pub fn initial_geometry_state(&self) -> ImageGeometryState {
+        ImageGeometryState {
+            size: [self.width, self.height],
+            origin: self.runtime_origin_offset(),
+        }
+    }
+
+    pub fn apply_size_track(
+        &self,
+        state: &mut ImageGeometryState,
+        track: &Track,
+        frame: f32,
+    ) -> bool {
+        let component = match track.target {
+            11 => 0,
+            12 => 1,
+            _ => return false,
+        };
+        let bits = match track.evaluate(frame) {
+            Evaluation::Value(ScalarValue::F32(value)) => value.to_bits(),
+            Evaluation::Value(ScalarValue::I32(value)) => value as u32,
+            Evaluation::Value(ScalarValue::Bytes4(value)) => u32::from_le_bytes(value),
+            Evaluation::Unchanged | Evaluation::Unsupported => return false,
+        };
+        state.size[component] = f32::from_bits(bits);
+        state.origin = self.origin_for_size(state.size);
+        true
+    }
+
+    pub fn build_quad_with_geometry(
+        &self,
+        geometry: ImageGeometryState,
+        axis_mode: bool,
+    ) -> ImageQuad {
+        let left = -geometry.origin[0];
+        let right = geometry.size[0] - geometry.origin[0];
+        let mut first_y = -geometry.origin[1];
+        let mut second_y = geometry.size[1] - geometry.origin[1];
         if !axis_mode {
             first_y = -first_y;
             second_y = -second_y;
@@ -216,6 +244,24 @@ impl ImageDefinition {
                 [right, second_y, 0.0],
             ],
         }
+    }
+
+    fn origin_for_size(&self, size: [f32; 2]) -> [f32; 2] {
+        const FACTORS: [[f32; 2]; 9] = [
+            [0.0, 0.0],
+            [0.5, 0.0],
+            [1.0, 0.0],
+            [0.0, 0.5],
+            [0.5, 0.5],
+            [1.0, 0.5],
+            [0.0, 1.0],
+            [0.5, 1.0],
+            [1.0, 1.0],
+        ];
+        let Some(factors) = FACTORS.get(usize::from(self.origin_mode)) else {
+            return self.custom_origin;
+        };
+        [factors[0] * size[0], factors[1] * size[1]]
     }
 
     pub fn vertex_colors(
@@ -244,6 +290,7 @@ impl ImageDefinition {
             let bits = match track.evaluate(frame) {
                 Evaluation::Value(ScalarValue::F32(value)) => value.to_bits(),
                 Evaluation::Value(ScalarValue::I32(value)) => value as u32,
+                Evaluation::Value(ScalarValue::Bytes4(value)) => u32::from_le_bytes(value),
                 Evaluation::Unchanged | Evaluation::Unsupported => return Ok(false),
             };
             let bytes = bits.to_le_bytes();
@@ -337,6 +384,29 @@ impl ImageDefinition {
         state.explicit_image_index = explicit_image_index;
         state.uses_explicit_rectangle = true;
         Ok(true)
+    }
+
+    pub fn apply_vertex_color_track(
+        &self,
+        state: &mut ImageCoordinateState,
+        track: &Track,
+        frame: f32,
+    ) -> bool {
+        let vertex_index = match track.target {
+            13 => 0,
+            14 => 2,
+            15 => 1,
+            16 => 3,
+            _ => return false,
+        };
+        let bytes = match track.evaluate(frame) {
+            Evaluation::Value(ScalarValue::F32(value)) => value.to_bits().to_le_bytes(),
+            Evaluation::Value(ScalarValue::I32(value)) => (value as u32).to_le_bytes(),
+            Evaluation::Value(ScalarValue::Bytes4(value)) => value,
+            Evaluation::Unchanged | Evaluation::Unsupported => return false,
+        };
+        state.vertex_colors[vertex_index] = bytes;
+        true
     }
 
     #[allow(clippy::assign_op_pattern)]
@@ -743,6 +813,36 @@ mod tests {
                 [7.0, -4.0, 0.0],
             ]
         );
+
+        let mut centered = definition.clone();
+        centered.origin_mode = 4;
+        let mut geometry = centered.initial_geometry_state();
+        let width_track = Track {
+            target: 11,
+            key_count: 1,
+            format: 0x13,
+            range_start: 0,
+            range_end: 0,
+            keys: KeyData::Key20F32(vec![Key20 {
+                frame: 0,
+                value: 20.0,
+                mode: 0,
+                slope_in: 0.0,
+                slope_out: 0.0,
+            }]),
+        };
+        assert!(centered.apply_size_track(&mut geometry, &width_track, 0.0));
+        assert_eq!(geometry.size, [20.0, 6.0]);
+        assert_eq!(geometry.origin, [10.0, 3.0]);
+        assert_eq!(
+            centered.build_quad_with_geometry(geometry, true).positions,
+            [
+                [-10.0, -3.0, 0.0],
+                [-10.0, 3.0, 0.0],
+                [10.0, -3.0, 0.0],
+                [10.0, 3.0, 0.0],
+            ]
+        );
     }
 
     #[test]
@@ -769,5 +869,20 @@ mod tests {
                 )
                 .is_none()
         );
+
+        let track = Track {
+            target: 14,
+            key_count: 1,
+            format: 0x51,
+            range_start: 0,
+            range_end: 0,
+            keys: KeyData::Key8Bytes4(vec![crate::animation::Key8 {
+                frame: 0,
+                value: [1, 2, 3, 4],
+            }]),
+        };
+        let mut state = definition.initial_coordinate_state(ImageReferenceChannel::Cref);
+        assert!(definition.apply_vertex_color_track(&mut state, &track, 0.0));
+        assert_eq!(state.vertex_colors[2], [1, 2, 3, 4]);
     }
 }

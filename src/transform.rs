@@ -64,6 +64,7 @@ fn scalar_bits(value: ScalarValue) -> u32 {
     match value {
         ScalarValue::F32(value) => value.to_bits(),
         ScalarValue::I32(value) => value as u32,
+        ScalarValue::Bytes4(value) => u32::from_le_bytes(value),
     }
 }
 

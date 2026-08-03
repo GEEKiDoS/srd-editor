@@ -99,6 +99,6 @@ secondary = CAST additive tint
 
 - TEXT 子块的完整字段、字体资源、排版和 glyph 绘制；
 - 两个 UV 通道进入 shader/固定管线后的精确组合；
-- CAST tint 的动画/default 来源。
+- CAST multiplicative/additive tint 的动画/default 来源；CIMG 自身四个 vertex color 的通道 `13..16` 已闭环。
 
 坐标描述符的动画通道 `17/20` 已另行闭环，见 [`image-coordinate-animation.md`](image-coordinate-animation.md)。
