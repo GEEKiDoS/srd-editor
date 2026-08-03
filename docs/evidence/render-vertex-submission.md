@@ -72,4 +72,4 @@ DrawPrimitive(D3DPT_TRIANGLESTRIP, start_vertex, 2)
 
 - draw packet 的 shader、blend、depth、scissor/cull 等全部状态位到 D3D9 常量的映射。
 - Image/Text 双 UV 在 shader 或固定管线中的组合公式。
-- DDS 解码、D3D9 纹理创建和设备丢失/重建设计。
+- DDS 描述符和 D3D9/D3DX9_43 创建参数已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；原生创建后的逐 surface 上传和设备丢失/重建仍待闭环。

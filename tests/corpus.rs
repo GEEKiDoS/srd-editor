@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
 use srd_editor::csli::CsliDefinition;
+use srd_editor::dds::{D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
@@ -28,6 +29,66 @@ fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
             output.push(path);
         }
     }
+}
+
+fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dds_files(&path, output);
+        } else if path.extension().is_some_and(|extension| extension == "dds") {
+            output.push(path);
+        }
+    }
+}
+
+#[test]
+fn parses_local_dds_corpus_with_the_binary_resource_rules() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_dds_files(&root, &mut files);
+    files.sort();
+    assert_eq!(files.len(), 97, "unexpected local DDS corpus size");
+
+    let mut format_counts = std::collections::BTreeMap::new();
+    let mut mip_counts = std::collections::BTreeMap::new();
+    let mut direct_count = 0usize;
+    let mut d3dx_count = 0usize;
+    for path in files {
+        let bytes = fs::read(&path).unwrap();
+        let descriptor = DdsDescriptor::parse(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        descriptor
+            .validate_data_len(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(descriptor.required_data_len().unwrap(), bytes.len());
+        assert!(!descriptor.is_cube);
+        *format_counts.entry(descriptor.format.0).or_insert(0usize) += 1;
+        *mip_counts.entry(descriptor.mip_count).or_insert(0usize) += 1;
+        match descriptor.creation_plan(DdsLoadPolicy::default()) {
+            D3d9TextureCreation::Direct2d { .. } => direct_count += 1,
+            D3d9TextureCreation::D3dx2d { .. } => d3dx_count += 1,
+            plan => panic!("{} unexpectedly produced {plan:?}", path.display()),
+        }
+    }
+
+    assert_eq!(
+        format_counts,
+        [
+            (GameTextureFormat::A8_R8_G8_B8.0, 70),
+            (GameTextureFormat::DXT5.0, 27),
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(mip_counts, [(1, 96), (10, 1)].into_iter().collect());
+    assert_eq!(direct_count, 93);
+    assert_eq!(d3dx_count, 4);
 }
 
 #[test]
