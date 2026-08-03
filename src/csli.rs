@@ -27,16 +27,15 @@ pub struct SlicCell {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CsliDefinition {
     pub field_80: u32,
-    pub field_40: f32,
-    pub field_41: f32,
-    pub field_42: f32,
-    pub field_43: f32,
+    pub width: f32,
+    pub height: f32,
+    pub custom_origin: [f32; 2],
     pub field_44: [[u8; 4]; 4],
-    pub field_4b: u8,
+    pub origin_mode: u8,
     pub columns: u16,
     pub rows: u16,
-    pub divisor_subtract_x: u16,
-    pub divisor_subtract_y: u16,
+    pub explicit_width_cell_count: u16,
+    pub explicit_height_cell_count: u16,
     pub cref_count: u16,
     pub node_index: i32,
     pub cells: Vec<SlicCell>,
@@ -59,16 +58,15 @@ impl CsliDefinition {
 
         let mut result = Self {
             field_80: 0,
-            field_40: 0.0,
-            field_41: 0.0,
-            field_42: 0.0,
-            field_43: 0.0,
+            width: 0.0,
+            height: 0.0,
+            custom_origin: [0.0, 0.0],
             field_44: [[0xff; 4]; 4],
-            field_4b: 0,
+            origin_mode: 0,
             columns: 0,
             rows: 0,
-            divisor_subtract_x: 0,
-            divisor_subtract_y: 0,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
             cref_count: 0,
             node_index: -1,
             cells: Vec::new(),
@@ -77,10 +75,10 @@ impl CsliDefinition {
         for property in &block.properties {
             match property.code {
                 0x80 => result.field_80 = unsigned_scalar(file, property, "CSLI 0x80")?,
-                0x40 => result.field_40 = float_scalar(file, property, "CSLI 0x40")?,
-                0x41 => result.field_41 = float_scalar(file, property, "CSLI 0x41")?,
-                0x42 => result.field_42 = float_scalar(file, property, "CSLI 0x42")?,
-                0x43 => result.field_43 = float_scalar(file, property, "CSLI 0x43")?,
+                0x40 => result.width = float_scalar(file, property, "CSLI 0x40")?,
+                0x41 => result.height = float_scalar(file, property, "CSLI 0x41")?,
+                0x42 => result.custom_origin[0] = float_scalar(file, property, "CSLI 0x42")?,
+                0x43 => result.custom_origin[1] = float_scalar(file, property, "CSLI 0x43")?,
                 0x44 => {
                     let destination = result.field_44.get_mut(field_44_index).ok_or_else(|| {
                         CsliError("CSLI has more than four 0x44 properties".into())
@@ -88,14 +86,16 @@ impl CsliDefinition {
                     *destination = reordered_four_bytes(file, property, "CSLI 0x44")?;
                     field_44_index += 1;
                 }
-                0x4b => result.field_4b = unsigned_scalar(file, property, "CSLI 0x4b")? as u8,
+                0x4b => result.origin_mode = unsigned_scalar(file, property, "CSLI 0x4b")? as u8,
                 0x81 => result.columns = unsigned_scalar(file, property, "CSLI 0x81")? as u16,
                 0x82 => result.rows = unsigned_scalar(file, property, "CSLI 0x82")? as u16,
                 0x84 => {
-                    result.divisor_subtract_x = unsigned_scalar(file, property, "CSLI 0x84")? as u16
+                    result.explicit_width_cell_count =
+                        unsigned_scalar(file, property, "CSLI 0x84")? as u16
                 }
                 0x85 => {
-                    result.divisor_subtract_y = unsigned_scalar(file, property, "CSLI 0x85")? as u16
+                    result.explicit_height_cell_count =
+                        unsigned_scalar(file, property, "CSLI 0x85")? as u16
                 }
                 0x45 => result.cref_count = unsigned_scalar(file, property, "CSLI 0x45")? as u16,
                 0x51 => result.node_index = unsigned_scalar(file, property, "CSLI 0x51")? as i32,
@@ -122,10 +122,26 @@ impl CsliDefinition {
         usize::from(self.columns) * usize::from(self.rows)
     }
 
-    pub fn generate_cell_rects(
-        &self,
-        extent_inputs: [f32; 4],
-    ) -> Result<Vec<GeneratedCellRect>, CsliError> {
+    pub fn runtime_origin_offset(&self) -> [f32; 2] {
+        const FACTORS: [[f32; 2]; 9] = [
+            [0.0, 0.0],
+            [0.5, 0.0],
+            [1.0, 0.0],
+            [0.0, 0.5],
+            [0.5, 0.5],
+            [1.0, 0.5],
+            [0.0, 1.0],
+            [0.5, 1.0],
+            [1.0, 1.0],
+        ];
+        let Some(factors) = FACTORS.get(usize::from(self.origin_mode)) else {
+            return self.custom_origin;
+        };
+        [factors[0] * self.width, factors[1] * self.height]
+    }
+
+    #[allow(clippy::assign_op_pattern)]
+    pub fn generate_cell_rects(&self) -> Result<Vec<GeneratedCellRect>, CsliError> {
         let expected = self.expected_cell_count();
         if self.cells.len() != expected {
             return Err(CsliError(format!(
@@ -139,12 +155,29 @@ impl CsliDefinition {
             return Ok(Vec::new());
         }
 
+        let mut first_row_explicit_width = 0.0f32;
+        let mut first_column_explicit_height = 0.0f32;
+        for row in 0..usize::from(self.rows) {
+            for column in 0..usize::from(self.columns) {
+                let cell = &self.cells[row * usize::from(self.columns) + column];
+                if column == 0 && cell.flags & 0x02 != 0 {
+                    // The game loads the new value first, then adds the accumulator.
+                    first_column_explicit_height =
+                        cell.explicit_height + first_column_explicit_height;
+                }
+                if row == 0 && cell.flags & 0x01 != 0 {
+                    // Preserve the same operand order for signed zero and NaN payloads.
+                    first_row_explicit_width = cell.explicit_width + first_row_explicit_width;
+                }
+            }
+        }
+
         let denominator_x =
-            ((i32::from(self.columns) - i32::from(self.divisor_subtract_x)) as f32).max(1.0);
+            ((i32::from(self.columns) - i32::from(self.explicit_width_cell_count)) as f32).max(1.0);
         let denominator_y =
-            ((i32::from(self.rows) - i32::from(self.divisor_subtract_y)) as f32).max(1.0);
-        let default_width = (extent_inputs[0] - extent_inputs[2]) / denominator_x;
-        let default_height = (extent_inputs[1] - extent_inputs[3]) / denominator_y;
+            ((i32::from(self.rows) - i32::from(self.explicit_height_cell_count)) as f32).max(1.0);
+        let default_width = (self.width - first_row_explicit_width) / denominator_x;
+        let default_height = (self.height - first_column_explicit_height) / denominator_y;
 
         let mut generated = Vec::with_capacity(expected);
         let mut y = 0.0f32;
@@ -314,16 +347,15 @@ mod tests {
     fn cell_generation_uses_first_cell_height_for_each_row() {
         let definition = CsliDefinition {
             field_80: 0,
-            field_40: 0.0,
-            field_41: 0.0,
-            field_42: 0.0,
-            field_43: 0.0,
+            width: 11.0,
+            height: 23.0,
+            custom_origin: [0.0, 0.0],
             field_44: [[0xff; 4]; 4],
-            field_4b: 0,
+            origin_mode: 0,
             columns: 2,
             rows: 2,
-            divisor_subtract_x: 0,
-            divisor_subtract_y: 0,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
             cref_count: 0,
             node_index: 0,
             cells: vec![
@@ -333,9 +365,7 @@ mod tests {
                 cell(0x101, 4.0, 55.0),
             ],
         };
-        let result = definition
-            .generate_cell_rects([10.0, 20.0, 2.0, 4.0])
-            .unwrap();
+        let result = definition.generate_cell_rects().unwrap();
         assert_eq!(
             result,
             vec![
@@ -392,5 +422,41 @@ mod tests {
             parent_cell_center_offset(-1, &cells, [10.0, 12.0], true),
             [0.0, 0.0]
         );
+        assert_eq!(
+            parent_cell_center_offset(1, &cells, [10.0, 12.0], true),
+            [0.0, 0.0]
+        );
+        let inactive = [GeneratedCellRect {
+            active: false,
+            ..cells[0]
+        }];
+        assert_eq!(
+            parent_cell_center_offset(0, &inactive, [10.0, 12.0], true),
+            [0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn runtime_origin_uses_the_binary_nine_mode_table_and_custom_fallback() {
+        let mut definition = CsliDefinition {
+            field_80: 0,
+            width: 20.0,
+            height: 30.0,
+            custom_origin: [7.0, 9.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 4,
+            columns: 0,
+            rows: 0,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
+            cref_count: 0,
+            node_index: 0,
+            cells: Vec::new(),
+        };
+        assert_eq!(definition.runtime_origin_offset(), [10.0, 15.0]);
+        definition.origin_mode = 8;
+        assert_eq!(definition.runtime_origin_offset(), [20.0, 30.0]);
+        definition.origin_mode = 9;
+        assert_eq!(definition.runtime_origin_offset(), [7.0, 9.0]);
     }
 }

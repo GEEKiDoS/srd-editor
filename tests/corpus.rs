@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
-use srd_editor::scene::{CsliRuntimeLayoutInputs, Layer};
+use srd_editor::scene::Layer;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
 
@@ -162,11 +162,29 @@ fn parses_and_links_binary_proven_csli_grids() {
                 };
                 assert_eq!(layer.nodes[node_index].cast_type(), Some(2));
                 assert_eq!(definition.cells.len(), definition.expected_cell_count());
+                let explicit_first_row_widths = definition
+                    .cells
+                    .iter()
+                    .take(usize::from(definition.columns))
+                    .filter(|cell| cell.flags & 0x01 != 0)
+                    .count();
+                let explicit_first_column_heights = definition
+                    .cells
+                    .iter()
+                    .step_by(usize::from(definition.columns).max(1))
+                    .take(usize::from(definition.rows))
+                    .filter(|cell| cell.flags & 0x02 != 0)
+                    .count();
                 assert_eq!(
-                    definition
-                        .generate_cell_rects([100.0, 100.0, 0.0, 0.0])
-                        .unwrap()
-                        .len(),
+                    usize::from(definition.explicit_width_cell_count),
+                    explicit_first_row_widths
+                );
+                assert_eq!(
+                    usize::from(definition.explicit_height_cell_count),
+                    explicit_first_column_heights
+                );
+                assert_eq!(
+                    definition.generate_cell_rects().unwrap().len(),
                     definition.expected_cell_count()
                 );
                 csli_count += 1;
@@ -204,16 +222,18 @@ fn parses_and_links_binary_proven_csli_grids() {
                 indexed_children += 1;
                 active_indexed_children += usize::from((cell.flags >> 8) & 1 != 0);
             }
-            let runtime_inputs = vec![
-                CsliRuntimeLayoutInputs {
-                    extent_inputs: [100.0, 100.0, 0.0, 0.0],
-                    parent_size: [0.0, 0.0],
-                    axis_mode: true,
-                };
-                layer.nodes.len()
-            ];
-            let offsets = layer.compute_parent_csli_offsets(&runtime_inputs).unwrap();
+            let offsets = layer.compute_parent_csli_offsets().unwrap();
             assert_eq!(offsets.len(), layer.nodes.len());
+            let transforms = layer
+                .transforms
+                .iter()
+                .copied()
+                .map(|transform| transform.spatial())
+                .collect::<Vec<_>>();
+            let worlds = layer
+                .compose_world_matrices_with_csli_layout(&transforms, Affine3x4::IDENTITY, false)
+                .unwrap();
+            assert_eq!(worlds.len(), layer.nodes.len());
         }
     }
     eprintln!(

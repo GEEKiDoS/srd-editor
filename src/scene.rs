@@ -63,13 +63,6 @@ pub struct Layer {
     pub csli_by_node: Vec<Option<CsliDefinition>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CsliRuntimeLayoutInputs {
-    pub extent_inputs: [f32; 4],
-    pub parent_size: [f32; 2],
-    pub axis_mode: bool,
-}
-
 impl Layer {
     pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, SceneError> {
         if !block.is_tag(b"LAYR") {
@@ -267,26 +260,16 @@ impl Layer {
         Ok(worlds)
     }
 
-    pub fn compute_parent_csli_offsets(
-        &self,
-        runtime_inputs: &[CsliRuntimeLayoutInputs],
-    ) -> Result<Vec<[f32; 2]>, SceneError> {
+    pub fn compute_parent_csli_offsets(&self) -> Result<Vec<[f32; 2]>, SceneError> {
         let count = self.nodes.len();
-        if runtime_inputs.len() != count {
-            return Err(SceneError(format!(
-                "CSLI offset calculation needs {count} runtime input records, got {}",
-                runtime_inputs.len()
-            )));
-        }
         let hierarchy = self.build_hierarchy()?;
         let generated = self
             .csli_by_node
             .iter()
-            .zip(runtime_inputs)
-            .map(|(definition, inputs)| {
+            .map(|definition| {
                 definition
                     .as_ref()
-                    .map(|definition| definition.generate_cell_rects(inputs.extent_inputs))
+                    .map(CsliDefinition::generate_cell_rects)
                     .transpose()
                     .map_err(|error| SceneError(error.to_string()))
             })
@@ -303,12 +286,12 @@ impl Layer {
             let Some(parent_cells) = generated[parent_index].as_deref() else {
                 continue;
             };
-            let parent_inputs = runtime_inputs[parent_index];
+            let parent_definition = self.csli_by_node[parent_index].as_ref().unwrap();
             offsets[node_index] = parent_cell_center_offset(
                 cell_index,
                 parent_cells,
-                parent_inputs.parent_size,
-                parent_inputs.axis_mode,
+                parent_definition.runtime_origin_offset(),
+                self.is_2d(),
             );
         }
         Ok(offsets)
@@ -319,9 +302,8 @@ impl Layer {
         transforms: &[SpatialTransform],
         root_matrix: Affine3x4,
         flip_y: bool,
-        runtime_inputs: &[CsliRuntimeLayoutInputs],
     ) -> Result<Vec<Affine3x4>, SceneError> {
-        let offsets = self.compute_parent_csli_offsets(runtime_inputs)?;
+        let offsets = self.compute_parent_csli_offsets()?;
         self.compose_world_matrices(transforms, root_matrix, flip_y, &offsets)
     }
 }

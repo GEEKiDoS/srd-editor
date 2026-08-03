@@ -3,7 +3,7 @@
 本页只记录从游戏二进制闭环得到的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`B4C9D857618B44DF808F84D3590CC5A004193D4AD83B4C3B5A9A51F2A0D4495E`
+- 本轮保存后的 IDB SHA-256：`EF9E8FE7957CD8055B3AD9CB91982FB70C2B2B8D7B9DBB660B4B925404BC7F3C`
 
 ## 原始记录
 
@@ -137,6 +137,6 @@ Rust `Layer::build_hierarchy` 已按该首子/同级链构建 parents、children
 
 ## 尚未闭环
 
-- `srd_compute_parent_csli_cell_offset` 的记录来源和公式已经闭环并接入 Rust；但父 CAST `+0x178` 输入与虚表槽 `+0x30` 模式的上游含义尚未证明，API 要求调用方显式提供中性运行时输入。
+- `srd_compute_parent_csli_cell_offset` 的 SrSliceCast 尺寸、origin、显式单元累计、2D flags 分支与公式均已闭环并由 Rust 从 SRD 数据自行计算。
 - 两个 packed 字段及通道 `9/19/21/22` 的精确颜色分量语义未实现。
 - CAST 专属动画通道与投影、视口映射尚未实现。
