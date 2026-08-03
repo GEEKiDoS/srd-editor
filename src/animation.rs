@@ -1,6 +1,13 @@
 use std::fmt;
 
+use crate::transform::SpatialTransform;
 use crate::vtbf::{Block, Property, SrdFile};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    pub target: i32,
+    pub tracks: Vec<Track>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
@@ -147,6 +154,33 @@ impl Track {
             (KeyData::Key20I32(keys), 0x40) => evaluate_key20_i32(keys, frame, true),
             _ => Evaluation::Unsupported,
         }
+    }
+}
+
+impl Motion {
+    pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, AnimationError> {
+        if !block.is_tag(b"MOT ") {
+            return Err(AnimationError("block is not MOT ".into()));
+        }
+        let target = read_signed(file, block, 0x51)?;
+        let tracks = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"TRK "))
+            .map(|child| Track::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { target, tracks })
+    }
+
+    pub fn apply_proven_common_channels(
+        &self,
+        transform: &mut SpatialTransform,
+        frame: f32,
+    ) -> usize {
+        self.tracks
+            .iter()
+            .filter(|track| transform.apply_common_track(track.target, track.evaluate(frame)))
+            .count()
     }
 }
 

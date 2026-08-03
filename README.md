@@ -20,9 +20,11 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 只读 VTBF/SRFF 结构解析，按游戏读取器保留未知头字段和属性原始编码。
 - `ANIM → MOT → TRK → KEY` 记录读取。
 - 游戏标量轨道的时间区间、端点、线性、保持和三次曲线求值。
+- LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
+- 公共空间动画通道、游戏自有 sin/cos 近似、局部 3x4 仿射矩阵和 `parent_world * local` 乘法。
 - 本地 53 个 SRD 的结构解析回归。
-- avatar 样本的游戏三次曲线结果回归。
+- avatar 样本 MOT target、公共 rotation Z 通道和游戏三次曲线结果回归。
 
-尚未实现：SRD 写回、通道语义、节点世界变换、CREF/CRE1 运行时选择、D3D9 渲染和 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。ImGui、窗口系统、D3D9 绑定与纹理解码依赖尚未选定。
+尚未实现：SRD 写回、NODE `0x32` 与二维 pivot、颜色及 CAST 专属通道、投影、CREF/CRE1 运行时选择、D3D9 渲染和 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。ImGui、窗口系统、D3D9 绑定与纹理解码依赖尚未选定。
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

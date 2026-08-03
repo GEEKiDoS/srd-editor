@@ -14,6 +14,7 @@
 - VTBF 读取逻辑：[`evidence/vtbf-reader.md`](evidence/vtbf-reader.md)
 - 标签分派图：[`evidence/tag-dispatch.md`](evidence/tag-dispatch.md)
 - 动画记录布局：[`evidence/animation-records.md`](evidence/animation-records.md)
+- LAYR/NODE/TRS、公共动画通道和矩阵链：[`evidence/scene-transform.md`](evidence/scene-transform.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 
@@ -56,7 +57,7 @@ children...
 
 当前 53 个样本使用旧 Python 解析器进行未编辑往返时，有 5 个文件并非字节一致。已观察到其中至少一种原因是短字符串也可能使用双字节长度前缀，而旧序列化器会改写为单字节形式。这只证明“原始编码必须保留”，并不证明完整字符串规则。
 
-## 动画（待验证线索）
+## 动画
 
 当前二进制已经重新证明解析链：
 
@@ -78,7 +79,13 @@ sub_A9FD60              Animation
 +0x10 tangent_out
 ```
 
-具体分派见证据文档。通道含义、插值方式、区间语义及后三字段用途仍需从运行时代码证明。旧实现中的 Hermite、线性回退与 2% 限幅不得移植。
+具体分派、时间折叠、端点、线性、保持和三次曲线公式已经由运行时求值器证明，详见证据文档。公共空间通道 `0..8` 与 visibility 通道 `10` 也已证明并实现；颜色通道和 CAST 专属通道仍不得猜测。
+
+## 场景变换
+
+LAYR flags 位 0、NODE/TRS2/TRS3 记录、公共运行时变换、游戏三角函数、局部 3x4 仿射矩阵以及 `parent_world * local` 世界组合顺序已经完成二进制闭环，详见 [`evidence/scene-transform.md`](evidence/scene-transform.md)。
+
+NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现。NODE `0x32`、二维 offset/pivot 来源、packed 颜色字段与 CAST 专属通道尚未闭环；当前 Rust 代码仍要求调用方传入已计算 offset，不为 `0x32` 或 pivot 赋予猜测语义。
 
 ## 图像与特殊 CAST（待验证线索）
 
@@ -89,7 +96,7 @@ sub_A9FD60              Animation
 
 1. VTBF/SRFF 文件头、块长度、子块布局和全部属性编码。
 2. 各标签的构造/解析分派函数及运行时对象类型。
-3. 动画轨道、KEY 布局、通道含义和实际求值公式。
-4. 节点层级、TRS2/TRS3、pivot 和世界变换组合顺序。
+3. 颜色和 CAST 专属动画通道。
+4. NODE `0x32`、二维 offset/pivot 和投影/视口逻辑。
 5. CIMG/CREF/CRE1/CROP 的资源与图集选择流程。
 6. CNUM 和 CSLI 的精确渲染语义。

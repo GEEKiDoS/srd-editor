@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use srd_editor::animation::{Evaluation, ScalarValue, Track};
+use srd_editor::animation::{Evaluation, Motion, ScalarValue, Track};
+use srd_editor::scene::Layer;
+use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
 
 fn corpus_root() -> PathBuf {
@@ -79,6 +81,104 @@ fn avatar_track_uses_game_cubic_result() {
         track.evaluate(50.0),
         Evaluation::Value(ScalarValue::I32(349))
     );
+}
+
+#[test]
+fn parses_binary_selected_layer_transform_records() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut layer_count = 0usize;
+    let mut node_count = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file
+            .blocks_depth_first()
+            .filter(|block| block.is_tag(b"LAYR"))
+        {
+            let layer = Layer::from_block(&file, block).unwrap_or_else(|error| {
+                panic!("{} at {:#x}: {error}", path.display(), block.offset)
+            });
+            assert_eq!(layer.nodes.len(), layer.transforms.len());
+            let hierarchy = layer.build_hierarchy().unwrap_or_else(|error| {
+                panic!("{} at {:#x}: {error}", path.display(), block.offset)
+            });
+            assert_eq!(hierarchy.parents.len(), layer.nodes.len());
+            assert_eq!(hierarchy.children.len(), layer.nodes.len());
+            let transforms = layer
+                .transforms
+                .iter()
+                .copied()
+                .map(|transform| transform.spatial())
+                .collect::<Vec<_>>();
+            let offsets = vec![[0.0, 0.0]; layer.nodes.len()];
+            let worlds = layer
+                .compose_world_matrices(&transforms, Affine3x4::IDENTITY, false, &offsets)
+                .unwrap_or_else(|error| {
+                    panic!("{} at {:#x}: {error}", path.display(), block.offset)
+                });
+            assert_eq!(worlds.len(), layer.nodes.len());
+            layer_count += 1;
+            node_count += layer.nodes.len();
+        }
+    }
+    assert!(layer_count > 0);
+    assert!(node_count > 0);
+}
+
+#[test]
+fn avatar_motion_targets_runtime_cast_index() {
+    let path = corpus_root()
+        .join("common")
+        .join("commonAvatar")
+        .join("CHU_UI_Common_Avatar_Position_00.srd");
+    if !path.exists() {
+        eprintln!("skipping: avatar sample not found at {}", path.display());
+        return;
+    }
+    let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+    let animation = file
+        .blocks_depth_first()
+        .find(|block| {
+            block.is_tag(b"ANIM")
+                && block
+                    .last_property(0x03)
+                    .and_then(|property| property.string_bytes(&file))
+                    == Some(b"001_Default_loop".as_slice())
+        })
+        .expect("animation not found");
+    let motion = animation
+        .children
+        .iter()
+        .find(|block| block.is_tag(b"MOT ") && signed_property(&file, block, 0x51) == Some(61))
+        .expect("motion not found");
+    let motion = Motion::from_block(&file, motion).unwrap();
+    assert_eq!(motion.target, 61);
+    assert!(motion.tracks.iter().any(|track| track.target == 5));
+
+    let layer_block = file
+        .blocks_depth_first()
+        .find(|block| {
+            block.is_tag(b"LAYR")
+                && block.children.iter().any(|child| {
+                    child.is_tag(b"ANIM")
+                        && child
+                            .last_property(0x03)
+                            .and_then(|property| property.string_bytes(&file))
+                            == Some(b"001_Default_loop".as_slice())
+                })
+        })
+        .expect("owning layer not found");
+    let layer = Layer::from_block(&file, layer_block).unwrap();
+    let mut transform = layer.transforms[61].spatial();
+    assert!(motion.apply_proven_common_channels(&mut transform, 50.0) > 0);
+    assert_eq!(transform.rotation[2], 349);
 }
 
 fn unsigned_property(file: &SrdFile, block: &Block, code: u8) -> Option<u32> {
