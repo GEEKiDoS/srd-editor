@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
-use srd_editor::scene::{Layer, Project};
+use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
+use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -181,6 +182,136 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
     assert!(multiply_instanced_targets > 0);
     eprintln!(
         "CRFD definitions={definition_count}, runtime reference layers={instance_count}, multiply-instanced targets={multiply_instanced_targets}"
+    );
+}
+
+#[test]
+fn reference_instances_apply_the_binary_cast_channel_dispatch() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut instance_count = 0usize;
+    let mut animation_count = 0usize;
+    let mut common_channels = 0usize;
+    let mut image_channels = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        let textures = TextureList::from_file(&file)
+            .unwrap()
+            .unwrap_or(TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            });
+        let plan = project
+            .build_reference_runtime_plan()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        for instance_index in 0..plan.instances.len() {
+            let mut runtime =
+                ReferenceLayerRuntimeState::new(&project, &plan, instance_index).unwrap();
+            let target = plan.instances[instance_index].target;
+            let layer = &project.scenes[target.scene_index].layers[target.layer_index];
+            assert_eq!(runtime.image_bases.len(), layer.nodes.len());
+            assert_eq!(runtime.image_states.len(), layer.nodes.len());
+            let animation_names = layer
+                .animations
+                .iter()
+                .map(|animation| animation.name.clone())
+                .collect::<Vec<_>>();
+            for animation_name in animation_names {
+                let application = runtime
+                    .apply_animation_channels(&project, &plan, &textures, &animation_name, 0.0)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{} instance {instance_index} animation {:?}: {error}",
+                            path.display(),
+                            String::from_utf8_lossy(&animation_name)
+                        )
+                    })
+                    .expect("animation disappeared from its owning layer");
+                common_channels += application.common_channels;
+                image_channels += application.image_channels;
+                animation_count += 1;
+            }
+            instance_count += 1;
+        }
+    }
+
+    assert_eq!(instance_count, 2087);
+    assert!(animation_count > 0);
+    assert!(common_channels > 0);
+    assert!(image_channels > 0);
+    eprintln!(
+        "reference instances={instance_count}, animations={animation_count}, common channels={common_channels}, SrImage channels={image_channels}"
+    );
+}
+
+#[test]
+fn reference_channel_23_recurses_through_real_runtime_instances() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut root_applications = 0usize;
+    let mut reference_requests = 0usize;
+    let mut recursively_animated_layers = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        let textures = TextureList::from_file(&file)
+            .unwrap()
+            .unwrap_or(TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            });
+        let mut runtime = ProjectRuntime::new(&project)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        for (scene_index, scene) in project.scenes.iter().enumerate() {
+            for (layer_index, layer) in scene.layers.iter().enumerate() {
+                let target = ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                };
+                let animation_names = layer
+                    .animations
+                    .iter()
+                    .map(|animation| animation.name.clone())
+                    .collect::<Vec<_>>();
+                for animation_name in animation_names {
+                    let application = runtime
+                        .apply_layer_animation(&project, &textures, target, &animation_name, 0.0)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "{} SCN[{scene_index}]/LAYR[{layer_index}] animation {:?}: {error}",
+                                path.display(),
+                                String::from_utf8_lossy(&animation_name)
+                            )
+                        })
+                        .expect("animation disappeared from its owning layer");
+                    root_applications += 1;
+                    reference_requests += application.reference_requests;
+                    recursively_animated_layers += application.animated_layers;
+                }
+            }
+        }
+    }
+
+    assert!(root_applications > 0);
+    assert!(reference_requests > 0);
+    assert!(recursively_animated_layers > root_applications);
+    eprintln!(
+        "root applications={root_applications}, channel 23 requests={reference_requests}, recursively animated layers={recursively_animated_layers}"
     );
 }
 

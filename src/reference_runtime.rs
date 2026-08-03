@@ -2,8 +2,10 @@ use std::fmt;
 
 use crate::animation::RuntimeAnimationState;
 use crate::csli::{add_color_saturating_game, multiply_color_game};
+use crate::image::{ImageDefinition, RuntimeImageState};
 use crate::reference::ReferenceAnimationRequest;
-use crate::scene::{Project, ReferenceTarget};
+use crate::scene::{Layer, Project, ReferenceTarget};
+use crate::texture::TextureList;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +102,59 @@ pub struct ReferenceLayerRuntimeState {
     pub instance_index: usize,
     pub local: ReferenceLayerLocalState,
     pub cast_transforms: Vec<SpatialTransform>,
+    pub image_bases: Vec<ImageDefinition>,
+    pub image_states: Vec<RuntimeImageState>,
     pub animations: Vec<RuntimeAnimationState>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeAnimationApplication {
+    pub common_channels: usize,
+    pub image_channels: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeAnimationTreeApplication {
+    pub animated_layers: usize,
+    pub common_channels: usize,
+    pub image_channels: usize,
+    pub reference_requests: usize,
+}
+
+impl RuntimeAnimationTreeApplication {
+    fn include_layer(&mut self, application: RuntimeAnimationApplication) {
+        self.animated_layers += 1;
+        self.common_channels += application.common_channels;
+        self.image_channels += application.image_channels;
+    }
+
+    fn include_tree(&mut self, child: Self) {
+        self.animated_layers += child.animated_layers;
+        self.common_channels += child.common_channels;
+        self.image_channels += child.image_channels;
+        self.reference_requests += child.reference_requests;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceRuntime {
+    pub plan: ReferenceRuntimePlan,
+    pub layers: Vec<ReferenceLayerRuntimeState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectLayerRuntimeState {
+    pub target: ReferenceTarget,
+    pub cast_transforms: Vec<SpatialTransform>,
+    pub image_bases: Vec<ImageDefinition>,
+    pub image_states: Vec<RuntimeImageState>,
+    pub animations: Vec<RuntimeAnimationState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectRuntime {
+    pub project_layers: Vec<Vec<ProjectLayerRuntimeState>>,
+    pub references: ReferenceRuntime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +236,11 @@ impl ReferenceLayerRuntimeState {
         let instance = plan.instances.get(instance_index)?;
         let layer =
             &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
+        let image_bases = runtime_image_bases(layer);
+        let image_states = image_bases
+            .iter()
+            .map(ImageDefinition::initial_runtime_state)
+            .collect();
         Some(Self {
             instance_index,
             local: ReferenceLayerLocalState::default(),
@@ -191,6 +250,8 @@ impl ReferenceLayerRuntimeState {
                 .copied()
                 .map(|transform| transform.spatial())
                 .collect(),
+            image_bases,
+            image_states,
             animations: layer
                 .animations
                 .iter()
@@ -225,6 +286,334 @@ impl ReferenceLayerRuntimeState {
         request: ReferenceAnimationRequest<'_>,
     ) -> Result<Option<usize>, crate::animation::AnimationError> {
         self.apply_animation_common_channels(project, plan, request.animation_name, request.frame)
+    }
+
+    pub fn apply_animation_channels(
+        &mut self,
+        project: &Project,
+        plan: &ReferenceRuntimePlan,
+        textures: &TextureList,
+        animation_name: &[u8],
+        frame: f32,
+    ) -> Result<Option<RuntimeAnimationApplication>, crate::animation::AnimationError> {
+        let instance = &plan.instances[self.instance_index];
+        let layer =
+            &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
+        apply_runtime_layer_channels(
+            layer,
+            textures,
+            animation_name,
+            frame,
+            &mut self.cast_transforms,
+            &self.image_bases,
+            &mut self.image_states,
+            &mut self.animations,
+        )
+    }
+}
+
+fn runtime_image_bases(layer: &Layer) -> Vec<ImageDefinition> {
+    layer
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(node_index, node)| match node.cast_type() {
+            Some(1) => layer.image_by_node[node_index]
+                .clone()
+                .unwrap_or_else(ImageDefinition::srimage_constructor_base),
+            Some(2) => layer.csli_by_node[node_index]
+                .as_ref()
+                .map(ImageDefinition::from_csli_runtime_base)
+                .unwrap_or_else(ImageDefinition::srimage_constructor_base),
+            Some(4) => layer.number_by_node[node_index]
+                .as_ref()
+                .map(crate::number::NumberDefinition::image_base)
+                .unwrap_or_else(ImageDefinition::srimage_constructor_base),
+            _ => ImageDefinition::srimage_constructor_base(),
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_runtime_layer_channels(
+    layer: &Layer,
+    textures: &TextureList,
+    animation_name: &[u8],
+    frame: f32,
+    cast_transforms: &mut [SpatialTransform],
+    image_bases: &[ImageDefinition],
+    image_states: &mut [RuntimeImageState],
+    animations: &mut [RuntimeAnimationState],
+) -> Result<Option<RuntimeAnimationApplication>, crate::animation::AnimationError> {
+    let Some((animation_index, animation)) = layer.find_animation(animation_name) else {
+        return Ok(None);
+    };
+    animations[animation_index].frame = frame;
+
+    let mut application = RuntimeAnimationApplication::default();
+    let cast_count = cast_transforms.len();
+    for motion in &animation.motions {
+        if motion.target < 0 {
+            continue;
+        }
+        let node_index = usize::try_from(motion.target).map_err(|_| {
+            crate::animation::AnimationError("MOT target does not fit usize".into())
+        })?;
+        if node_index >= cast_count {
+            return Err(crate::animation::AnimationError(format!(
+                "MOT target {node_index} is outside {cast_count} runtime CASTs"
+            )));
+        }
+        application.common_channels +=
+            motion.apply_proven_common_channels(&mut cast_transforms[node_index], frame);
+        let base = &image_bases[node_index];
+        let state = &mut image_states[node_index];
+        for track in &motion.tracks {
+            if base
+                .apply_runtime_track(state, track, frame, textures)
+                .map_err(|error| crate::animation::AnimationError(error.to_string()))?
+            {
+                application.image_channels += 1;
+            }
+        }
+    }
+    Ok(Some(application))
+}
+
+fn child_animation_requests(
+    layer: &Layer,
+    animation_name: &[u8],
+    frame: f32,
+    plan: &ReferenceRuntimePlan,
+    parent: ReferenceLayerParent,
+) -> Vec<(usize, Vec<u8>, f32)> {
+    let Some((_, animation)) = layer.find_animation(animation_name) else {
+        return Vec::new();
+    };
+    let mut requests = Vec::new();
+    for motion in &animation.motions {
+        let Ok(node_index) = usize::try_from(motion.target) else {
+            continue;
+        };
+        let Some(reference) = layer
+            .reference_by_node
+            .get(node_index)
+            .and_then(|definition| definition.as_ref())
+        else {
+            continue;
+        };
+        let child_instance = plan.instances.iter().position(|instance| {
+            instance.parent == parent && instance.reference_node_index == node_index
+        });
+        let Some(child_instance) = child_instance else {
+            continue;
+        };
+        for track in &motion.tracks {
+            let Some(request) = reference.animation_request(track, frame) else {
+                continue;
+            };
+            requests.push((
+                child_instance,
+                request.animation_name.to_vec(),
+                request.frame,
+            ));
+        }
+    }
+    requests
+}
+
+impl ReferenceRuntime {
+    pub fn new(project: &Project) -> Result<Self, ReferenceRuntimeError> {
+        let plan = project.build_reference_runtime_plan()?;
+        let layers = (0..plan.instances.len())
+            .map(|instance_index| {
+                ReferenceLayerRuntimeState::new(project, &plan, instance_index)
+                    .expect("instance index came from the same reference runtime plan")
+            })
+            .collect();
+        Ok(Self { plan, layers })
+    }
+
+    pub fn apply_instance_animation(
+        &mut self,
+        project: &Project,
+        textures: &TextureList,
+        instance_index: usize,
+        animation_name: &[u8],
+        frame: f32,
+    ) -> Result<Option<RuntimeAnimationTreeApplication>, crate::animation::AnimationError> {
+        if instance_index >= self.layers.len() {
+            return Err(crate::animation::AnimationError(format!(
+                "reference instance {instance_index} is outside {} runtime layers",
+                self.layers.len()
+            )));
+        }
+
+        let Some(application) = self.layers[instance_index].apply_animation_channels(
+            project,
+            &self.plan,
+            textures,
+            animation_name,
+            frame,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut tree = RuntimeAnimationTreeApplication::default();
+        tree.include_layer(application);
+
+        let target = self.plan.instances[instance_index].target;
+        let layer = &project.scenes[target.scene_index].layers[target.layer_index];
+        let child_requests = child_animation_requests(
+            layer,
+            animation_name,
+            frame,
+            &self.plan,
+            ReferenceLayerParent::ReferenceInstance(instance_index),
+        );
+
+        for (child_instance, child_animation_name, child_frame) in child_requests {
+            tree.reference_requests += 1;
+            if let Some(child) = self.apply_instance_animation(
+                project,
+                textures,
+                child_instance,
+                &child_animation_name,
+                child_frame,
+            )? {
+                tree.include_tree(child);
+            }
+        }
+        Ok(Some(tree))
+    }
+}
+
+impl ProjectLayerRuntimeState {
+    fn new(target: ReferenceTarget, layer: &Layer) -> Self {
+        let image_bases = runtime_image_bases(layer);
+        let image_states = image_bases
+            .iter()
+            .map(ImageDefinition::initial_runtime_state)
+            .collect();
+        Self {
+            target,
+            cast_transforms: layer
+                .transforms
+                .iter()
+                .copied()
+                .map(|transform| transform.spatial())
+                .collect(),
+            image_bases,
+            image_states,
+            animations: layer
+                .animations
+                .iter()
+                .map(|animation| animation.initial_runtime_state())
+                .collect(),
+        }
+    }
+
+    fn apply_animation_channels(
+        &mut self,
+        layer: &Layer,
+        textures: &TextureList,
+        animation_name: &[u8],
+        frame: f32,
+    ) -> Result<Option<RuntimeAnimationApplication>, crate::animation::AnimationError> {
+        apply_runtime_layer_channels(
+            layer,
+            textures,
+            animation_name,
+            frame,
+            &mut self.cast_transforms,
+            &self.image_bases,
+            &mut self.image_states,
+            &mut self.animations,
+        )
+    }
+}
+
+impl ProjectRuntime {
+    pub fn new(project: &Project) -> Result<Self, ReferenceRuntimeError> {
+        let project_layers = project
+            .scenes
+            .iter()
+            .enumerate()
+            .map(|(scene_index, scene)| {
+                scene
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(layer_index, layer)| {
+                        ProjectLayerRuntimeState::new(
+                            ReferenceTarget {
+                                scene_index,
+                                layer_index,
+                            },
+                            layer,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Self {
+            project_layers,
+            references: ReferenceRuntime::new(project)?,
+        })
+    }
+
+    pub fn apply_layer_animation(
+        &mut self,
+        project: &Project,
+        textures: &TextureList,
+        target: ReferenceTarget,
+        animation_name: &[u8],
+        frame: f32,
+    ) -> Result<Option<RuntimeAnimationTreeApplication>, crate::animation::AnimationError> {
+        let layer = project
+            .scenes
+            .get(target.scene_index)
+            .and_then(|scene| scene.layers.get(target.layer_index))
+            .ok_or_else(|| {
+                crate::animation::AnimationError(format!(
+                    "SCN[{}]/LAYR[{}] is outside the project runtime",
+                    target.scene_index, target.layer_index
+                ))
+            })?;
+        let runtime_layer = self
+            .project_layers
+            .get_mut(target.scene_index)
+            .and_then(|scene| scene.get_mut(target.layer_index))
+            .expect("project runtime layers mirror the parsed project");
+        let Some(application) =
+            runtime_layer.apply_animation_channels(layer, textures, animation_name, frame)?
+        else {
+            return Ok(None);
+        };
+        let mut tree = RuntimeAnimationTreeApplication::default();
+        tree.include_layer(application);
+
+        let child_requests = child_animation_requests(
+            layer,
+            animation_name,
+            frame,
+            &self.references.plan,
+            ReferenceLayerParent::ProjectLayer(target),
+        );
+
+        for (child_instance, child_animation_name, child_frame) in child_requests {
+            tree.reference_requests += 1;
+            if let Some(child) = self.references.apply_instance_animation(
+                project,
+                textures,
+                child_instance,
+                &child_animation_name,
+                child_frame,
+            )? {
+                tree.include_tree(child);
+            }
+        }
+        Ok(Some(tree))
     }
 }
 
@@ -533,6 +922,112 @@ mod tests {
                 .apply_animation_common_channels(&project, &plan, b"missing", 4.0)
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn channel_23_recursively_applies_the_named_child_instance_animation() {
+        let mut middle_reference = reference(b"scene", b"leaf", 0);
+        middle_reference.animation_enabled = 1;
+        middle_reference.animation_name = b"leaf_animation".to_vec();
+        middle_reference.default_frame = 8.0;
+        let mut project = project(vec![
+            layer(b"root", true, vec![Some(reference(b"scene", b"middle", 0))]),
+            layer(b"middle", true, vec![Some(middle_reference)]),
+            layer(b"leaf", true, vec![None]),
+        ]);
+        project.scenes[0].layers[1].animation_count = 1;
+        project.scenes[0].layers[1]
+            .animations
+            .push(AnimationDefinition {
+                name: b"drive_reference".to_vec(),
+                flags: 0,
+                declared_motion_count: 1,
+                duration: 10,
+                motions: vec![Motion {
+                    target: 0,
+                    tracks: vec![Track {
+                        target: 23,
+                        key_count: 1,
+                        format: 0x13,
+                        range_start: 0,
+                        range_end: 10,
+                        keys: KeyData::Key20F32(vec![crate::animation::Key20 {
+                            frame: 0,
+                            value: 4.0,
+                            mode: 0,
+                            slope_in: 0.0,
+                            slope_out: 0.0,
+                        }]),
+                    }],
+                }],
+            });
+        project.scenes[0].layers[2].animation_count = 1;
+        project.scenes[0].layers[2]
+            .animations
+            .push(AnimationDefinition {
+                name: b"leaf_animation".to_vec(),
+                flags: 0,
+                declared_motion_count: 1,
+                duration: 10,
+                motions: vec![Motion {
+                    target: 0,
+                    tracks: vec![Track {
+                        target: 0,
+                        key_count: 1,
+                        format: 0x10,
+                        range_start: 0,
+                        range_end: 10,
+                        keys: KeyData::Key8F32(vec![Key8 {
+                            frame: 0,
+                            value: 99.0,
+                        }]),
+                    }],
+                }],
+            });
+
+        let mut runtime = ReferenceRuntime::new(&project).unwrap();
+        let nested_leaf = runtime
+            .plan
+            .instances
+            .iter()
+            .position(|instance| {
+                instance.parent == ReferenceLayerParent::ReferenceInstance(0)
+                    && instance.target.layer_index == 2
+            })
+            .unwrap();
+        let top_level_leaf = runtime
+            .plan
+            .instances
+            .iter()
+            .position(|instance| {
+                instance.parent
+                    == ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 1,
+                    })
+                    && instance.target.layer_index == 2
+            })
+            .unwrap();
+        let textures = TextureList {
+            declared_count: 0,
+            textures: Vec::new(),
+        };
+        let application = runtime
+            .apply_instance_animation(&project, &textures, 0, b"drive_reference", 3.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(application.animated_layers, 2);
+        assert_eq!(application.reference_requests, 1);
+        assert_eq!(runtime.layers[0].animations[0].frame, 3.0);
+        assert_eq!(runtime.layers[nested_leaf].animations[0].frame, 4.0);
+        assert_eq!(
+            runtime.layers[nested_leaf].cast_transforms[0].translation[0],
+            99.0
+        );
+        assert_eq!(
+            runtime.layers[top_level_leaf].cast_transforms[0].translation[0],
+            0.0
         );
     }
 }

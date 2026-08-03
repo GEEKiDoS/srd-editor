@@ -88,7 +88,7 @@ sub_A9FD60              Animation
 +0x10 tangent_out
 ```
 
-具体分派、时间折叠、端点、线性、保持和三次曲线公式已经由运行时求值器证明，详见证据文档。公共空间通道 `0..8` 与 visibility 通道 `10` 也已证明并实现；颜色通道和 CAST 专属通道仍不得猜测。
+具体分派、时间折叠、端点、线性、保持和三次曲线公式已经由运行时求值器证明，详见证据文档。公共空间/visibility/颜色通道与 CAST 专属 `11..17/20/23` 均已证明并接入顶层及独立引用层运行时；未知目标仍不得猜测。
 
 ## 场景变换
 
@@ -110,14 +110,14 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 - TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；实际纹理对象和最终 draw call 状态仍未闭环。
 - CIMG 的 CREF/CRE1 双表保存、选择器、TEXL/CROP 坐标解析、坐标偏移、Point/Linear 选择与 Image/Text cast 分类已经闭环；TEXT 内部仍未完成。
 - CNUM 的结构布局、CREF/CRE1 双表、NumberCast 初值、完整静态格式化、数字及四种特殊字符的 glyph 映射、逐字符 quad 排版和每 glyph 纹理坐标已经闭环；历史 glyph 动画与最终绘制状态仍未完成。
-- CAST 专属通道 `11/12` 的尺寸/origin、`13..16` 的 packed vertex color、`17/20` 的 selector/CREF/CRE1，以及 SrRefCast 专属 `23` 的 CRFD 动画帧请求已经闭环。CRFD 的 `source_name/layer_name` 已证明是在同一 SRD 的 `PROJ -> SCN  -> LAYR` 表内两级匹配，不是外部 SRD 路径；引用层独立状态和递归绘制尚未完成。
+- CAST 专属通道 `11/12` 的尺寸/origin、`13..16` 的 packed vertex color、`17/20` 的 selector/CREF/CRE1，以及 SrRefCast 专属 `23` 的 CRFD 动画帧请求已经闭环并接入独立状态。CRFD 的 `source_name/layer_name` 已证明是在同一 SRD 的 `PROJ -> SCN  -> LAYR` 表内两级匹配，不是外部 SRD 路径；每个 RefCast 的独立复制层、顶层/复制层通道 `23` 递归动画、世界状态和递归绘制调用关系已经闭环，但实际 D3D9 draw submission 尚未实现。
 - DDS 图集裁剪、runtime-bound 资源、数字排版与 sliced sprite 均不得依据旧预览器的表现直接实现。
 
 ## 待验证问题
 
 1. VTBF/SRFF 文件头、块长度、子块布局和全部属性编码。
 2. 各标签的构造/解析分派函数及运行时对象类型。
-3. 公共 packed color/alpha 通道，以及通道 `23` 请求后的引用层状态建立、动画应用与递归绘制。
+3. 引用层根 CAST 的附加抑制条件，以及递归绘制进入实际 draw submission 后的完整状态恢复。
 4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
 5. CNUM 历史 glyph 动画、TEXT 与 shader/固定管线中的双 UV 消费流程。
-6. CNUM/NumberCast 动画通道、CAST tint/default color 与最终 D3D9 绘制语义。
+6. CNUM 历史 glyph 动画、CAST tint/default color 与最终 D3D9 绘制语义；ANIM/TRK 已证明没有独立的 Number 数值目标。

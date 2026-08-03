@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::animation::{Evaluation, Key20, KeyData, ScalarValue, Track, cvtt_f32_to_i32};
-use crate::csli::{CrefEntry, multiply_color_game, slice_texture_coordinates};
+use crate::csli::{CrefEntry, CsliDefinition, multiply_color_game, slice_texture_coordinates};
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -56,6 +56,18 @@ pub struct ImageQuad {
 pub struct ImageGeometryState {
     pub size: [f32; 2],
     pub origin: [f32; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeImageState {
+    pub geometry: ImageGeometryState,
+    pub coordinates: [ImageCoordinateState; 2],
+}
+
+impl RuntimeImageState {
+    pub fn coordinate_state(&self, channel: ImageReferenceChannel) -> ImageCoordinateState {
+        self.coordinates[channel.index()]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +199,64 @@ impl ImageDefinition {
             explicit_image_index: 0,
             uses_explicit_rectangle: false,
             explicit_rectangle: [0.0; 4],
+        }
+    }
+
+    pub fn initial_runtime_state(&self) -> RuntimeImageState {
+        RuntimeImageState {
+            geometry: self.initial_geometry_state(),
+            coordinates: [
+                self.initial_coordinate_state(ImageReferenceChannel::Cref),
+                self.initial_coordinate_state(ImageReferenceChannel::Cre1),
+            ],
+        }
+    }
+
+    /// Reproduces the state left by `srd_srimage_construct` before a cast-specific
+    /// initializer copies CIMG, CNUM, or CSLI data into the embedded SrImage.
+    pub fn srimage_constructor_base() -> Self {
+        Self {
+            flags: 0,
+            width: 0.0,
+            height: 0.0,
+            custom_origin: [0.0; 2],
+            origin_mode: 4,
+            vertex_colors: [[0; 4]; 4],
+            cref_index: 0,
+            cref_count: 0,
+            crefs: Vec::new(),
+            field_4c: 0,
+            cre1_index: 0,
+            cre1_count: 0,
+            cre1s: Vec::new(),
+            coordinate_offsets: [[0.0; 2]; 2],
+            field_a1: 0,
+            node_index: -1,
+            has_text_child: false,
+        }
+    }
+
+    /// Reproduces `srd_init_srimage_from_csli`. CSLI initializes only channel 0's
+    /// reference table; both selectors retain the zero written by the constructor.
+    pub fn from_csli_runtime_base(definition: &CsliDefinition) -> Self {
+        Self {
+            flags: definition.field_80,
+            width: definition.width,
+            height: definition.height,
+            custom_origin: definition.custom_origin,
+            origin_mode: definition.origin_mode,
+            vertex_colors: definition.field_44,
+            cref_index: 0,
+            cref_count: definition.cref_count,
+            crefs: definition.crefs.clone(),
+            field_4c: 0,
+            cre1_index: 0,
+            cre1_count: 0,
+            cre1s: Vec::new(),
+            coordinate_offsets: [[0.0; 2]; 2],
+            field_a1: 0,
+            node_index: definition.node_index,
+            has_text_child: false,
         }
     }
 
@@ -407,6 +477,38 @@ impl ImageDefinition {
         };
         state.vertex_colors[vertex_index] = bytes;
         true
+    }
+
+    pub fn apply_runtime_track(
+        &self,
+        state: &mut RuntimeImageState,
+        track: &Track,
+        frame: f32,
+        textures: &TextureList,
+    ) -> Result<bool, ImageError> {
+        match track.target {
+            11 | 12 => Ok(self.apply_size_track(&mut state.geometry, track, frame)),
+            13..=16 => Ok(self.apply_vertex_color_track(
+                &mut state.coordinates[ImageReferenceChannel::Cref.index()],
+                track,
+                frame,
+            )),
+            17 => self.apply_coordinate_track(
+                ImageReferenceChannel::Cref,
+                &mut state.coordinates[ImageReferenceChannel::Cref.index()],
+                track,
+                frame,
+                textures,
+            ),
+            20 => self.apply_coordinate_track(
+                ImageReferenceChannel::Cre1,
+                &mut state.coordinates[ImageReferenceChannel::Cre1.index()],
+                track,
+                frame,
+                textures,
+            ),
+            _ => Ok(false),
+        }
     }
 
     #[allow(clippy::assign_op_pattern)]
@@ -843,6 +945,94 @@ mod tests {
                 [10.0, 3.0, 0.0],
             ]
         );
+    }
+
+    #[test]
+    fn runtime_srimage_state_preserves_constructor_and_csli_initializers() {
+        let constructor = ImageDefinition::srimage_constructor_base();
+        let constructor_state = constructor.initial_runtime_state();
+        assert_eq!(constructor.origin_mode, 4);
+        assert_eq!(constructor_state.geometry.size, [0.0, 0.0]);
+        assert_eq!(constructor_state.geometry.origin, [0.0, 0.0]);
+        assert_eq!(constructor_state.coordinates[0].vertex_colors, [[0; 4]; 4]);
+        assert_eq!(constructor_state.coordinates[0].reference_index, 0);
+        assert_eq!(constructor_state.coordinates[1].reference_index, 0);
+
+        let csli = CsliDefinition {
+            field_80: 0x0100_0000,
+            width: 40.0,
+            height: 20.0,
+            custom_origin: [7.0, 9.0],
+            field_44: [[1, 2, 3, 4]; 4],
+            origin_mode: 8,
+            columns: 0,
+            rows: 0,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
+            cref_count: 1,
+            crefs: vec![CrefEntry {
+                image_index: 2,
+                rectangle_index: 3,
+            }],
+            node_index: 6,
+            cells: Vec::new(),
+        };
+        let base = ImageDefinition::from_csli_runtime_base(&csli);
+        let state = base.initial_runtime_state();
+        assert!(base.point_sampled());
+        assert_eq!(state.geometry.size, [40.0, 20.0]);
+        assert_eq!(state.geometry.origin, [40.0, 20.0]);
+        assert_eq!(state.coordinates[0].vertex_colors, csli.field_44);
+        assert_eq!(state.coordinates[0].reference_index, 0);
+        assert_eq!(state.coordinates[1].reference_index, 0);
+        assert_eq!(base.crefs, csli.crefs);
+        assert!(base.cre1s.is_empty());
+    }
+
+    #[test]
+    fn runtime_dispatch_updates_exact_srimage_subobjects() {
+        let definition = definition();
+        let mut state = definition.initial_runtime_state();
+        let width = Track {
+            target: 11,
+            key_count: 1,
+            format: 0x13,
+            range_start: 0,
+            range_end: 0,
+            keys: KeyData::Key20F32(vec![Key20 {
+                frame: 0,
+                value: 12.0,
+                mode: 0,
+                slope_in: 0.0,
+                slope_out: 0.0,
+            }]),
+        };
+        assert!(
+            definition
+                .apply_runtime_track(&mut state, &width, 0.0, &textures())
+                .unwrap()
+        );
+        assert_eq!(state.geometry.size, [12.0, 6.0]);
+        assert_eq!(state.geometry.origin, [1.0, 2.0]);
+
+        let color = Track {
+            target: 14,
+            key_count: 1,
+            format: 0x51,
+            range_start: 0,
+            range_end: 0,
+            keys: KeyData::Key8Bytes4(vec![crate::animation::Key8 {
+                frame: 0,
+                value: [10, 20, 30, 40],
+            }]),
+        };
+        assert!(
+            definition
+                .apply_runtime_track(&mut state, &color, 0.0, &textures())
+                .unwrap()
+        );
+        assert_eq!(state.coordinates[0].vertex_colors[2], [10, 20, 30, 40]);
+        assert_eq!(state.coordinates[1].vertex_colors[2], [0xff; 4]);
     }
 
     #[test]

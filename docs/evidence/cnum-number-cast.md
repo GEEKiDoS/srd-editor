@@ -3,7 +3,7 @@
 本页只记录已经由 CNUM 解析器、运行时对象初始化、数字格式化和 glyph 记录生成代码共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`6AEE8BCD6D42F393B48FBEC615A0D324A9502E160A565B11BE7701F548E97C62`。
+- 保存后的 IDB SHA-256：`F75E8EB4A4E6437E9D17745C255AE6B9DCEB6BC2C46853AD6131CBCEB3B3E175`。
 
 ## CNUM 解析布局
 
@@ -106,8 +106,8 @@ glyph 记录只在 `mapped_index < CREF count` 的 signed 比较成立时建立�
 
 本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。样本中的 `0x89` 为 `1..10`、`0x88` 为 `3`、`0x8B` 为 `0..4` 或 `10`；这些统计用于验证实现路径，不被提升为格式限制。
 
-## 仍未闭环
+## 动画边界与仍未闭环
 
-- NumberCast 的动画通道到数值、格式和布局字段的全部绑定；
+- `srd_apply_animation_motion_set` 的完整调用边界和 `srd_apply_cast_animation_channels` 的穷尽 switch 已证明：ANIM/TRK 不存在另一组 Number 专用目标，`11..17/20` 只修改内嵌 SrImage，`23` 对 NumberCast 是虚表空操作。CNUM 数值、格式和布局字段不会由这条 ANIM 路径绑定；数值变化来自 `srd_number_cast_set_value_parts` 等外部调用路径；
 - `0x90` 各动画模式在 `srd_render_number_glyph_history` (`0xADED10`) 中对历史 glyph 的完整插值/裁剪行为；
 - `srd_render_number_cast` (`0xADE6C0`) 下游混合、深度/裁剪状态和最终 D3D9 draw call。

@@ -3,7 +3,7 @@
 本页记录 CAST 专属动画通道到 SrImage 尺寸、顶点色和两份 48 字节坐标描述符的已闭环路径。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`2A8312352934C3A1CE061D2AC594392AD6D32F2E4DD41F566BAB95CE5316624D`。
+- 保存后的 IDB SHA-256：`F75E8EB4A4E6437E9D17745C255AE6B9DCEB6BC2C46853AD6131CBCEB3B3E175`。
 
 ## CAST 专属通道分派
 
@@ -18,6 +18,8 @@
 | `23` | CAST 虚表槽 `+0x7C`；只有 SrRefCast 覆盖该空操作以驱动引用动画帧 |
 
 Rust 已实现 `11..17` 与 `20`；通道 `23` 的 SrRefCast 专属语义和 CRFD 来源见 [`crfd-reference-cast.md`](crfd-reference-cast.md)。
+
+该 switch 覆盖 `11..23` 的完整整数范围；`18/19/21/22` 明确落入 default，因为它们已经由前一遍公共通道处理。不存在另一组 Text 或 Number 专用 TRK 目标。`srd_apply_animation_motion_set` 对每个 MOT 先完整调用公共通道，再完整调用本函数，因此 Rust 也保持这两个 pass 的边界。
 
 ## 尺寸通道 11/12
 
@@ -92,11 +94,14 @@ selector 最终写入描述符 `+0x18`。`srd_lookup_cref_rectangle` (`0x129B2C0
 
 ## Rust 对应与样本验证
 
-`ImageDefinition` 的运行时辅助现在覆盖 size/origin、四个 packed vertex color 和双坐标描述符。`apply_coordinate_track` 同时支持标量原始位写入和 20 字节引用 key，保留 wrap、端点、mode 0 hold、`cvtt` selector、左右查询顺序、显式 image 选择、矩形 f32 插值及无效查询时的旧矩形。
+`RuntimeImageState` 保存 size/origin 和两份独立的 48 字节坐标描述符子状态。四个 packed vertex color 通道只写第一份描述符，第二份保留初始化时的副本，和 `srd_apply_cast_animation_channels` 的实际偏移一致。`apply_coordinate_track` 同时支持标量原始位写入和 20 字节引用 key，保留 wrap、端点、mode 0 hold、`cvtt` selector、左右查询顺序、显式 image 选择、矩形 f32 插值及无效查询时的旧矩形。
+
+所有 CAST 构造时都先调用 `srd_srimage_construct`。Rust 因此为 Null、Image/Text、Slice、Ref 和 Number 的每个顶层 CAST及每个引用副本 CAST 都建立独立 SrImage 状态：未被类型初始化器覆盖时采用构造器的零颜色、零尺寸、双 selector `0` 和 origin mode `4`；Image/Text 从 CIMG 初始化，Slice 从 CSLI 初始化，Number 从 CNUM 初始化。
 
 53 个本地 SRD 中，通道 `17` 只出现 format `0x23/0x123`，通道 `20` 同样只出现 `0x23/0x123`。对已连接到 CIMG/CNUM 的轨道，在每个 key 和相邻 key 中点共执行 183432 次求值，其中 183016 次得到能够继续通过 `resolve_coordinates` 的显式纹理引用。差额来自游戏允许返回显式状态、但 selector 或 image index 在该时刻不可绘制的情况。
 
+把相同分派应用到 2087 个独立引用层实例的全部 11382 次动画调用时，共执行 371568 个公共通道和 102506 个 SrImage 专用通道；所有实际 CIMG、TextCast、CSLI、CNUM 以及构造器默认状态均走同一运行时路径。
+
 ## 仍未闭环
 
-- CRFD 目标层的独立运行时状态、通道 `23` 请求应用和递归绘制；
 - 动画后的双 UV 在 shader/固定管线中的最终组合与 D3D9 draw 状态。

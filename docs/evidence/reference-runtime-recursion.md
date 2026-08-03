@@ -3,7 +3,7 @@
 分析对象：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`CDADC82B2932CF09122A1C73E7753446F7AAA3F7176A2DEE4F43902BBE725E7F`。
+- 保存后的 IDB SHA-256：`F75E8EB4A4E6437E9D17745C255AE6B9DCEB6BC2C46853AD6131CBCEB3B3E175`。
 
 ## 独立层的构造和双向绑定
 
@@ -77,9 +77,13 @@ Rust 已实现：
 - owning RefCast 2D 模式向所有嵌套复制层传播；
 - 2D 目标嵌入 3D RefCast 时的 Y 翻转；
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
-- 每个 copied layer 独立的 CAST transform、ANIM frame/duration/flags，以及首次同名动画的公共通道立即应用；
+- 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
+- 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
+- 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
 - 未解析引用不创建层，以及无截断猜测的循环诊断。
 
 53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；按文件统计共有 186 个目标 SCN/LAYR 被两个或更多实例引用。全部文件均收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
 
-后续仍需把 CAST 类型专属动画通道全部接入 `ReferenceLayerRuntimeState`，实现源目标层对根 CAST 的附加抑制条件，以及最终 D3D9 draw submission。本页不把已完成的公共动画和世界状态组合表述为已经完成像素渲染。
+2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
+
+后续仍需实现源目标层对根 CAST 的附加抑制条件，以及最终 D3D9 draw submission。本页不把已完成的动画、世界状态和递归调用表述为已经完成像素渲染。
