@@ -3,7 +3,7 @@
 本页记录引用 CAST 的数据记录、运行时指针链和通道 `23` 的已闭环行为。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`952E0690DC74B3B34C64C6B060488D4335E2706E16578EDE0028142F7EFCF394`。
+- 保存后的 IDB SHA-256：`5E2AE9BC9200FDE7A6E2610AB67E6D76F453070DFE8010A5FD872B827E6580FE`。
 
 ## CRFD 记录
 
@@ -60,4 +60,4 @@ Rust 当前已经实现：
 - CRFD 到 NODE 的连接及 NODE 类型回归；
 - 通道 `23` 的原始位求值、非零 gate、负值默认帧和动画名请求。
 
-`source_name/layer_name` 现在已经按游戏的同文件 `PROJ -> SCN  -> LAYR` 表解析，53 个样本中的 1090 个 CRFD 全部命中。尚未实现的是建立引用层的独立运行时状态、在其中查找并驱动 `animation_name` 对应动画，以及递归提交最终绘制。证据页不把“能够解析目标并产生请求”写成“引用场景已经渲染”。
+`source_name/layer_name` 现在已经按游戏的同文件 `PROJ -> SCN  -> LAYR` 表解析，53 个样本中的 1090 个 CRFD 全部命中。独立引用层的建立顺序、父实例关系和结构性递归见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。尚未实现的是复制层的完整动画对象、运行时 gate/颜色求值和最终 D3D9 draw submission；证据页不把结构性计划写成已经完成像素渲染。

@@ -139,6 +139,52 @@ fn reference_casts_resolve_inside_the_binary_project_scene_table() {
 }
 
 #[test]
+fn reference_runtime_construction_converges_for_the_local_corpus() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut definition_count = 0usize;
+    let mut instance_count = 0usize;
+    let mut multiply_instanced_targets = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project =
+            Project::from_file(&file).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        definition_count += project
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.layers)
+            .flat_map(|layer| &layer.reference_by_node)
+            .flatten()
+            .count();
+        let plan = project
+            .build_reference_runtime_plan()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert!(plan.unresolved.is_empty(), "{}", path.display());
+        instance_count += plan.instances.len();
+
+        let mut target_counts = std::collections::HashMap::new();
+        for instance in &plan.instances {
+            *target_counts.entry(instance.target).or_insert(0usize) += 1;
+        }
+        multiply_instanced_targets += target_counts.values().filter(|count| **count > 1).count();
+    }
+
+    assert_eq!(definition_count, 1090);
+    assert!(instance_count >= definition_count);
+    assert!(multiply_instanced_targets > 0);
+    eprintln!(
+        "CRFD definitions={definition_count}, runtime reference layers={instance_count}, multiply-instanced targets={multiply_instanced_targets}"
+    );
+}
+
+#[test]
 fn avatar_track_uses_game_cubic_result() {
     let path = corpus_root()
         .join("common")

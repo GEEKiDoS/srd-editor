@@ -41,7 +41,7 @@ pub struct Hierarchy {
     pub roots: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReferenceTarget {
     pub scene_index: usize,
     pub layer_index: usize,
