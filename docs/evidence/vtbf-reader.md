@@ -9,6 +9,7 @@
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
 - IDA 数据库调查前 SHA-256：`323D5AA53B859197C89D48ED3E7444A8F0829538BACA2ECC92A55563D0A8254A`
 - IDA 数据库在加入 38 个已证明函数名并保存后 SHA-256：`95D2ED3702528E90BEA70B921EBC8EA021E95C1502A9047C988A52D172286C89`
+- IDA 数据库在继续加入 14 个已证明求值函数名并保存后 SHA-256：`37D27F9ACDEE5A0ADC903B9BAAE9BC3046F45D61CA25724F01497DF514A0AEA0`
 - PE image base：`0x400000`
 - PE SizeOfImage：`0x1EA4000`
 
@@ -27,7 +28,7 @@ IDA 数据库记录的原始输入路径位于旧 H 盘，不能只据路径声�
 
 因此本文对这些函数的结论同时适用于当前 `chusanApp.exe`。这不等于数据库中所有函数均已完成同样验证。
 
-保存后的数据库仅增加了保守的函数名，如 `vtbf_parse_file_header`、`srd_parse_trk`；没有修改程序字节。
+保存后的数据库仅增加了保守的函数名，如 `vtbf_parse_file_header`、`srd_parse_trk`、`srd_eval_track_scalar`；没有修改程序字节。
 
 ## 文件头：`0x1298EB0`
 
