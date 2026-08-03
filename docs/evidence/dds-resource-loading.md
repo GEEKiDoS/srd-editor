@@ -77,7 +77,7 @@ caps2 bit `0x200` 表示 cube，六个 face bit `0x400..0x8000` 按低到高顺�
 
 cube 调用 `d3d9_create_cube_texture_from_memory_d3dx` (`0xE5E310`) 使用 edge length `D3DX_DEFAULT (-1)`、header mip count、usage `0`、unknown format、default pool、两个 default filter、null source info 和 null palette。
 
-因此编辑器会直接调用同一代 D3D9/D3DX 接口，不自行实现 DXT 或 RGBA 像素解码；但不会把所有纹理统一交给 D3DX，因为这会偏离游戏已经证明的原生创建分支。
+以上只描述原游戏的兼容分支。编辑器自身不链接或调用 D3DX：能够直接上传的 DDS 继续使用 D3D9 原生资源创建与上传；需要软件解码或转换的输入交给独立纹理解码库，再将得到的像素上传至 D3D9。选用的库及其格式覆盖会在后端实现前单独验证，不能把游戏调用 D3DX 误写成编辑器依赖要求。
 
 ## 原生二维纹理的 SYSTEMMEM 上传
 
@@ -117,6 +117,16 @@ Rust 的 `D3d9SystemMemoryUpload` 固化了上述 staging mip 数、usage、form
 - `CHU_UI_UnlockChallenge_shutter.dds`
 
 Rust 的 `DdsDescriptor`、格式映射和 `D3d9TextureCreation` 计划均由单元测试及这 97 个文件的语料测试覆盖。
+
+用户提供的完整游戏目录 `D:\sdhd\assets\data\surfboard` 另有 360 个 DDS，全部通过同一描述符、payload 长度和上传计划回归：
+
+- 2 个内部格式 `1`（A8R8G8B8）；
+- 7 个内部格式 `48`（DXT1）；
+- 351 个内部格式 `52`（DXT5）；
+- 360 个均只有一层 mip，且没有 cube；
+- 234 个满足游戏原生创建分支，126 个会落入原游戏的 D3DX 兼容分支。
+
+最后一项只用于证明原游戏的分支选择。编辑器禁止使用 D3DX，因此这 126 个文件将成为独立解码库路径的强制回归语料。
 
 ## 证据边界
 

@@ -7,6 +7,8 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 使用 Rust 实现 SRD 二进制解析与完整重序列化。
 - 使用 Dear ImGui 构建桌面编辑界面。
 - 使用 Direct3D 9 复现游戏侧的 SRD 渲染路径。
+- 按构建宿主机的原生指令集发布，不把编辑器绑定到原游戏的 32 位 x86 架构。
+- 不依赖或调用 D3DX；纹理解码使用独立库并将结果上传至 D3D9，着色器采用不依赖 D3DX 的、经二进制行为验证的方案。
 - 支持纹理图集、裁剪、节点层级、动画、文本与常见 CAST 类型。
 - 保留原始字节和未知字段，避免编辑时破坏尚未还原的结构。
 - 通过离线样本和 IDA 数据库验证，不启动游戏或 `amdaemon`。
@@ -26,16 +28,18 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - CSLI/SLIC 记录、`surfride::SrSliceCast` 链接、尺寸/origin 计算、网格单元生成、NODE `0x32` 父级单元索引及其完整偏移链。
 - SrSliceCast active 单元的局部四顶点、2D/3D Y 轴分支、36 字节游戏顶点顺序、CSLI CREF 选择、flags flip/order 与两个相同最终 UV 通道。
 - TEXL/TEX/CROP 的 540 字节记录、外部 DDS 基础路径、纹理尺寸、16 字节归一化矩形表，以及 CREF 到实际矩形的解析。
-- SRD 路径到 `air::TextureResource` 的资源工厂链、DDS header/格式/mip/cube/palette surface 布局、D3D9 原生创建、D3DX9_43 回退和二维 SYSTEMMEM staging/`UpdateSurface` 参数；97 个本地 DDS 全量回归。
+- SRD 路径到 `air::TextureResource` 的资源工厂链、DDS header/格式/mip/cube/palette surface 布局、D3D9 原生创建、游戏中的 D3DX9_43 回退分支和二维 SYSTEMMEM staging/`UpdateSurface` 参数；旧 97 文件语料和完整游戏 `surfboard` 下 360 个 DDS 均已全量回归。游戏的 D3DX 分支仅作为兼容行为证据，编辑器自身不链接或调用 D3DX。
 - TEX `0x62` 到 Wrap/Clamp、Linear/Point 双包装对象及最终 D3D9 sampler state 的完整绑定链。
+- CAST `CATL/CATR` 通用属性列表、`ExtParamData` 12 字节运行时结构、blend preset 覆盖和继承式层级键。
 - SrSliceCast 两个 packed vertex color 的解析零默认、双线性 CSLI 插值、逐通道乘法和饱和加法组合器；未证明的 CAST tint 保持为显式输入。
 - `surfride::SrPlayer -> SrPlayer::Impl -> SrRenderer` 对象链、精确 4x4 乘法、Width/Height 视口矩阵以及 2D/3D CAST 最终屏幕 X/Y 映射。
-- 本地 53 个 SRD 的结构解析回归。
-- 53 个样本中的 192 个 SCN 和 1090 个 CRFD 引用目标回归。
-- 53 个样本中的 799 个 CSLI 和 23 个实际父级单元索引关系回归。
+- 完整游戏 `surfboard` 下 91 个 SRD 的结构解析回归。
+- 91 个样本中的 263 个 SCN 和 1299 个 CRFD 引用目标回归。
+- 91 个样本中的 983 个 CSLI 和 25 个实际父级单元索引关系回归。
 - avatar 样本 MOT target、公共 rotation Z 通道和游戏三次曲线结果回归。
 - 36 字节 D3D9 顶点声明、四顶点非索引 triangle strip、混合、alpha/depth/stencil 与 scissor 状态提交。
+- 绘制包到 64 位 ShapeEnv shader cache key 的全部位来源，以及 vertex-format/blend/multi-texture 模块索引。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request/设备丢失生命周期、shader/双 UV 消费、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写：将按游戏分支直接使用 D3D9 与 `D3DX9_43`。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request/设备丢失生命周期、ShapeEnv 生成源码/最终 bytecode 与双 UV 像素公式、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

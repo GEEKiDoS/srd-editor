@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
+use srd_editor::attribute::CastAttributeValue;
 use srd_editor::csli::CsliDefinition;
 use srd_editor::dds::{
     D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat,
@@ -14,6 +15,28 @@ use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CorpusProfile {
+    Legacy53,
+    Complete91,
+}
+
+fn srd_corpus_profile(file_count: usize) -> CorpusProfile {
+    match file_count {
+        53 => CorpusProfile::Legacy53,
+        91 => CorpusProfile::Complete91,
+        _ => panic!("unexpected local SRD corpus size: {file_count}"),
+    }
+}
+
+fn dds_corpus_profile(file_count: usize) -> CorpusProfile {
+    match file_count {
+        97 => CorpusProfile::Legacy53,
+        360 => CorpusProfile::Complete91,
+        _ => panic!("unexpected local DDS corpus size: {file_count}"),
+    }
+}
 
 fn corpus_root() -> PathBuf {
     std::env::var_os("SRD_CORPUS")
@@ -55,7 +78,7 @@ fn parses_local_dds_corpus_with_the_binary_resource_rules() {
     let mut files = Vec::new();
     collect_dds_files(&root, &mut files);
     files.sort();
-    assert_eq!(files.len(), 97, "unexpected local DDS corpus size");
+    let profile = dds_corpus_profile(files.len());
 
     let mut format_counts = std::collections::BTreeMap::new();
     let mut mip_counts = std::collections::BTreeMap::new();
@@ -101,18 +124,37 @@ fn parses_local_dds_corpus_with_the_binary_resource_rules() {
         }
     }
 
-    assert_eq!(
-        format_counts,
-        [
+    eprintln!(
+        "DDS profile={profile:?}, formats={format_counts:?}, mips={mip_counts:?}, direct={direct_count}, fallback={d3dx_count}"
+    );
+    let expected_formats = match profile {
+        CorpusProfile::Legacy53 => [
             (GameTextureFormat::A8_R8_G8_B8.0, 70),
             (GameTextureFormat::DXT5.0, 27),
         ]
         .into_iter()
-        .collect()
-    );
-    assert_eq!(mip_counts, [(1, 96), (10, 1)].into_iter().collect());
-    assert_eq!(direct_count, 93);
-    assert_eq!(d3dx_count, 4);
+        .collect(),
+        CorpusProfile::Complete91 => [
+            (GameTextureFormat::A8_R8_G8_B8.0, 2),
+            (GameTextureFormat::DXT1.0, 7),
+            (GameTextureFormat::DXT5.0, 351),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    assert_eq!(format_counts, expected_formats);
+    match profile {
+        CorpusProfile::Legacy53 => {
+            assert_eq!(mip_counts, [(1, 96), (10, 1)].into_iter().collect());
+            assert_eq!(direct_count, 93);
+            assert_eq!(d3dx_count, 4);
+        }
+        CorpusProfile::Complete91 => {
+            assert_eq!(mip_counts, [(1, 360)].into_iter().collect());
+            assert_eq!(direct_count, 234);
+            assert_eq!(d3dx_count, 126);
+        }
+    }
 }
 
 #[test]
@@ -125,6 +167,7 @@ fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut cast_type_counts = [0usize; 3];
     let mut normal_preset_counts = std::collections::BTreeMap::new();
@@ -166,18 +209,27 @@ fn image_cast_flags_select_only_binary_proven_render_presets_in_the_local_corpus
         }
     }
 
-    assert_eq!(cast_type_counts, [13_773, 799, 552]);
+    eprintln!(
+        "profile={profile:?}, CIMG/CSLI/CNUM={cast_type_counts:?}, normal presets={normal_preset_counts:?}, special presets={special_preset_counts:?}, unchanged low nibbles={invalid_low_nibbles:?}"
+    );
+    assert_eq!(
+        cast_type_counts,
+        match profile {
+            CorpusProfile::Legacy53 => [13_773, 799, 552],
+            CorpusProfile::Complete91 => [17_867, 983, 634],
+        }
+    );
     assert_eq!(
         normal_preset_counts,
-        [(3, 10_659), (4, 4_242), (5, 43), (9, 180)]
-            .into_iter()
-            .collect()
+        match profile {
+            CorpusProfile::Legacy53 => [(3, 10_659), (4, 4_242), (5, 43), (9, 180)],
+            CorpusProfile::Complete91 => [(3, 13_779), (4, 5_436), (5, 48), (9, 221)],
+        }
+        .into_iter()
+        .collect()
     );
     assert_eq!(special_preset_counts, normal_preset_counts);
     assert!(invalid_low_nibbles.is_empty());
-    eprintln!(
-        "CIMG/CSLI/CNUM={cast_type_counts:?}, normal presets={normal_preset_counts:?}, special presets={special_preset_counts:?}, unchanged low nibbles={invalid_low_nibbles:?}"
-    );
 }
 
 #[test]
@@ -190,6 +242,7 @@ fn cast_channel_23_only_targets_reference_casts() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut count = 0usize;
     for path in files {
@@ -222,7 +275,13 @@ fn cast_channel_23_only_targets_reference_casts() {
             }
         }
     }
-    assert_eq!(count, 111);
+    assert_eq!(
+        count,
+        match profile {
+            CorpusProfile::Legacy53 => 111,
+            CorpusProfile::Complete91 => 118,
+        }
+    );
 }
 
 #[test]
@@ -235,12 +294,149 @@ fn parses_local_corpus_with_binary_proven_boundaries() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
-    assert_eq!(files.len(), 53, "unexpected local corpus size");
+    srd_corpus_profile(files.len());
 
     for path in files {
         let bytes = fs::read(&path).unwrap();
         SrdFile::parse(bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     }
+}
+
+#[test]
+fn parses_cast_attribute_lists_and_ext_params() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+
+    let mut list_count = 0usize;
+    let mut attached_node_count = 0usize;
+    let mut attribute_count = 0usize;
+    let mut ext_param_count = 0usize;
+    let mut render_preset_overrides = std::collections::BTreeMap::new();
+    let mut image_override_counts = std::collections::BTreeMap::new();
+    let mut effective_image_presets = std::collections::BTreeMap::new();
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        for layer in project.scenes.iter().flat_map(|scene| &scene.layers) {
+            list_count += layer.cast_attribute_lists.len();
+            attached_node_count += layer.cast_attribute_list_by_node.iter().flatten().count();
+            for list in &layer.cast_attribute_lists {
+                assert!(list.attributes.len() <= list.declared_count as usize);
+                attribute_count += list.attributes.len();
+                for attribute in &list.attributes {
+                    if let CastAttributeValue::ExtParam { source, parsed } = &attribute.value {
+                        assert_eq!(*parsed, srd_editor::attribute::ExtParamData::parse(source));
+                        ext_param_count += 1;
+                        *render_preset_overrides
+                            .entry(parsed.render_preset_override)
+                            .or_insert(0usize) += 1;
+                    }
+                }
+            }
+            for (node_index, list_index) in layer.cast_attribute_list_by_node.iter().enumerate() {
+                if let Some(list_index) = list_index {
+                    assert_eq!(
+                        layer.ext_param_for_node(node_index),
+                        layer.cast_attribute_lists[*list_index].ext_param()
+                    );
+                }
+                let image = match layer.nodes[node_index].cast_type() {
+                    Some(1) => layer.image_by_node[node_index].clone(),
+                    Some(2) => layer.csli_by_node[node_index]
+                        .as_ref()
+                        .map(ImageDefinition::from_csli_runtime_base),
+                    Some(4) => layer.number_by_node[node_index]
+                        .as_ref()
+                        .map(NumberDefinition::image_base),
+                    _ => None,
+                };
+                let Some(image) = image else {
+                    continue;
+                };
+                let override_value = layer
+                    .ext_param_for_node(node_index)
+                    .map_or(-1, |ext_param| ext_param.render_preset_override);
+                *image_override_counts
+                    .entry(override_value)
+                    .or_insert(0usize) += 1;
+                if let Some(preset) =
+                    select_srd_image_render_preset(image.flags, override_value, false)
+                {
+                    *effective_image_presets.entry(preset).or_insert(0usize) += 1;
+                }
+            }
+        }
+    }
+
+    let (expected_lists, expected_attributes, expected_overrides) = match profile {
+        CorpusProfile::Legacy53 => (
+            22_579,
+            53_179,
+            [
+                (-1, 22_398),
+                (41, 7),
+                (42, 1),
+                (43, 3),
+                (53, 24),
+                (54, 11),
+                (57, 1),
+                (58, 20),
+                (60, 114),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        CorpusProfile::Complete91 => (
+            29_138,
+            68_511,
+            [
+                (-1, 28_863),
+                (34, 2),
+                (35, 2),
+                (36, 3),
+                (37, 2),
+                (38, 2),
+                (39, 2),
+                (40, 2),
+                (41, 9),
+                (42, 3),
+                (43, 5),
+                (44, 2),
+                (45, 2),
+                (46, 2),
+                (47, 2),
+                (48, 2),
+                (49, 2),
+                (50, 2),
+                (51, 2),
+                (52, 2),
+                (53, 32),
+                (54, 13),
+                (55, 2),
+                (56, 2),
+                (57, 4),
+                (58, 22),
+                (60, 150),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    };
+    assert_eq!(list_count, expected_lists);
+    assert_eq!(attached_node_count, expected_lists);
+    assert_eq!(attribute_count, expected_attributes);
+    assert_eq!(ext_param_count, expected_lists);
+    assert_eq!(render_preset_overrides, expected_overrides);
+    eprintln!(
+        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
+    );
 }
 
 #[test]
@@ -253,6 +449,7 @@ fn reference_casts_resolve_inside_the_binary_project_scene_table() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut scene_count = 0usize;
     let mut reference_count = 0usize;
@@ -287,7 +484,13 @@ fn reference_casts_resolve_inside_the_binary_project_scene_table() {
     }
 
     assert!(scene_count > 0);
-    assert_eq!(reference_count, 1090);
+    assert_eq!(
+        reference_count,
+        match profile {
+            CorpusProfile::Legacy53 => 1_090,
+            CorpusProfile::Complete91 => 1_299,
+        }
+    );
     eprintln!("project scenes={scene_count}, resolved CRFD references={reference_count}");
 }
 
@@ -301,6 +504,7 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut definition_count = 0usize;
     let mut instance_count = 0usize;
@@ -329,7 +533,13 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
         multiply_instanced_targets += target_counts.values().filter(|count| **count > 1).count();
     }
 
-    assert_eq!(definition_count, 1090);
+    assert_eq!(
+        definition_count,
+        match profile {
+            CorpusProfile::Legacy53 => 1_090,
+            CorpusProfile::Complete91 => 1_299,
+        }
+    );
     assert!(instance_count >= definition_count);
     assert!(multiply_instanced_targets > 0);
     eprintln!(
@@ -347,6 +557,7 @@ fn reference_instances_apply_the_binary_cast_channel_dispatch() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut instance_count = 0usize;
     let mut animation_count = 0usize;
@@ -371,6 +582,14 @@ fn reference_instances_apply_the_binary_cast_channel_dispatch() {
             let layer = &project.scenes[target.scene_index].layers[target.layer_index];
             assert_eq!(runtime.image_bases.len(), layer.nodes.len());
             assert_eq!(runtime.image_states.len(), layer.nodes.len());
+            for (node_index, state) in runtime.image_states.iter().enumerate() {
+                assert_eq!(
+                    state.render_preset_override,
+                    layer
+                        .ext_param_for_node(node_index)
+                        .map_or(-1, |ext_param| ext_param.render_preset_override)
+                );
+            }
             let animation_names = layer
                 .animations
                 .iter()
@@ -395,7 +614,13 @@ fn reference_instances_apply_the_binary_cast_channel_dispatch() {
         }
     }
 
-    assert_eq!(instance_count, 2087);
+    assert_eq!(
+        instance_count,
+        match profile {
+            CorpusProfile::Legacy53 => 2_087,
+            CorpusProfile::Complete91 => 2_365,
+        }
+    );
     assert!(animation_count > 0);
     assert!(common_channels > 0);
     assert!(image_channels > 0);

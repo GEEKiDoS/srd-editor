@@ -541,6 +541,54 @@ impl CeylonDrawPacketPresetState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonShaderKeyInput {
+    pub draw_flags_00: u32,
+    pub field_28: u32,
+    pub field_2c: u32,
+    pub flags_60: u32,
+    pub vertex_format_70: u32,
+    pub texture_present: [bool; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CeylonShaderKey {
+    pub low: u32,
+    pub high: u32,
+}
+
+impl CeylonShaderKeyInput {
+    /// Reproduces the complete 64-bit ShapeEnv cache key built by
+    /// `sub_671480`. This identifies the game's shader-module combination;
+    /// it does not infer the generated pixel formula.
+    pub fn shader_key(self) -> CeylonShaderKey {
+        let preset = ceylon_d3d9_blend_preset((self.draw_flags_00 & 0x3f) as i32);
+        let mut low = ((self.flags_60 >> 4) & 8) | (self.field_2c & 7);
+        low |= (self.draw_flags_00 >> 12) & 0x20;
+        low |= 16u32.wrapping_mul(
+            u32::from(preset.alpha_blend_enabled) | ((self.draw_flags_00 & 0x3ff) << 16),
+        ) & 0xfff0_603f;
+
+        let vertex_format = (self.vertex_format_70 & 0x1f) << 7;
+        low |= (self.flags_60 >> 7) & 0x80;
+        low |= 8u32.wrapping_mul(
+            (self.flags_60 & 8) | 32u32.wrapping_mul((self.field_28 & 0x1f) | vertex_format),
+        );
+
+        for present in self.texture_present {
+            if present {
+                let incremented = (low & 0xe000).wrapping_add(0x2000);
+                low ^= (low ^ incremented) & 0x6000;
+            }
+        }
+
+        CeylonShaderKey {
+            low,
+            high: (self.draw_flags_00 >> 10) & 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CeylonAlphaStencilState {
     pub alpha_test_enabled: bool,
     pub alpha_reference: u32,
@@ -865,6 +913,56 @@ impl SrdQuadDraw {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shader_key_maps_every_binary_packet_field_and_texture_count() {
+        let base = CeylonShaderKeyInput {
+            draw_flags_00: 0,
+            field_28: 31,
+            field_2c: 5,
+            flags_60: 0x4088,
+            vertex_format_70: 14,
+            texture_present: [false; 3],
+        };
+        let key = base.shader_key();
+        assert_eq!(key.low & 7, 5);
+        assert_eq!((key.low >> 3) & 1, 1);
+        assert_eq!((key.low >> 6) & 1, 1);
+        assert_eq!((key.low >> 7) & 1, 1);
+        assert_eq!((key.low >> 8) & 0x1f, 31);
+        assert_eq!((key.low >> 13) & 3, 0);
+        assert_eq!((key.low >> 15) & 0x1f, 14);
+        assert_eq!(key.high, 0);
+
+        for texture_count in 0..=3 {
+            let mut input = base;
+            input.texture_present = std::array::from_fn(|index| index < texture_count);
+            assert_eq!((input.shader_key().low >> 13) & 3, texture_count as u32);
+        }
+    }
+
+    #[test]
+    fn shader_key_uses_encoded_preset_record_and_high_draw_flag_bits() {
+        let mut input = CeylonShaderKeyInput {
+            draw_flags_00: 0x143 | (6 << 10) | (1 << 17),
+            field_28: 0,
+            field_2c: 0,
+            flags_60: 0,
+            vertex_format_70: 0,
+            texture_present: [false; 3],
+        };
+        let key = input.shader_key();
+        assert_eq!(key.high, 6);
+        assert_eq!((key.low >> 4) & 1, 1);
+        assert_eq!((key.low >> 5) & 1, 1);
+        assert_eq!((key.low >> 20) & 0x3ff, input.draw_flags_00 & 0x3ff);
+
+        input.draw_flags_00 = 0;
+        let key = input.shader_key();
+        assert_eq!(key.high, 0);
+        assert_eq!((key.low >> 4) & 1, 0);
+        assert_eq!((key.low >> 5) & 1, 0);
+    }
 
     #[test]
     fn blend_factor_and_operation_mappings_match_the_d3d9_backend_tables() {

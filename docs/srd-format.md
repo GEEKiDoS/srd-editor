@@ -25,7 +25,9 @@
 - TEX `0x62`、双采样包装对象、SrSliceCast 选择与 D3D9 采样状态：[`evidence/texture-binding.md`](evidence/texture-binding.md)
 - TEXL/TEX/CROP 记录、归一化矩形与外部 DDS 路径：[`evidence/texture-table.md`](evidence/texture-table.md)
 - `air::TextureResource`、DDS 描述符、mip/cube/palette 布局及 D3D9/D3DX9_43 创建分支：[`evidence/dds-resource-loading.md`](evidence/dds-resource-loading.md)
+- CAST `CATL/CATR`、`ExtParamData`、preset 覆盖与继承层级键：[`evidence/cast-extended-parameters.md`](evidence/cast-extended-parameters.md)
 - SrImage render-preset 选择、62 项混合表、draw packet 编码与 D3D9 blend state：[`evidence/render-blend-state.md`](evidence/render-blend-state.md)
+- Ceylon shader cache key、SRD vertex format 与 ShapeEnv 模块索引：[`evidence/render-shader-key.md`](evidence/render-shader-key.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
 - Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
 

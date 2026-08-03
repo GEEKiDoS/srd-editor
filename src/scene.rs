@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::animation::AnimationDefinition;
+use crate::attribute::{CastAttributeList, ExtParamData};
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
 use crate::number::NumberDefinition;
@@ -192,6 +193,8 @@ pub struct Layer {
     pub number_by_node: Vec<Option<NumberDefinition>>,
     pub reference_by_node: Vec<Option<ReferenceDefinition>>,
     pub csli_by_node: Vec<Option<CsliDefinition>>,
+    pub cast_attribute_lists: Vec<CastAttributeList>,
+    pub cast_attribute_list_by_node: Vec<Option<usize>>,
 }
 
 impl Layer {
@@ -364,6 +367,32 @@ impl Layer {
             *destination = Some(csli);
         }
 
+        let mut cast_attribute_lists = Vec::new();
+        let mut cast_attribute_list_by_node = vec![None; node_count];
+        for catr in cast
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"CATL"))
+            .flat_map(|catl| catl.children.iter().filter(|child| child.is_tag(b"CATR")))
+        {
+            let list = CastAttributeList::from_block(file, catr)
+                .map_err(|error| SceneError(error.to_string()))?;
+            let list_index = cast_attribute_lists.len();
+            if let Some(node_index) = list.node_index.filter(|index| *index >= 0) {
+                let node_index = usize::try_from(node_index).unwrap();
+                let destination = cast_attribute_list_by_node.get_mut(node_index).ok_or_else(
+                    || {
+                        SceneError(format!(
+                            "CATR at {:#x} references NODE {node_index} outside {node_count} nodes",
+                            catr.offset
+                        ))
+                    },
+                )?;
+                *destination = Some(list_index);
+            }
+            cast_attribute_lists.push(list);
+        }
+
         Ok(Self {
             name,
             flags,
@@ -376,6 +405,8 @@ impl Layer {
             number_by_node,
             reference_by_node,
             csli_by_node,
+            cast_attribute_lists,
+            cast_attribute_list_by_node,
         })
     }
 
@@ -388,6 +419,11 @@ impl Layer {
             .iter()
             .enumerate()
             .find(|(_, animation)| animation.name == name)
+    }
+
+    pub fn ext_param_for_node(&self, node_index: usize) -> Option<&ExtParamData> {
+        let list_index = self.cast_attribute_list_by_node.get(node_index)?.as_ref()?;
+        self.cast_attribute_lists.get(*list_index)?.ext_param()
     }
 
     pub fn build_hierarchy(&self) -> Result<Hierarchy, SceneError> {

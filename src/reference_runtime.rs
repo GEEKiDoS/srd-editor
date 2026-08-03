@@ -237,10 +237,7 @@ impl ReferenceLayerRuntimeState {
         let layer =
             &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
         let image_bases = runtime_image_bases(layer);
-        let image_states = image_bases
-            .iter()
-            .map(ImageDefinition::initial_runtime_state)
-            .collect();
+        let image_states = runtime_image_states(layer, &image_bases);
         Some(Self {
             instance_index,
             local: ReferenceLayerLocalState::default(),
@@ -330,6 +327,20 @@ fn runtime_image_bases(layer: &Layer) -> Vec<ImageDefinition> {
                 .map(crate::number::NumberDefinition::image_base)
                 .unwrap_or_else(ImageDefinition::srimage_constructor_base),
             _ => ImageDefinition::srimage_constructor_base(),
+        })
+        .collect()
+}
+
+fn runtime_image_states(layer: &Layer, image_bases: &[ImageDefinition]) -> Vec<RuntimeImageState> {
+    image_bases
+        .iter()
+        .enumerate()
+        .map(|(node_index, image)| {
+            let mut state = image.initial_runtime_state();
+            if let Some(ext_param) = layer.ext_param_for_node(node_index) {
+                state.render_preset_override = ext_param.render_preset_override;
+            }
+            state
         })
         .collect()
 }
@@ -491,10 +502,7 @@ impl ReferenceRuntime {
 impl ProjectLayerRuntimeState {
     fn new(target: ReferenceTarget, layer: &Layer) -> Self {
         let image_bases = runtime_image_bases(layer);
-        let image_states = image_bases
-            .iter()
-            .map(ImageDefinition::initial_runtime_state)
-            .collect();
+        let image_states = runtime_image_states(layer, &image_bases);
         Self {
             target,
             cast_transforms: layer
@@ -706,6 +714,8 @@ mod tests {
             number_by_node: vec![None; count],
             reference_by_node: references,
             csli_by_node: vec![None; count],
+            cast_attribute_lists: Vec::new(),
+            cast_attribute_list_by_node: vec![None; count],
         }
     }
 

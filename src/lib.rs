@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod attribute;
 pub mod csli;
 pub mod dds;
 pub mod image;
