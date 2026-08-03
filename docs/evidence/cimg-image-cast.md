@@ -3,7 +3,7 @@
 本页只记录已经由解析器、运行时对象初始化和最终 `SrImageCast` 绘制入口共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`BF6B8219DAE9D352483F47D49D9472B466B42E4A3EDF5F346937E4D8DBAD9D9C`。
+- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`。
 
 ## CIMG 解析布局
 
@@ -76,14 +76,19 @@ channel 1: u = CIMG.0x84 * CAST[+0x210] + u
 
 ## SrImageCast 顶点颜色
 
-`srd_render_image_cast` 对四个 36 字节顶点逐一读取第一份 48 字节描述符的四个 packed color。它调用 `srd_unpack_packed_color` 后，以 `srd_multiply_color_u8` 和 CAST multiplicative tint 相乘，写入顶点 `+0x0C`；CAST additive tint 不经过额外运算，直接写入顶点 `+0x10`：
+`srd_render_image_cast` 对四个 36 字节顶点逐一读取第一份 48 字节描述符的四个 packed color。它调用 `srd_unpack_packed_color` 后，以 `srd_multiply_color_u8` 和 CAST multiplicative tint 相乘，写入顶点 `+0x0C`。
+
+第二颜色并非旧结论中的“原样复制 additive tint”。`0xAD7C02..0xAD7C4B` 先取得 additive tint 的第 3 字节三次，建立 `[alpha, alpha, alpha, 0]`，再调用 `srd_multiply_color_in_place` 与原 additive tint 相乘，最后写入顶点 `+0x10`：
 
 ```text
 primary   = descriptor.vertex_color[vertex] * CAST multiplicative tint
-secondary = CAST additive tint
+secondary = [add.r * add.a / 255,
+             add.g * add.a / 255,
+             add.b * add.a / 255,
+             0]
 ```
 
-乘法仍是逐通道 `u32(a) * u32(b) / 255`。Rust 的 `ImageDefinition::vertex_colors` 要求调用方显式提供两种 CAST tint，不为尚未追完的动画/default 来源填入假定值。
+乘法仍是逐通道 `u32(a) * u32(b) / 255`。`srd_render_number_glyph` 在 `0xADF8A2..0xADF8DD` 对 NumberCast additive tint 执行同一预乘。Rust 的 `premultiply_additive_color_game` 与 `ImageDefinition::vertex_colors` 复现该路径。
 
 ## SrImageCast 与 SrTextCast 的建立条件
 
@@ -99,6 +104,6 @@ secondary = CAST additive tint
 
 - TEXT 子块的完整字段、字体资源、排版和 glyph 绘制；
 - 两个 UV 通道进入 shader/固定管线后的精确组合；
-- CAST multiplicative/additive tint 的动画/default 来源；CIMG 自身四个 vertex color 的通道 `13..16` 已闭环。
+- 最终混合状态如何消费 primary/secondary 两个 packed color；其运行时来源和 Image/Number 的 additive 预乘已经闭环。
 
 坐标描述符的动画通道 `17/20` 已另行闭环，见 [`image-coordinate-animation.md`](image-coordinate-animation.md)。

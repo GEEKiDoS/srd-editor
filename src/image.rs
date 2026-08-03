@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::animation::{Evaluation, Key20, KeyData, ScalarValue, Track, cvtt_f32_to_i32};
 use crate::csli::{CrefEntry, CsliDefinition, multiply_color_game, slice_texture_coordinates};
+use crate::render::{SrdQuadDraw, SrdRenderVertex};
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -344,8 +345,61 @@ impl ImageDefinition {
         let color = *state.vertex_colors.get(vertex_index)?;
         Some(ImageVertexColors {
             primary: multiply_color_game(color, multiplicative_tint),
-            secondary: additive_tint,
+            secondary: premultiply_additive_color_game(additive_tint),
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_render_quad(
+        &self,
+        geometry: ImageGeometryState,
+        color_state: ImageCoordinateState,
+        first_coordinates: ResolvedImageCoordinates,
+        second_coordinates: ResolvedImageCoordinates,
+        multiplicative_tint: [u8; 4],
+        additive_tint: [u8; 4],
+        axis_mode: bool,
+    ) -> SrdQuadDraw {
+        let positions = self.build_quad_with_geometry(geometry, axis_mode).positions;
+        self.build_render_quad_from_positions(
+            positions,
+            color_state,
+            first_coordinates,
+            second_coordinates,
+            multiplicative_tint,
+            additive_tint,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_render_quad_from_positions(
+        &self,
+        positions: [[f32; 3]; 4],
+        color_state: ImageCoordinateState,
+        first_coordinates: ResolvedImageCoordinates,
+        second_coordinates: ResolvedImageCoordinates,
+        multiplicative_tint: [u8; 4],
+        additive_tint: [u8; 4],
+    ) -> SrdQuadDraw {
+        SrdQuadDraw::new(std::array::from_fn(|vertex_index| {
+            let colors = self
+                .vertex_colors(
+                    color_state,
+                    vertex_index,
+                    multiplicative_tint,
+                    additive_tint,
+                )
+                .expect("quad vertex index is always inside the four SrImage colors");
+            SrdRenderVertex {
+                position: positions[vertex_index],
+                primary_color: colors.primary,
+                secondary_color: colors.secondary,
+                texture_coordinates: [
+                    first_coordinates.coordinates[vertex_index],
+                    second_coordinates.coordinates[vertex_index],
+                ],
+            }
+        }))
     }
 
     pub fn apply_coordinate_track(
@@ -582,6 +636,16 @@ impl ImageDefinition {
             selected_sampler,
         })
     }
+}
+
+pub fn premultiply_additive_color_game(color: [u8; 4]) -> [u8; 4] {
+    let alpha = u32::from(color[3]);
+    [
+        (u32::from(color[0]) * alpha / 255) as u8,
+        (u32::from(color[1]) * alpha / 255) as u8,
+        (u32::from(color[2]) * alpha / 255) as u8,
+        0,
+    ]
 }
 
 enum ReferenceKeySegment<'a> {
@@ -1036,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn image_colors_multiply_primary_and_copy_additive_secondary() {
+    fn image_colors_multiply_primary_and_premultiply_additive_secondary() {
         let mut definition = definition();
         definition.vertex_colors[2] = [255, 128, 64, 32];
         let colors = definition
@@ -1044,11 +1108,11 @@ mod tests {
                 definition.initial_coordinate_state(ImageReferenceChannel::Cref),
                 2,
                 [128, 255, 32, 255],
-                [1, 2, 3, 4],
+                [64, 128, 255, 128],
             )
             .unwrap();
         assert_eq!(colors.primary, [128, 128, 8, 32]);
-        assert_eq!(colors.secondary, [1, 2, 3, 4]);
+        assert_eq!(colors.secondary, [32, 64, 128, 0]);
         assert!(
             definition
                 .vertex_colors(
@@ -1074,5 +1138,39 @@ mod tests {
         let mut state = definition.initial_coordinate_state(ImageReferenceChannel::Cref);
         assert!(definition.apply_vertex_color_track(&mut state, &track, 0.0));
         assert_eq!(state.vertex_colors[2], [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn image_quad_uses_format_14_vertex_order_and_both_uv_channels() {
+        let definition = definition();
+        let first = ResolvedImageCoordinates {
+            image_index: 0,
+            coordinates: [[0.0, 0.1], [0.0, 0.9], [0.8, 0.1], [0.8, 0.9]],
+            selected_sampler: None,
+        };
+        let second = ResolvedImageCoordinates {
+            image_index: 1,
+            coordinates: [[0.2, 0.3], [0.2, 0.7], [0.6, 0.3], [0.6, 0.7]],
+            selected_sampler: None,
+        };
+        let draw = definition.build_render_quad(
+            definition.initial_geometry_state(),
+            definition.initial_coordinate_state(ImageReferenceChannel::Cref),
+            first,
+            second,
+            [255; 4],
+            [20, 40, 60, 128],
+            true,
+        );
+        assert_eq!(draw.vertices[0].position, [-1.0, -2.0, 0.0]);
+        assert_eq!(draw.vertices[1].position, [-1.0, 4.0, 0.0]);
+        assert_eq!(draw.vertices[2].position, [7.0, -2.0, 0.0]);
+        assert_eq!(draw.vertices[3].position, [7.0, 4.0, 0.0]);
+        assert_eq!(
+            draw.vertices[2].texture_coordinates,
+            [[0.8, 0.1], [0.6, 0.3]]
+        );
+        assert_eq!(draw.vertices[0].primary_color, [255; 4]);
+        assert_eq!(draw.vertices[0].secondary_color, [10, 20, 30, 0]);
     }
 }

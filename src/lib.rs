@@ -5,6 +5,7 @@ pub mod number;
 pub mod projection;
 pub mod reference;
 pub mod reference_runtime;
+pub mod render;
 pub mod scene;
 pub mod texture;
 pub mod transform;

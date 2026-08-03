@@ -3,7 +3,7 @@
 本页只记录已经由 `surfride::SrSliceCast` RTTI、虚表入口和最终顶点写入共同闭环的几何结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`7C27FA448CD8C2C8D0AF5BA8C4A5B6C46B7413A42889E74ED016CB9BFF906355`
+- 本轮保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`
 
 ## 渲染入口归属
 
@@ -122,12 +122,11 @@ secondary = saturating_add(CAST additive tint, SLIC 0x33)
 
 每次乘法都调用 `srd_multiply_color_u8` (`0x5FEA70`)，逐通道执行 `u32(a) * u32(b) / 255`；加法调用 `srd_add_color_saturating_u8` (`0x5FEB90`)，和大于等于 255 时写 255。primary/secondary 分别写入 36 字节顶点的 `+12` 和 `+16`。
 
-Rust 已实现这些精确组合器以及需要显式 CAST 乘法色/加法色的 `slice_vertex_colors`。它不会擅自填入尚未证明的 CAST tint。
+Rust 已实现这些精确组合器、世界 CAST 乘法色/加法色来源，以及生成 36 字节双 UV 顶点的 `build_slice_render_quad`。
 
 样本方面，5145 个 active SLIC 全部有 `0x3A` 和恰好四个 `0x44`，但全部没有显式 `0x33`。缺省值由 `SrProject` 虚表槽 `+4` 的 `srd_project_allocate_zeroed` (`0xA9F310`) 闭环：它对每次请求的完整分配区执行 `memset(pointer, 0, size)`，然后才返回给 CSLI/SLIC 解析器。因此缺失 `0x3A/0x33/0x44` 对应的运行时字节均为零，包括 104 字节 CSLI 模板复制范围之外的后续单元。Rust 的 runtime color 访问器复现该零默认。
 
 ## 仍未闭环
 
-- CAST multiplicative/additive tint 的初始化和动画来源。
-- CIMG/CRE1 如何关联 TEXL 条目与实际 D3D9 纹理资源对象。
-- 图集资源自身的尺寸修正、采样状态、混合状态、索引顺序和最终 D3D9 draw call 参数。
+- DDS 资源建立与设备丢失恢复。
+- shader、混合、深度和裁剪状态；36 字节顶点、双 UV、triangle strip 与最终 `DrawPrimitive` 参数已经闭环。

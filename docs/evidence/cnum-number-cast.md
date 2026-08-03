@@ -3,7 +3,7 @@
 本页只记录已经由 CNUM 解析器、运行时对象初始化、数字格式化和 glyph 记录生成代码共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`F75E8EB4A4E6437E9D17745C255AE6B9DCEB6BC2C46853AD6131CBCEB3B3E175`。
+- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`。
 
 ## CNUM 解析布局
 
@@ -110,4 +110,4 @@ glyph 记录只在 `mapped_index < CREF count` 的 signed 比较成立时建立�
 
 - `srd_apply_animation_motion_set` 的完整调用边界和 `srd_apply_cast_animation_channels` 的穷尽 switch 已证明：ANIM/TRK 不存在另一组 Number 专用目标，`11..17/20` 只修改内嵌 SrImage，`23` 对 NumberCast 是虚表空操作。CNUM 数值、格式和布局字段不会由这条 ANIM 路径绑定；数值变化来自 `srd_number_cast_set_value_parts` 等外部调用路径；
 - `0x90` 各动画模式在 `srd_render_number_glyph_history` (`0xADED10`) 中对历史 glyph 的完整插值/裁剪行为；
-- `srd_render_number_cast` (`0xADE6C0`) 下游混合、深度/裁剪状态和最终 D3D9 draw call。
+- `srd_render_number_cast` (`0xADE6C0`) 下游混合、深度/裁剪和 shader 状态；每个 glyph 的 36 字节顶点、双 UV、triangle strip 与 `DrawPrimitive` 参数已经闭环。

@@ -3,7 +3,7 @@
 本页记录 TEX `0x62` 到实际 D3D9 纹理/采样器状态的完整闭环。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 保存后的 IDB SHA-256：`B4C6931303CB6DE0202DFAF5D9E625D6F0C2DA30313AF180B8E7EB3915920756`
+- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`
 - D3D9 常量对照：本机 Windows SDK `10.0.26100.0/shared/d3d9types.h`
 
 ## 包装对象的类型与成对建立
@@ -94,4 +94,4 @@ selector != 0  -> pair[1] -> Point
 - `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确加载器/资源管理语义。
 - DDS 文件的解码、格式选择、mipmap 与 `IDirect3DTexture9` 创建参数。
 - CIMG/CRE1 已闭环到 TEXL 条目与 Linear/Point pair 选择；双 UV 的 shader/固定管线消费仍未闭环。
-- 绘制包的混合、深度、裁剪、shader 及最终 primitive 参数。
+- 绘制包的 36 字节顶点格式、非索引 triangle strip 和 `DrawPrimitive` 参数已经闭环，见 [`render-vertex-submission.md`](render-vertex-submission.md)；混合、深度、裁剪和 shader 状态仍待闭环。

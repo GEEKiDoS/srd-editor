@@ -107,7 +107,7 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 - CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成、父级偏移、active 单元局部四顶点以及用于 packed color 插值的单元归一化坐标已经闭环，详见 [`evidence/slice-geometry.md`](evidence/slice-geometry.md)。
 - CSLI CREF 每条记录的两个 signed i16、SLIC `0x46` 选择、运行时图像/矩形下标、flags flip/order 以及两个相同最终 UV 通道已经闭环。
 - CSLI/SLIC packed color 的零默认、双线性插值、逐通道乘法和饱和加法公式已经闭环；CAST 两种 tint 的来源仍未闭环。
-- TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；实际纹理对象和最终 draw call 状态仍未闭环。
+- TEXL/TEX/CROP 到运行时 16 字节归一化矩形表以及 `.dds` 路径构造已经闭环；36 字节双 UV 顶点、四顶点 triangle strip 和最终 `DrawPrimitive` 参数也已闭环，详见 [`evidence/render-vertex-submission.md`](evidence/render-vertex-submission.md)。实际 DDS 解码、纹理创建及剩余 draw state 尚未闭环。
 - CIMG 的 CREF/CRE1 双表保存、选择器、TEXL/CROP 坐标解析、坐标偏移、Point/Linear 选择与 Image/Text cast 分类已经闭环；TEXT 内部仍未完成。
 - CNUM 的结构布局、CREF/CRE1 双表、NumberCast 初值、完整静态格式化、数字及四种特殊字符的 glyph 映射、逐字符 quad 排版和每 glyph 纹理坐标已经闭环；历史 glyph 动画与最终绘制状态仍未完成。
 - CAST 专属通道 `11/12` 的尺寸/origin、`13..16` 的 packed vertex color、`17/20` 的 selector/CREF/CRE1，以及 SrRefCast 专属 `23` 的 CRFD 动画帧请求已经闭环并接入独立状态。CRFD 的 `source_name/layer_name` 已证明是在同一 SRD 的 `PROJ -> SCN  -> LAYR` 表内两级匹配，不是外部 SRD 路径；每个 RefCast 的独立复制层、顶层/复制层通道 `23` 递归动画、世界状态和递归绘制调用关系已经闭环，但实际 D3D9 draw submission 尚未实现。
