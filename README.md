@@ -11,11 +11,10 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 保留原始字节和未知字段，避免编辑时破坏尚未还原的结构。
 - 通过离线样本和 IDA 数据库验证，不启动游戏或 `amdaemon`。
 
-旧 Python/PySide6 项目位于相邻的 `WORK/srd_editor`，仅作为已验证逻辑与回归证据来源；本仓库是新的权威实现。
+旧 Python/PySide6 项目位于相邻的 `WORK/srd_editor`，只能用于提供调查线索、样本路径和待核对问题。旧实现与旧文档中的字段含义、动画公式和渲染规则都不能直接移植；本仓库只接受能够由游戏二进制及样本闭环证明的逻辑。
 
 ## 当前状态
 
 仓库和最小 Rust 程序已建立。ImGui、窗口系统、D3D9 绑定与纹理解码依赖尚未选定，需在验证维护状态和接口后确定。
 
-已确认的格式与逆向结论记录在 [`docs/srd-format.md`](docs/srd-format.md)。
-
+调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。
