@@ -3,7 +3,7 @@
 分析对象：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；
-- 保存后的 IDB SHA-256：`B874FB682B5F963DB72E0660A6D9D7CFA061A787851C652F8A09056AB1779077`。
+- 保存后的 IDB SHA-256：`1B780E16652216CA5021F0A31EDCD7EDBBD46B16D39EF0C06810875D4BE906E9`。
 
 ## 36 字节顶点格式
 
@@ -20,6 +20,23 @@
 Image、Slice 和 Number 都按四顶点顺序写入。Image/Number 的 primary 为描述符顶点色乘 CAST multiplicative tint；secondary 先把 CAST additive tint 转为 `[R*A/255, G*A/255, B*A/255, 0]`。Slice 的 secondary 是 CAST additive tint 与 SLIC `0x33` 的逐通道饱和加法，不走 Image/Number 的 alpha 预乘路径。
 
 Rust 的 `#[repr(C)] SrdRenderVertex` 固定上述字段顺序，并以 `size_of`/`offset_of` 测试验证 36 字节布局。`ImageDefinition::build_render_quad` 已把动画后的 size/origin、第一份描述符顶点色、两份最终 UV 和两种世界 tint 组合成同布局四顶点；`build_slice_render_quad` 使用 Slice 已证明的颜色链，并把同一最终 UV 复制到两个通道；`NumberDefinition::build_glyph_render_quad` 则使用已排版 glyph 的四个位置和 Number 的双描述符状态建立同格式顶点。
+
+## 格式 14 的 D3D9 vertex declaration
+
+全局顶点格式注册器在 `sub_671D30` 的 case `14` 精确追加五个元素。每个元素保存内部 semantic、type 和 usage index；`sub_1319690` 再累计同一 stream 的 byte offset，并通过两个映射表写成 8 字节 `D3DVERTEXELEMENT9`。type 表为恒等映射 `0..16`；semantic 表在 `0..8` 后把内部 `9..12` 映射为 D3D9 usage `10..13`。
+
+格式 `14` 最终声明为：
+
+| Stream | Offset | Type | Usage | Index |
+| --- | --- | --- | --- | --- |
+| 0 | 0 | `D3DDECLTYPE_FLOAT3` (`2`) | `POSITION` (`0`) | 0 |
+| 0 | 12 | `D3DDECLTYPE_D3DCOLOR` (`4`) | `COLOR` (`10`) | 0 |
+| 0 | 16 | `D3DDECLTYPE_D3DCOLOR` (`4`) | `COLOR` (`10`) | 1 |
+| 0 | 20 | `D3DDECLTYPE_FLOAT2` (`1`) | `TEXCOORD` (`5`) | 0 |
+| 0 | 28 | `D3DDECLTYPE_FLOAT2` (`1`) | `TEXCOORD` (`5`) | 1 |
+| `0xFF` | 0 | `D3DDECLTYPE_UNUSED` (`17`) | 0 | 0 |
+
+`sub_1319690` 以设备虚表 `+0x158` 调用 `IDirect3DDevice9::CreateVertexDeclaration`，之后提交路径以 `+0x15C` 调用 `SetVertexDeclaration`。Rust 的 `SRD_D3D9_VERTEX_DECLARATION` 直接保存上述六条记录，可交给后续 D3D9 后端创建声明对象。
 
 ## 游戏内部格式与 primitive 参数
 
@@ -53,7 +70,6 @@ DrawPrimitive(D3DPT_TRIANGLESTRIP, start_vertex, 2)
 
 ## 仍未闭环
 
-- 格式 `14` 对应 `IDirect3DVertexDeclaration9` 的创建元素数组；内存写入布局已闭环，但声明对象的建立路径仍需独立确认。
 - draw packet 的 shader、blend、depth、scissor/cull 等全部状态位到 D3D9 常量的映射。
 - Image/Text 双 UV 在 shader 或固定管线中的组合公式。
 - DDS 解码、D3D9 纹理创建和设备丢失/重建设计。
