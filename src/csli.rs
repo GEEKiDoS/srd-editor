@@ -50,6 +50,13 @@ pub struct GeneratedCellRect {
     pub height: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliceQuad {
+    pub cell_index: usize,
+    pub positions: [[f32; 3]; 4],
+    pub normalized_cell_coordinates: [[f32; 2]; 4],
+}
+
 impl CsliDefinition {
     pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, CsliError> {
         if !block.is_tag(b"CSLI") {
@@ -209,6 +216,51 @@ impl CsliDefinition {
             y += row_height;
         }
         Ok(generated)
+    }
+
+    pub fn generate_active_quads(&self, axis_mode: bool) -> Result<Vec<SliceQuad>, CsliError> {
+        let origin = self.runtime_origin_offset();
+        let inverse_width = 1.0f32 / self.width;
+        let inverse_height = 1.0f32 / self.height;
+        let mut quads = Vec::new();
+
+        for (cell_index, cell) in self.generate_cell_rects()?.into_iter().enumerate() {
+            if !cell.active {
+                continue;
+            }
+
+            // Preserve the operation grouping used by SrSliceCast's virtual
+            // quad builder at 0xADB2B0.
+            let left = cell.x - origin[0];
+            let right = left + cell.width;
+            let far_y = (cell.height - origin[1]) + cell.y;
+            let near_y = cell.y - origin[1];
+            let (first_y, second_y) = if axis_mode {
+                (near_y, far_y)
+            } else {
+                let second_y = -far_y;
+                let first_y = cell.height - far_y;
+                (first_y, second_y)
+            };
+
+            let x0 = inverse_width * cell.x;
+            let y0 = inverse_height * cell.y;
+            let x1 = (cell.x + cell.width) * inverse_width;
+            let y1 = (cell.y + cell.height) * inverse_height;
+
+            quads.push(SliceQuad {
+                cell_index,
+                positions: [
+                    [left, first_y, 0.0],
+                    [left, second_y, 0.0],
+                    [right, first_y, 0.0],
+                    [right, second_y, 0.0],
+                ],
+                normalized_cell_coordinates: [[x0, y0], [x0, y1], [x1, y0], [x1, y1]],
+            });
+        }
+
+        Ok(quads)
     }
 }
 
@@ -458,5 +510,72 @@ mod tests {
         assert_eq!(definition.runtime_origin_offset(), [20.0, 30.0]);
         definition.origin_mode = 9;
         assert_eq!(definition.runtime_origin_offset(), [7.0, 9.0]);
+    }
+
+    #[test]
+    fn active_quad_matches_binary_vertex_order_and_cell_coordinates() {
+        let definition = CsliDefinition {
+            field_80: 0,
+            width: 16.0,
+            height: 8.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 4,
+            columns: 2,
+            rows: 1,
+            explicit_width_cell_count: 2,
+            explicit_height_cell_count: 1,
+            cref_count: 0,
+            node_index: 0,
+            cells: vec![cell(0x103, 4.0, 8.0), cell(0x103, 12.0, 8.0)],
+        };
+
+        let quads_2d = definition.generate_active_quads(true).unwrap();
+        assert_eq!(quads_2d.len(), 2);
+        assert_eq!(
+            quads_2d[1],
+            SliceQuad {
+                cell_index: 1,
+                positions: [
+                    [-4.0, -4.0, 0.0],
+                    [-4.0, 4.0, 0.0],
+                    [8.0, -4.0, 0.0],
+                    [8.0, 4.0, 0.0],
+                ],
+                normalized_cell_coordinates: [[0.25, 0.0], [0.25, 1.0], [1.0, 0.0], [1.0, 1.0],],
+            }
+        );
+
+        let quads_3d = definition.generate_active_quads(false).unwrap();
+        assert_eq!(
+            quads_3d[1].positions,
+            [
+                [-4.0, 4.0, 0.0],
+                [-4.0, -4.0, 0.0],
+                [8.0, 4.0, 0.0],
+                [8.0, -4.0, 0.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn inactive_cells_do_not_emit_render_quads() {
+        let definition = CsliDefinition {
+            field_80: 0,
+            width: 4.0,
+            height: 2.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 0,
+            columns: 1,
+            rows: 1,
+            explicit_width_cell_count: 1,
+            explicit_height_cell_count: 1,
+            cref_count: 0,
+            node_index: 0,
+            cells: vec![cell(0x203, 4.0, 2.0)],
+        };
+
+        assert!(definition.generate_active_quads(true).unwrap().is_empty());
     }
 }

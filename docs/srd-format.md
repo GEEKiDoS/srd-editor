@@ -16,6 +16,7 @@
 - 动画记录布局：[`evidence/animation-records.md`](evidence/animation-records.md)
 - LAYR/NODE/TRS、公共动画通道和矩阵链：[`evidence/scene-transform.md`](evidence/scene-transform.md)
 - CSLI/SLIC 网格、NODE `0x32` 与父级单元偏移：[`evidence/csli-layout.md`](evidence/csli-layout.md)
+- SrSliceCast active 单元局部顶点与归一化颜色插值坐标：[`evidence/slice-geometry.md`](evidence/slice-geometry.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 
@@ -94,9 +95,10 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 
 游戏在构造 `SrRenderer+0x48` 时已经乘入 `[0,width] x [0,height]` 的像素视口映射和 Y 反转，因此三维 CAST 在除以 W 后得到最终屏幕 X/Y，不存在另一个尚未执行的 NDC-to-viewport 步骤。上游 camera/backend 两个输入矩阵的类方法语义仍待继续命名和追踪。
 
-## 图像与特殊 CAST（待验证线索）
+## 图像与特殊 CAST
 
-- CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成与父级偏移已经闭环。其 CREF 资源选择和最终顶点/UV 生成仍未闭环。
+- CSLI/SLIC 的解析、NODE 链接、type 2 分派、网格生成、父级偏移、active 单元局部四顶点以及用于 packed color 插值的单元归一化坐标已经闭环，详见 [`evidence/slice-geometry.md`](evidence/slice-geometry.md)。
+- 两个最终 UV 通道确认使用资源辅助函数返回的相同坐标；CSLI 的 CREF 资源选择、具体 UV、packed vertex color、纹理对象和最终 draw call 状态仍未闭环。
 - CIMG、CREF、CRE1、CROP、CNUM 的资源与运行时关系尚未完成二进制证据闭环。
 - DDS 图集裁剪、runtime-bound 资源、数字排版与 sliced sprite 均不得依据旧预览器的表现直接实现。
 
@@ -107,4 +109,4 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 3. 颜色和 CAST 专属动画通道。
 4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
 5. CIMG/CREF/CRE1/CROP 的资源与图集选择流程。
-6. CNUM 和 CSLI/CREF 的最终 D3D9 顶点、UV 与绘制语义。
+6. CNUM 和 CSLI/CREF 的 packed color、纹理选择与最终 D3D9 绘制语义。
