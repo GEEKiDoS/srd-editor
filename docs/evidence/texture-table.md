@@ -67,7 +67,7 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 
 ## 仍未闭环
 
-- 原生 D3D9 纹理创建后的逐 surface lock/copy/unlock，以及设备丢失时的资源生命周期。
+- 无需格式转换的二维 DDS staging/`UpdateSurface` 已闭环；内部格式转换、cube request 和设备丢失时的资源生命周期仍待闭环。
 - CIMG/CRE1 与 CNUM 每个静态 glyph 的 CREF/CRE1 已闭环到 TEXL/CROP；剩余的是 TEXT、CNUM 历史 glyph 动画和双 UV 的最终管线消费。
 - CIMG/CNUM 动画通道 `17/20` 的显式矩形也已闭环到相同 TEXL/CROP 表。
 - 双 UV 的 shader/固定管线消费和其余尚未闭环的 draw state。

@@ -91,6 +91,6 @@ selector != 0  -> pair[1] -> Point
 
 ## 仍未闭环
 
-- DDS 资源对象、格式选择、mipmap 和 D3D9/D3DX9_43 创建参数已经闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；剩余的是原生创建后的逐 surface 上传和设备丢失生命周期。
+- DDS 资源对象、格式选择、mipmap、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；剩余的是内部格式转换、cube request 和设备丢失生命周期。
 - CIMG/CRE1 已闭环到 TEXL 条目与 Linear/Point pair 选择；双 UV 的 shader/固定管线消费仍未闭环。
 - 绘制包的 36 字节顶点格式、非索引 triangle strip 和 `DrawPrimitive` 参数已经闭环，见 [`render-vertex-submission.md`](render-vertex-submission.md)；混合、alpha/depth/stencil 和 scissor 状态也已分别闭环，剩余 shader 与其他 draw state。

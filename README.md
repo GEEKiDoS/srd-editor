@@ -26,7 +26,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - CSLI/SLIC 记录、`surfride::SrSliceCast` 链接、尺寸/origin 计算、网格单元生成、NODE `0x32` 父级单元索引及其完整偏移链。
 - SrSliceCast active 单元的局部四顶点、2D/3D Y 轴分支、36 字节游戏顶点顺序、CSLI CREF 选择、flags flip/order 与两个相同最终 UV 通道。
 - TEXL/TEX/CROP 的 540 字节记录、外部 DDS 基础路径、纹理尺寸、16 字节归一化矩形表，以及 CREF 到实际矩形的解析。
-- SRD 路径到 `air::TextureResource` 的资源工厂链、DDS header/格式/mip/cube/palette surface 布局、D3D9 原生创建与 D3DX9_43 回退参数；97 个本地 DDS 全量回归。
+- SRD 路径到 `air::TextureResource` 的资源工厂链、DDS header/格式/mip/cube/palette surface 布局、D3D9 原生创建、D3DX9_43 回退和二维 SYSTEMMEM staging/`UpdateSurface` 参数；97 个本地 DDS 全量回归。
 - TEX `0x62` 到 Wrap/Clamp、Linear/Point 双包装对象及最终 D3D9 sampler state 的完整绑定链。
 - SrSliceCast 两个 packed vertex color 的解析零默认、双线性 CSLI 插值、逐通道乘法和饱和加法组合器；未证明的 CAST tint 保持为显式输入。
 - `surfride::SrPlayer -> SrPlayer::Impl -> SrRenderer` 对象链、精确 4x4 乘法、Width/Height 视口矩阵以及 2D/3D CAST 最终屏幕 X/Y 映射。
@@ -36,6 +36,6 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - avatar 样本 MOT target、公共 rotation Z 通道和游戏三次曲线结果回归。
 - 36 字节 D3D9 顶点声明、四顶点非索引 triangle strip、混合、alpha/depth/stencil 与 scissor 状态提交。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、原生 DDS 的逐 surface 上传和设备丢失生命周期、shader/双 UV 消费、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写：将按游戏分支直接使用 D3D9 与 `D3DX9_43`。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request/设备丢失生命周期、shader/双 UV 消费、可运行的 D3D9 渲染后端与 ImGui 编辑界面。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写：将按游戏分支直接使用 D3D9 与 `D3DX9_43`。
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

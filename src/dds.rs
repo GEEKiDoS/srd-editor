@@ -214,6 +214,34 @@ pub enum D3d9TextureCreation {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum D3d9Direct2dUpload {
+    UpdateSurface(D3d9SystemMemoryUpload),
+    CompressedLevelBelowFourSkipped {
+        mip_level: u32,
+        width: u32,
+        height: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct D3d9SystemMemoryUpload {
+    pub destination_mip_level: u32,
+    pub source_offset: u32,
+    pub source_byte_len: u32,
+    pub width: u32,
+    pub height: u32,
+    pub source_row_pitch: u32,
+    pub row_count: u32,
+    pub staging_mip_levels: u32,
+    pub staging_usage: u32,
+    pub staging_format: D3d9Format,
+    pub staging_pool: u32,
+    pub staging_lock_flags: u32,
+    pub source_rect: [u32; 4],
+    pub destination_point: [u32; 2],
+}
+
 impl DdsDescriptor {
     pub fn parse(bytes: &[u8]) -> Result<Self, DdsError> {
         if bytes.len() < DDS_HEADER_SIZE {
@@ -408,6 +436,78 @@ impl DdsDescriptor {
                 }
             }
         }
+    }
+
+    pub fn direct_2d_upload_plan(&self) -> Result<Vec<D3d9Direct2dUpload>, DdsError> {
+        if self.is_cube {
+            return Err(DdsError(
+                "the SRD DDS cube upload path is not yet evidence-closed".into(),
+            ));
+        }
+        if self.format != self.direct_creation_format() {
+            return Err(DdsError(format!(
+                "DDS internal format {} is converted to {} before direct creation; its pixel conversion path is not yet evidence-closed",
+                self.format.0,
+                self.direct_creation_format().0
+            )));
+        }
+
+        let mip_count = self.direct_mip_count();
+        let capacity = usize::try_from(mip_count)
+            .map_err(|_| DdsError("DDS direct mip count does not fit usize".into()))?;
+        let mut uploads = Vec::with_capacity(capacity);
+        for level in self.levels.iter().take(capacity) {
+            if self.format.is_block_compressed() && (level.width < 4 || level.height < 4) {
+                uploads.push(D3d9Direct2dUpload::CompressedLevelBelowFourSkipped {
+                    mip_level: level.mip_index,
+                    width: level.width,
+                    height: level.height,
+                });
+                continue;
+            }
+
+            let base_row_pitch = level
+                .width
+                .checked_mul(self.bits_per_pixel)
+                .ok_or_else(|| DdsError("DDS upload row bit count overflows u32".into()))?
+                >> 3;
+            let (source_row_pitch, row_count) = if self.format.is_block_compressed() {
+                (
+                    base_row_pitch.checked_mul(4).ok_or_else(|| {
+                        DdsError("DDS compressed upload row pitch overflows u32".into())
+                    })?,
+                    level.height >> 2,
+                )
+            } else {
+                (base_row_pitch, level.height)
+            };
+            let copied_byte_len = source_row_pitch
+                .checked_mul(row_count)
+                .ok_or_else(|| DdsError("DDS upload byte count overflows u32".into()))?;
+            if copied_byte_len != level.byte_len {
+                return Err(DdsError(format!(
+                    "DDS mip {} staging copy length {} differs from parsed surface length {}",
+                    level.mip_index, copied_byte_len, level.byte_len
+                )));
+            }
+            uploads.push(D3d9Direct2dUpload::UpdateSurface(D3d9SystemMemoryUpload {
+                destination_mip_level: level.mip_index,
+                source_offset: level.data_offset,
+                source_byte_len: copied_byte_len,
+                width: level.width,
+                height: level.height,
+                source_row_pitch,
+                row_count,
+                staging_mip_levels: 1,
+                staging_usage: 0,
+                staging_format: self.direct_creation_format().d3d9_format(),
+                staging_pool: 2,
+                staging_lock_flags: 0,
+                source_rect: [0, 0, level.width, level.height],
+                destination_point: [0, 0],
+            }));
+        }
+        Ok(uploads)
     }
 
     fn direct_creation_format(&self) -> GameTextureFormat {
@@ -772,5 +872,129 @@ mod tests {
         assert_eq!(descriptor.levels[0].data_offset, 1152);
         assert_eq!(descriptor.levels[0].byte_len, 4);
         descriptor.validate_data_len(&bytes).unwrap();
+    }
+
+    #[test]
+    fn direct_2d_uploads_use_system_memory_staging_and_update_surface_geometry() {
+        let rgba = DdsDescriptor::parse(&dds_header(HeaderFields {
+            width: 4,
+            height: 2,
+            mip_count: 2,
+            pixel_flags: DDPF_RGB | DDPF_ALPHAPIXELS,
+            fourcc: 0,
+            bit_count: 32,
+            mask_at_100: 0,
+            caps2: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            rgba.direct_2d_upload_plan().unwrap(),
+            vec![
+                D3d9Direct2dUpload::UpdateSurface(D3d9SystemMemoryUpload {
+                    destination_mip_level: 0,
+                    source_offset: 128,
+                    source_byte_len: 32,
+                    width: 4,
+                    height: 2,
+                    source_row_pitch: 16,
+                    row_count: 2,
+                    staging_mip_levels: 1,
+                    staging_usage: 0,
+                    staging_format: D3d9Format(21),
+                    staging_pool: 2,
+                    staging_lock_flags: 0,
+                    source_rect: [0, 0, 4, 2],
+                    destination_point: [0, 0],
+                }),
+                D3d9Direct2dUpload::UpdateSurface(D3d9SystemMemoryUpload {
+                    destination_mip_level: 1,
+                    source_offset: 160,
+                    source_byte_len: 8,
+                    width: 2,
+                    height: 1,
+                    source_row_pitch: 8,
+                    row_count: 1,
+                    staging_mip_levels: 1,
+                    staging_usage: 0,
+                    staging_format: D3d9Format(21),
+                    staging_pool: 2,
+                    staging_lock_flags: 0,
+                    source_rect: [0, 0, 2, 1],
+                    destination_point: [0, 0],
+                }),
+            ]
+        );
+
+        let dxt5 = DdsDescriptor::parse(&dds_header(HeaderFields {
+            width: 8,
+            height: 8,
+            mip_count: 3,
+            pixel_flags: DDPF_FOURCC,
+            fourcc: FOURCC_DXT5,
+            bit_count: 0,
+            mask_at_100: 0,
+            caps2: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            dxt5.direct_2d_upload_plan().unwrap(),
+            vec![
+                D3d9Direct2dUpload::UpdateSurface(D3d9SystemMemoryUpload {
+                    destination_mip_level: 0,
+                    source_offset: 128,
+                    source_byte_len: 64,
+                    width: 8,
+                    height: 8,
+                    source_row_pitch: 32,
+                    row_count: 2,
+                    staging_mip_levels: 1,
+                    staging_usage: 0,
+                    staging_format: D3d9Format(FOURCC_DXT5),
+                    staging_pool: 2,
+                    staging_lock_flags: 0,
+                    source_rect: [0, 0, 8, 8],
+                    destination_point: [0, 0],
+                }),
+                D3d9Direct2dUpload::UpdateSurface(D3d9SystemMemoryUpload {
+                    destination_mip_level: 1,
+                    source_offset: 192,
+                    source_byte_len: 16,
+                    width: 4,
+                    height: 4,
+                    source_row_pitch: 16,
+                    row_count: 1,
+                    staging_mip_levels: 1,
+                    staging_usage: 0,
+                    staging_format: D3d9Format(FOURCC_DXT5),
+                    staging_pool: 2,
+                    staging_lock_flags: 0,
+                    source_rect: [0, 0, 4, 4],
+                    destination_point: [0, 0],
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn compressed_base_levels_below_four_skip_the_staging_upload() {
+        let descriptor = DdsDescriptor::parse(&dds_header(HeaderFields {
+            width: 2,
+            height: 2,
+            mip_count: 1,
+            pixel_flags: DDPF_FOURCC,
+            fourcc: FOURCC_DXT1,
+            bit_count: 0,
+            mask_at_100: 0,
+            caps2: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            descriptor.direct_2d_upload_plan().unwrap(),
+            vec![D3d9Direct2dUpload::CompressedLevelBelowFourSkipped {
+                mip_level: 0,
+                width: 2,
+                height: 2,
+            }]
+        );
     }
 }

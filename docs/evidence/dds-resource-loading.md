@@ -3,7 +3,7 @@
 本页记录 SRD 外部 `.dds` 从资源工厂、文件读取、DDS 描述符解析到 D3D9/D3DX9 创建分支的完整闭环。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`B2694ACD47ABBF0EC35E07DCD3699C3878075041ECD975C2C408B09348C78A9E`
+- 本轮保存后的 IDB SHA-256：`6F3D1419638A2978F78AE8F936E6D49934A1CC6C6EACA66AE179D54EB749586D`
 - D3D9 常量对照：本机 Windows SDK `10.0.26100.0/shared/d3d9types.h`
 
 ## SRD 路径到具体资源类型
@@ -60,7 +60,7 @@ caps2 bit `0x200` 表示 cube，六个 face bit `0x400..0x8000` 按低到高顺�
 
 二维纹理由 `d3d9_create_texture2d_from_dds_descriptor` (`0xE554B0`) 调用 `IDirect3DDevice9::CreateTexture`；cube 由 `d3d9_create_cube_texture_from_dds_descriptor` (`0xE5DFC0`) 调用 `CreateCubeTexture`。SRD 路径的固定参数为 usage `0`、pool `0`（Windows SDK 的 `D3DPOOL_DEFAULT`）和 null shared handle。
 
-内部格式 `3/33/32` 在原生创建前转换为内部格式 `1`。DXT1..DXT5 的 mip 数会被截断：二维纹理的下一层宽或高小于 4 时停止；cube 的下一层 edge 小于 4 时停止。随后后端按解析出的 surface records 准备逐层上传；具体 lock/copy/unlock 调用仍需单独闭环，当前 Rust 不对未证明部分赋予实现语义。
+内部格式 `3/33/32` 在原生创建前转换为内部格式 `1`。DXT1..DXT5 的 mip 数会被截断：二维纹理的下一层宽或高小于 4 时停止；cube 的下一层 edge 小于 4 时停止。
 
 `game_texture_format_to_d3d9` (`0xE5B070`) 的完整映射已经逐项转录到 Rust，包含 DXT1..5、浮点格式、深度格式以及 `INTZ`/`RAWZ`。`game_texture_usage_to_d3d9` (`0xE5B4D0`) 和 `game_texture_pool_to_d3d9` (`0xE5B400`) 也已确认 SRD 路径最终传入 `0/0`。
 
@@ -78,6 +78,25 @@ caps2 bit `0x200` 表示 cube，六个 face bit `0x400..0x8000` 按低到高顺�
 cube 调用 `d3d9_create_cube_texture_from_memory_d3dx` (`0xE5E310`) 使用 edge length `D3DX_DEFAULT (-1)`、header mip count、usage `0`、unknown format、default pool、两个 default filter、null source info 和 null palette。
 
 因此编辑器会直接调用同一代 D3D9/D3DX 接口，不自行实现 DXT 或 RGBA 像素解码；但不会把所有纹理统一交给 D3DX，因为这会偏离游戏已经证明的原生创建分支。
+
+## 原生二维纹理的 SYSTEMMEM 上传
+
+`air::TextureResource` 的 ImageLoader 在 `0x7075B7` 调用 `ceylon_image_allocate` (`0xE80740`)，分配 `0xD4` 字节并进入 `ceylon_image_construct` (`0xE7ED90`)。构造函数在 `0xE7EE8E` 把字节 `+0xD0` 初始化为 `1`、`+0xD1` 初始化为 `0`。`ceylon_image_initialize_from_stevia_request` (`0xE7FED0`) 复制 DDS request 的 width、height 和 mip count，但在进入命令执行前不修改这两个字节。
+
+`ceylon_image_upload_dirty_levels` (`0xE81350`) 对 `+0xD0` 有两条路径：零值直接 LockRect 目标纹理；SRD DDS 使用的构造默认值 `1` 则在 `0xE815E3` 调用 `d3d9_update_texture2d_region_via_systemmem` (`0xE55CD0`)。因此 SRD 默认路径不是直接锁定 DEFAULT-pool 目标纹理。
+
+二维完整 mip 的源指针由 `ceylon_image_compute_source_level_offset` (`0xE81210`) 计算：从 mip 0 数据起点开始，累加此前每层 `max(width >> level, 1) * max(height >> level, 1) * bits_per_pixel / 8`。上传 helper 随后执行：
+
+1. 对 DXT1..DXT5，width 或 height 小于 4 时直接返回，不建立 staging texture。
+2. 调用 `CreateTexture(width, height, 1, usage=0, format=目标内部格式映射, pool=2)`；Windows SDK 中 pool `2` 为 `D3DPOOL_SYSTEMMEM`。
+3. 对 staging mip 0 调用 `LockRect`，rect null、flags `0`。
+4. 非压缩格式的源行宽为 `width * bpp / 8`，行数为 height；DXT1..5 的源行宽再乘 4，行数为 `height / 4`。
+5. 每行 `memcpy(source_row_pitch)`，目标指针按 `D3DLOCKED_RECT.Pitch` 前进，源指针按 source row pitch 前进。
+6. `UnlockRect` staging mip 0，分别取得 staging level 0 与目标 mip surface。
+7. 调用 `IDirect3DDevice9::UpdateSurface`，source rect 为 `(0,0,width,height)`，destination point 为请求的 `(x,y)`；DDS 完整 mip 路径传入 `(0,0)`。
+8. 释放两个 surface 和临时 staging texture。
+
+Rust 的 `D3d9SystemMemoryUpload` 固化了上述 staging mip 数、usage、format、pool、lock flags、source rect、destination point、源行宽与行数。当前只为无需像素格式转换的二维 DDS 生成该计划；内部格式 `3/32/33 -> 1` 的转换来源和 DDS cube 在 SRD request 中的 `+0xD1` 行为尚未闭环，因此不会自行补全。
 
 ## 本地 DDS 语料回归
 
@@ -101,6 +120,6 @@ Rust 的 `DdsDescriptor`、格式映射和 `D3d9TextureCreation` 计划均由单
 
 ## 证据边界
 
-已经闭环：资源对象类型、完整文件读取、DDS header 字段、格式/mip/cube/palette surface 布局、D3D9 与 D3DX9_43 分支条件及创建参数。
+已经闭环：资源对象类型、完整文件读取、DDS header 字段、格式/mip/cube/palette surface 布局、D3D9 与 D3DX9_43 分支条件及创建参数，以及无需格式转换的二维 DDS 经 SYSTEMMEM staging texture 和 `UpdateSurface` 上传的全部参数。
 
-仍需闭环：原生纹理创建后的逐 surface lock/copy/unlock、失败和设备丢失时的资源生命周期、最终 shader 对两个 UV 通道和多纹理槽的消费。
+仍需闭环：内部格式 `3/32/33` 的像素转换、SRD DDS cube request 与 `+0xD1` 的实际关系、失败和设备丢失时的资源生命周期、最终 shader 对两个 UV 通道和多纹理槽的消费。

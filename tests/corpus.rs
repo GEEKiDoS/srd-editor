@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use srd_editor::animation::{Evaluation, KeyData, Motion, ScalarValue, Track};
 use srd_editor::csli::CsliDefinition;
-use srd_editor::dds::{D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat};
+use srd_editor::dds::{
+    D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat,
+};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
@@ -71,7 +73,29 @@ fn parses_local_dds_corpus_with_the_binary_resource_rules() {
         *format_counts.entry(descriptor.format.0).or_insert(0usize) += 1;
         *mip_counts.entry(descriptor.mip_count).or_insert(0usize) += 1;
         match descriptor.creation_plan(DdsLoadPolicy::default()) {
-            D3d9TextureCreation::Direct2d { .. } => direct_count += 1,
+            D3d9TextureCreation::Direct2d { .. } => {
+                direct_count += 1;
+                let uploads = descriptor
+                    .direct_2d_upload_plan()
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                assert!(!uploads.is_empty(), "{}", path.display());
+                for upload in uploads {
+                    match upload {
+                        D3d9Direct2dUpload::UpdateSurface(upload) => {
+                            let end = usize::try_from(upload.source_offset).unwrap()
+                                + usize::try_from(upload.source_byte_len).unwrap();
+                            assert!(end <= bytes.len(), "{}", path.display());
+                            assert_eq!(upload.staging_pool, 2);
+                            assert_eq!(upload.staging_lock_flags, 0);
+                        }
+                        D3d9Direct2dUpload::CompressedLevelBelowFourSkipped {
+                            width,
+                            height,
+                            ..
+                        } => assert!(width < 4 || height < 4),
+                    }
+                }
+            }
             D3d9TextureCreation::D3dx2d { .. } => d3dx_count += 1,
             plan => panic!("{} unexpectedly produced {plan:?}", path.display()),
         }
