@@ -3,7 +3,7 @@
 本页只记录已经由 SRD 解析器、`SrProject` 分配器、CREF 消费端和外部 DDS 路径构造共同闭环的结论。分析对象为：
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`4F880FF13FAC587A75048CB74D34E93744BA9F6E68FE09C690EDE39355D823B6`
+- 本轮保存后的 IDB SHA-256：`B4C6931303CB6DE0202DFAF5D9E625D6F0C2DA30313AF180B8E7EB3915920756`
 
 ## TEXL 表
 
@@ -26,13 +26,13 @@ declared_count * 0x21C
 | `+0x204` | `0x61` | 分配并复制后的文件名字节指针 |
 | `+0x208` | `0x40` | 截断为 `u16` 的纹理宽度 |
 | `+0x20A` | `0x41` | 截断为 `u16` 的纹理高度 |
-| `+0x20C` | `0x62` | `u32`；语义尚未证明 |
+| `+0x20C` | `0x62` | `u32`；`0x00F0` 控制 U 寻址，`0x0F00` 控制 V 寻址 |
 | `+0x210` | `0x63` | `u32` CROP 记录数量 |
 | `+0x214` | — | `crop_count * 0x10` 分配区的指针 |
 
 属性 `0x61` 先由 `vtbf_copy_prefixed_bytes` 类读取逻辑复制到 256 字节、保证 NUL 结尾的栈缓冲区，再按实际 `strlen + 1` 分配和复制。因此游戏实际保留的文件名内容最多 255 字节；Rust 解析器执行相同截断，但以不含尾部 NUL 的字节向量保存语义内容。
 
-`0x62` 目前只使用中性字段名 `field_62`，没有根据样本值猜测用途。
+`0x62` 的寻址和采样提交链已经闭环：`0x00F0` 中任一位非零时 U 使用 Clamp，否则 Wrap；`0x0F00` 中任一位非零时 V 使用 Clamp，否则 Wrap。每条 TEX 同时建立 Linear 与 Point 两个采样包装对象，具体证据见 [`texture-binding.md`](texture-binding.md)。Rust 仍保留原始 `field_62`，避免丢失尚未证明的其他位。
 
 ## CROP 归一化矩形
 
@@ -53,7 +53,7 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 
 `sub_AA55C0` 在解析 SRFF 后取得同一 TEXL 上下文。`0xAA568C` 从每条 `0x21C` 字节记录的 `+0x204` 读取文件名，`0xAA56A0` 追加字面量 `.dds`，通过 `sub_419BEB` 检查路径存在，然后在 `0xAA570C` 把路径与对象 `+0xE0` 传给该对象虚表槽 `+0x4C`。循环在 `0xAA572B` 使用相同的 `0x21C` 步长。
 
-这证明 TEX `0x61` 是不含 `.dds` 后缀的外部纹理路径基础名，也证明运行时按 TEXL 声明顺序逐项提交存在的 DDS。虚表槽 `+0x4C` 的对象类型、返回资源存放位置及 D3D9 纹理创建参数尚未证明，因此目前不对该函数命名，也不实现推测性的资源加载状态。
+这证明 TEX `0x61` 是不含 `.dds` 后缀的外部纹理路径基础名，也证明运行时按 TEXL 声明顺序逐项提交存在的 DDS。已加载纹理进入 `ceylon::resource::Texture` 包装对象、绘制包和 D3D9 绑定的后续路径已经闭环，详见 [`texture-binding.md`](texture-binding.md)；加载入口所属对象、DDS 解码和创建参数仍未证明。
 
 ## 样本回归
 
@@ -63,11 +63,11 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 - 24167 条 CROP 矩形；
 - 4994 个 image/rectangle 下标均非负的 active SLIC CREF 选择。
 
-4994 个非负选择全部能在同文件 TEXL/CROP 表中解析到实际矩形。Rust 的 `TextureList` 保留声明数量造成的零记录、文件名 255 字节截断、尺寸、未知 `0x62`、声明 CROP 数量及归一化矩形，并把结果连接到 CSLI/SLIC 的最终 UV 顺序。
+4994 个非负选择全部能在同文件 TEXL/CROP 表中解析到实际矩形。Rust 的 `TextureList` 保留声明数量造成的零记录、文件名 255 字节截断、尺寸、原始 `0x62`、声明 CROP 数量及归一化矩形，并把结果连接到 CSLI/SLIC 的最终 UV 顺序和已证明的双采样状态。
 
 ## 仍未闭环
 
-- `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确资源加载语义。
+- `sub_AA55C0` 所属对象及其虚表槽 `+0x4C` 的精确加载器/资源管理语义。
 - DDS 解码/创建参数、纹理对象数组的布局与生命周期。
 - CIMG/CRE1 与 TEXL 纹理条目之间的运行时关联。
-- 采样、寻址、混合、深度/裁剪状态和最终 D3D9 draw call。
+- 混合、深度/裁剪状态和最终 D3D9 draw call。

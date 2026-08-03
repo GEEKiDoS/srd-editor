@@ -17,6 +17,7 @@
 - LAYR/NODE/TRS、公共动画通道和矩阵链：[`evidence/scene-transform.md`](evidence/scene-transform.md)
 - CSLI/SLIC 网格、NODE `0x32` 与父级单元偏移：[`evidence/csli-layout.md`](evidence/csli-layout.md)
 - SrSliceCast active 单元局部顶点、CREF 选择与最终 UV：[`evidence/slice-geometry.md`](evidence/slice-geometry.md)
+- TEX `0x62`、双采样包装对象、SrSliceCast 选择与 D3D9 采样状态：[`evidence/texture-binding.md`](evidence/texture-binding.md)
 - TEXL/TEX/CROP 记录、归一化矩形与外部 DDS 路径：[`evidence/texture-table.md`](evidence/texture-table.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。

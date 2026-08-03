@@ -19,6 +19,44 @@ pub struct TextureCrop {
     pub normalized_rectangle: [f32; 4],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TextureAddressMode {
+    Wrap = 1,
+    Clamp = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TextureFilter {
+    Point = 1,
+    Linear = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureSamplerState {
+    pub address_u: TextureAddressMode,
+    pub address_v: TextureAddressMode,
+    pub min_filter: TextureFilter,
+    pub mag_filter: TextureFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureSamplerPair {
+    pub linear: TextureSamplerState,
+    pub point: TextureSamplerState,
+}
+
+impl TextureSamplerPair {
+    pub fn select(self, point_sampled: bool) -> TextureSamplerState {
+        if point_sampled {
+            self.point
+        } else {
+            self.linear
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextureDefinition {
     pub filename: Vec<u8>,
@@ -40,6 +78,32 @@ pub struct ResolvedSliceTexture {
     pub image_index: usize,
     pub rectangle_index: usize,
     pub coordinates: [[f32; 2]; 4],
+    pub samplers: TextureSamplerPair,
+}
+
+impl TextureDefinition {
+    pub fn sampler_pair(&self) -> TextureSamplerPair {
+        let address_u = if self.field_62 & 0x00f0 != 0 {
+            TextureAddressMode::Clamp
+        } else {
+            TextureAddressMode::Wrap
+        };
+        let address_v = if self.field_62 & 0x0f00 != 0 {
+            TextureAddressMode::Clamp
+        } else {
+            TextureAddressMode::Wrap
+        };
+        let state = |filter| TextureSamplerState {
+            address_u,
+            address_v,
+            min_filter: filter,
+            mag_filter: filter,
+        };
+        TextureSamplerPair {
+            linear: state(TextureFilter::Linear),
+            point: state(TextureFilter::Point),
+        }
+    }
 }
 
 impl TextureList {
@@ -98,16 +162,13 @@ impl TextureList {
         } = definition.cell_cref(cell_index)?;
         let image_index = usize::try_from(image_index).ok()?;
         let rectangle_index = usize::try_from(rectangle_index).ok()?;
-        let rectangle = self
-            .textures
-            .get(image_index)?
-            .crops
-            .get(rectangle_index)?
-            .normalized_rectangle;
+        let texture = self.textures.get(image_index)?;
+        let rectangle = texture.crops.get(rectangle_index)?.normalized_rectangle;
         Some(ResolvedSliceTexture {
             image_index,
             rectangle_index,
             coordinates: slice_texture_coordinates(rectangle, cell.flags),
+            samplers: texture.sampler_pair(),
         })
     }
 }
@@ -265,7 +326,45 @@ mod tests {
                 image_index: 0,
                 rectangle_index: 0,
                 coordinates: [[0.75, 0.5], [0.75, 1.0], [0.25, 0.5], [0.25, 1.0]],
+                samplers: TextureSamplerPair {
+                    linear: TextureSamplerState {
+                        address_u: TextureAddressMode::Wrap,
+                        address_v: TextureAddressMode::Wrap,
+                        min_filter: TextureFilter::Linear,
+                        mag_filter: TextureFilter::Linear,
+                    },
+                    point: TextureSamplerState {
+                        address_u: TextureAddressMode::Wrap,
+                        address_v: TextureAddressMode::Wrap,
+                        min_filter: TextureFilter::Point,
+                        mag_filter: TextureFilter::Point,
+                    },
+                },
             })
         );
+    }
+
+    #[test]
+    fn sampler_pair_matches_tex_flags_and_slice_selector() {
+        let texture = TextureDefinition {
+            field_62: 0x0110,
+            ..TextureDefinition::default()
+        };
+
+        let pair = texture.sampler_pair();
+        assert_eq!(pair.linear.address_u, TextureAddressMode::Clamp);
+        assert_eq!(pair.linear.address_v, TextureAddressMode::Clamp);
+        assert_eq!(pair.select(false).min_filter, TextureFilter::Linear);
+        assert_eq!(pair.select(false).mag_filter, TextureFilter::Linear);
+        assert_eq!(pair.select(true).min_filter, TextureFilter::Point);
+        assert_eq!(pair.select(true).mag_filter, TextureFilter::Point);
+        assert_eq!(TextureAddressMode::Wrap as u32, 1);
+        assert_eq!(TextureAddressMode::Clamp as u32, 3);
+        assert_eq!(TextureFilter::Point as u32, 1);
+        assert_eq!(TextureFilter::Linear as u32, 2);
+
+        let wrap = TextureDefinition::default().sampler_pair();
+        assert_eq!(wrap.linear.address_u, TextureAddressMode::Wrap);
+        assert_eq!(wrap.linear.address_v, TextureAddressMode::Wrap);
     }
 }
