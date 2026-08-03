@@ -28,6 +28,7 @@
 - CAST `CATL/CATR`、`ExtParamData`、preset 覆盖与继承层级键：[`evidence/cast-extended-parameters.md`](evidence/cast-extended-parameters.md)
 - SrImage render-preset 选择、62 项混合表、draw packet 编码与 D3D9 blend state：[`evidence/render-blend-state.md`](evidence/render-blend-state.md)
 - Ceylon shader cache key、SRD vertex format 与 ShapeEnv 模块索引：[`evidence/render-shader-key.md`](evidence/render-shader-key.md)
+- SRD 实际 SimpleShaderSelector、18 字节键与 71 项 feature 表：[`evidence/render-simple-selector.md`](evidence/render-simple-selector.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
 - Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
 

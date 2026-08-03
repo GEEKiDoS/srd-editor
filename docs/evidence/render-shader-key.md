@@ -2,7 +2,7 @@
 
 本页记录 SRD 绘制包如何选择 Ceylon `sea::ShapeEnv*` 模块组合。它闭环的是 shader cache key 和模块索引，不把尚未还原的生成源码或像素公式写成结论。
 
-分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `736C88EC383DC51EE559AEA5B19E69D7A10751D1EDE39A6628BEC502DC8BCC00`。
+分析对象：`chusanApp.exe` SHA-256 `28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`；保存后的 IDB SHA-256 `68D5ED2D3D018DAFB0A142866F8FA9D21C7A9457927F47D88469EC16921BB175`。
 
 ## 绘制包默认值与 SRD vertex format
 
@@ -89,7 +89,7 @@ cache miss 进入 `sub_670680`，建立 328 字节组合资源并按 key 选择�
 
 原游戏的 `tea_d3d9_compile_cg_shader` (`0x131A080`) 使用 NVIDIA Cg 生成 D3D assembly 字符串，再调用导入的 `D3DXAssembleShader`，最后通过 D3D9 device 创建 vertex/pixel shader。这个事实只用于追踪原始 shader 的生成来源。
 
-ShaderSelector 的 46 字节紧凑键、180 位 feature 解码、`#define name value` 前缀格式、前缀与原始 Cg source 的精确拼接，以及 stage 0/1 到 pixel/vertex 的映射已经进一步闭环，见 [`render-shader-source.md`](render-shader-source.md)。
+ShaderSelector 的注册顺序和 SRD 对 Simple 槽位 9 的选择已经闭环。Simple 使用 18 字节键和 71 项 descriptor；Default 的 46 字节键属于其他游戏路径。两者的前缀格式、前缀与原始 Cg source 的精确拼接，以及 stage 0/1 到 pixel/vertex 的映射见 [`render-shader-source.md`](render-shader-source.md)，SRD 使用的 Simple 表见 [`render-simple-selector.md`](render-simple-selector.md)。
 
 编辑器按用户约束不链接、不加载也不调用 D3DX，并且不绑定原游戏的 x86 指令集。最终后端必须在精确 bytecode/公式完成证明后，采用宿主机架构无关的 D3D9 shader 资源方案；在证据完成前不选择或虚构替代编译结果。
 
@@ -97,4 +97,4 @@ ShaderSelector 的 46 字节紧凑键、180 位 feature 解码、`#define name v
 
 已经闭环：所有 shader-key 输入位、CREF/CRE1 到 slot 0/1 的映射、纹理槽计数、SRD vertex format、cache 查找、ShapeEnv 模块族/variant 索引，以及完整语料初始化状态的实际 key 集合统计。
 
-仍需闭环：动画遍历后的完整运行时 key 集合、ShapeEnv key 到 46 字节 selector key/180 个命名 define 的映射、原始 Cg source 字节、最终 D3D9 bytecode，以及 COLOR0/COLOR1、TEXCOORD0/TEXCOORD1 在像素阶段的具体公式。
+仍需闭环：动画遍历后的完整运行时 ShapeEnv key 集合、ShapeEnv 的其余 base/context 输入到完整 18 字节 Simple key 的映射，以及最终不依赖 D3DX 的 D3D9 bytecode。原始 Cg source、include 闭包以及 COLOR0/COLOR1、TEXCOORD0/TEXCOORD1 的像素公式已经闭环，见 [`render-shader-source.md`](render-shader-source.md)。

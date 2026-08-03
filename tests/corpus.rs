@@ -15,6 +15,7 @@ use srd_editor::render::{
     select_srd_image_render_preset,
 };
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
+use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -69,6 +70,53 @@ fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
             output.push(path);
         }
     }
+}
+
+#[test]
+fn validates_complete_game_simple_shader_key_collection() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let xml = fs::read_to_string(root.join("A000/shader/shadercollect.xml")).unwrap();
+    let mut inside_simple_group = false;
+    let mut keys = Vec::new();
+
+    for line in xml.lines().map(str::trim) {
+        if line.starts_with("<SimpleShaderVSSimpleShaderPS_") {
+            inside_simple_group = true;
+            continue;
+        }
+        if line.starts_with("</SimpleShaderVSSimpleShaderPS_") {
+            inside_simple_group = false;
+            continue;
+        }
+        if !inside_simple_group || !line.starts_with('<') || !line.ends_with("/>") {
+            continue;
+        }
+
+        let encoded = &line.as_bytes()[1..line.len() - 2];
+        let key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] = encoded.try_into().unwrap();
+        let bits = CeylonSimpleShaderBits::from_compact_key(key);
+        assert_eq!(bits.compact_key(), key);
+        keys.push(bits);
+    }
+
+    assert_eq!(keys.len(), 82);
+    let multi_tex0_counts = keys.into_iter().fold([0_usize; 16], |mut counts, bits| {
+        let mut value = 0;
+        for bit in 0..4 {
+            value |= usize::from(bits.contains(47 + bit)) << bit;
+        }
+        counts[value] += 1;
+        counts
+    });
+    assert_eq!(multi_tex0_counts[0], 58);
+    assert_eq!(multi_tex0_counts[6], 1);
+    assert_eq!(multi_tex0_counts[9], 1);
+    assert_eq!(multi_tex0_counts[10], 1);
+    assert_eq!(multi_tex0_counts[11], 10);
+    assert_eq!(multi_tex0_counts[12], 11);
 }
 
 #[test]

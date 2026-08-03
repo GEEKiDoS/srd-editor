@@ -9,6 +9,7 @@ pub mod reference;
 pub mod reference_runtime;
 pub mod render;
 pub mod scene;
+pub mod shader;
 pub mod texture;
 pub mod transform;
 pub mod vtbf;
