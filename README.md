@@ -22,6 +22,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 只读 VTBF/SRFF 结构解析，按游戏读取器保留未知头字段和属性原始编码。
 - `ANIM → MOT → TRK → KEY` 记录读取。
 - `SCN -> ANMS -> SANM` 场景动画集：逐 LAYR enable gate、命名 ANIM、初始 frame 与 runtime duration；正常 Composition 只提交显式选择的动画集，不再同时绘制互斥页面。
+- CIMG/TEXT 与 PROJ FONT/CHAR 记录解析、TEXT 到同一项目 FONT 下标解析，以及 SrTextCast 的实际构造/字符串初始化。完整语料的字体来自 `A000/font/*.rfz`；游戏已证明使用 BinaryLZW `YS` v2 容器和 `RHFONTDB` 根类型，当前不会用系统字体伪装游戏字形。
 - 游戏标量轨道的时间区间、端点、线性、保持和三次曲线求值。
 - LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
 - `SRFF -> SRCK -> PROJ -> SCN  -> LAYR` 项目场景表，以及 CRFD 在同文件 SCN/LAYR 表中的首次完整名称解析。

@@ -72,10 +72,12 @@ SCN 级 `ANMS/SANM` 的记录布局、逐层动画绑定、enable gate 和 ident
 
 `CAM ` 使用 `0xAA0040`，`CATR` 使用 `0xAA2AD0`。属性 code 与对象字段语义仍需逐函数闭环。
 
+TEXT、FONT/CHAR 的记录字段和 RFZ 资源边界已继续闭环，见 [`text-font-records.md`](text-font-records.md)。
+
 ## 尚未证明
 
 - 各标签名称对应的最终渲染业务语义。
 - `NODE`、`TRS2`、`TRS3` 的世界变换组合顺序。
-- TEXT 的完整运行时消费。
+- RFZ 解压后的字体数据库与 TEXT 的完整运行时排版/绘制。
 - CNUM 历史 glyph 动画，以及 CNUM、CSLI、TEXT 的最终绘制行为。
 - 动画通道编号与 CAST 字段的绑定。

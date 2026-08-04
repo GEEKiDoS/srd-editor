@@ -7,6 +7,7 @@ use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
 use crate::number::NumberDefinition;
 use crate::reference::ReferenceDefinition;
+use crate::text::{FontDefinition, TextDefinition};
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -180,8 +181,10 @@ impl SceneAnimationSlot {
 pub struct Project {
     pub name: Vec<u8>,
     pub declared_scene_count: u32,
+    pub declared_font_count: u32,
     pub camera: CameraDefinition,
     pub scenes: Vec<Scene>,
+    pub fonts: Vec<FontDefinition>,
 }
 
 impl Project {
@@ -207,6 +210,7 @@ impl Project {
             .transpose()?
             .unwrap_or_default();
         let declared_scene_count = read_unsigned(file, block, 0x00)?;
+        let declared_font_count = optional_unsigned(file, block, 0x05)?.unwrap_or(0);
         let camera = CameraDefinition::from_project_block(file, block)
             .map_err(|error| SceneError(error.to_string()))?;
         let scenes = block
@@ -215,19 +219,36 @@ impl Project {
             .filter(|child| child.is_tag(b"SCN "))
             .map(|child| Scene::from_block(file, child))
             .collect::<Result<Vec<_>, _>>()?;
+        let fonts = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"FONT"))
+            .map(|child| {
+                FontDefinition::from_block(file, child)
+                    .map_err(|error| SceneError(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         validate_declared_count(
             declared_scene_count,
             scenes.len(),
             "PROJ SCN ",
             block.offset,
         )?;
+        validate_declared_count(declared_font_count, fonts.len(), "PROJ FONT", block.offset)?;
 
         Ok(Self {
             name,
             declared_scene_count,
+            declared_font_count,
             camera,
             scenes,
+            fonts,
         })
+    }
+
+    pub fn resolve_text_font(&self, text: &TextDefinition) -> Option<&FontDefinition> {
+        let index = usize::try_from(text.font_index?).ok()?;
+        self.fonts.get(index)
     }
 
     pub fn resolve_reference(&self, reference: &ReferenceDefinition) -> Option<ReferenceTarget> {
@@ -948,6 +969,17 @@ fn read_unsigned(file: &SrdFile, block: &Block, code: u8) -> Result<u32, SceneEr
     required_property(block, code)?
         .read_unsigned_scalar(file)
         .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+}
+
+fn optional_unsigned(file: &SrdFile, block: &Block, code: u8) -> Result<Option<u32>, SceneError> {
+    block
+        .last_property(code)
+        .map(|property| {
+            property
+                .read_unsigned_scalar(file)
+                .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+        })
+        .transpose()
 }
 
 fn optional_signed(file: &SrdFile, block: &Block, code: u8) -> Result<Option<i32>, SceneError> {

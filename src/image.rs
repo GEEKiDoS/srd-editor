@@ -3,6 +3,7 @@ use std::fmt;
 use crate::animation::{Evaluation, Key20, KeyData, ScalarValue, Track, cvtt_f32_to_i32};
 use crate::csli::{CrefEntry, CsliDefinition, multiply_color_game, slice_texture_coordinates};
 use crate::render::{SrdQuadDraw, SrdRenderVertex};
+use crate::text::TextDefinition;
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::vtbf::{Block, Property, SrdFile};
 
@@ -120,6 +121,7 @@ pub struct ImageDefinition {
     pub field_a1: u32,
     pub node_index: i32,
     pub has_text_child: bool,
+    pub text: Option<TextDefinition>,
 }
 
 impl ImageDefinition {
@@ -148,6 +150,7 @@ impl ImageDefinition {
             field_a1: 0,
             node_index: -1,
             has_text_child: false,
+            text: None,
         };
         let mut color_index = 0usize;
         for property in &block.properties {
@@ -196,6 +199,10 @@ impl ImageDefinition {
                 result.cre1s = parse_reference_table(file, child, result.cre1_count, "CRE1")?;
             } else if child.is_tag(b"TEXT") {
                 result.has_text_child = true;
+                result.text = Some(
+                    TextDefinition::from_block(file, child)
+                        .map_err(|error| ImageError(error.to_string()))?,
+                );
             }
         }
 
@@ -264,6 +271,7 @@ impl ImageDefinition {
             field_a1: 0,
             node_index: -1,
             has_text_child: false,
+            text: None,
         }
     }
 
@@ -288,6 +296,7 @@ impl ImageDefinition {
             field_a1: 0,
             node_index: definition.node_index,
             has_text_child: false,
+            text: None,
         }
     }
 
@@ -860,6 +869,7 @@ mod tests {
             field_a1: 0,
             node_index: 0,
             has_text_child: false,
+            text: None,
         }
     }
 

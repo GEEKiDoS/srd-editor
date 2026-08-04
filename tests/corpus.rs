@@ -1552,6 +1552,63 @@ fn parses_and_applies_scene_animation_sets() {
 }
 
 #[test]
+fn parses_text_records_and_resolves_project_fonts() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut font_count = 0usize;
+    let mut inline_character_count = 0usize;
+    let mut text_count = 0usize;
+    let mut nonempty_text_count = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        assert_eq!(project.fonts.len(), project.declared_font_count as usize);
+        font_count += project.fonts.len();
+        inline_character_count += project
+            .fonts
+            .iter()
+            .map(|font| font.characters.len())
+            .sum::<usize>();
+
+        for image in project
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.layers)
+            .flat_map(|layer| &layer.image_by_node)
+            .flatten()
+        {
+            assert_eq!(image.has_text_child, image.text.is_some());
+            let Some(text) = &image.text else {
+                continue;
+            };
+            if let Some(font_index) = text.font_index.filter(|index| *index >= 0) {
+                assert!(
+                    project.resolve_text_font(text).is_some(),
+                    "{} font index {font_index}",
+                    path.display()
+                );
+            }
+            nonempty_text_count += usize::from(!text.text.is_empty());
+            text_count += 1;
+        }
+    }
+
+    assert!(font_count > 0);
+    assert!(text_count > 0);
+    assert!(nonempty_text_count > 0);
+    eprintln!(
+        "FONT records={font_count}, inline CHAR mappings={inline_character_count}, TEXT records={text_count}, nonempty strings={nonempty_text_count}"
+    );
+}
+
+#[test]
 fn parses_and_links_binary_proven_csli_grids() {
     let root = corpus_root();
     if !root.exists() {

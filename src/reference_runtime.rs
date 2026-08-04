@@ -795,6 +795,7 @@ mod tests {
         Project {
             name: Vec::new(),
             declared_scene_count: 1,
+            declared_font_count: 0,
             camera: crate::camera::CameraDefinition::default(),
             scenes: vec![Scene {
                 name: b"scene".to_vec(),
@@ -805,6 +806,7 @@ mod tests {
                 layers,
                 animation_sets: Vec::new(),
             }],
+            fonts: Vec::new(),
         }
     }
 

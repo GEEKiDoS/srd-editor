@@ -28,11 +28,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("file={}", document.path.display());
     println!(
-        "project={:?} scenes={} textures={}",
+        "project={:?} scenes={} fonts={} textures={}",
         display_srd_name(&document.project.name),
         document.project.scenes.len(),
+        document.project.fonts.len(),
         document.textures.textures.len()
     );
+    for (font_index, font) in document.project.fonts.iter().enumerate() {
+        println!(
+            "FONT[{font_index}] name={:?} flags_70={:?} field_71={:?} characters={}",
+            display_srd_name(&font.name),
+            font.flags_70,
+            font.field_71,
+            font.characters.len()
+        );
+    }
 
     for (scene_index, scene) in document.project.scenes.iter().enumerate() {
         println!(
@@ -82,6 +92,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                     transform.scale,
                     transform.is_visible()
                 );
+                if let Some(text) = layer.image_by_node[node_index]
+                    .as_ref()
+                    .and_then(|image| image.text.as_ref())
+                {
+                    println!(
+                        "      TEXT font_index={:?} text={:?} field_78={:?} field_36={:?} field_7b={:?} field_7c={:?} field_41={:?}",
+                        text.font_index,
+                        display_srd_name(&text.text),
+                        text.field_78,
+                        text.field_36,
+                        text.field_7b,
+                        text.field_7c,
+                        text.field_41
+                    );
+                }
             }
             for (animation_index, animation) in layer.animations.iter().enumerate() {
                 println!(

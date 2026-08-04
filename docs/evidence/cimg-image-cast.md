@@ -100,7 +100,7 @@ secondary = [add.r * add.a / 255,
 
 ## SrImageCast 与 SrTextCast 的建立条件
 
-`srd_create_runtime_cast_for_node` (`0xACA030`) 对 NODE type `1` 检查其 CIMG：仅当存在 `TEXT` 子块且 CIMG flags 包含 `0x100` 时使用注册表 key `2`，其工厂 RTTI 为 `surfride::SrTextCast`；否则使用 key `1`，工厂 RTTI 为 `surfride::SrImageCast`。Rust 当前保存 `has_text_child` 并通过 `creates_text_cast` 复现这个已证明的分类条件；TEXT 内部字段仍等待独立闭环。
+`srd_create_runtime_cast_for_node` (`0xACA030`) 对 NODE type `1` 检查其 CIMG：仅当存在 `TEXT` 子块且 CIMG flags 包含 `0x100` 时使用注册表 key `2`，其工厂 RTTI 为 `surfride::SrTextCast`；否则使用 key `1`，工厂 RTTI 为 `surfride::SrImageCast`。Rust 当前保存完整 `TextDefinition` 并通过 `creates_text_cast` 复现这个已证明的分类条件；TEXT/FONT/RFZ 证据见 [`text-font-records.md`](text-font-records.md)。
 
 ## Rust 对应与样本验证
 
@@ -110,7 +110,7 @@ secondary = [add.r * add.a / 255,
 
 ## 仍未闭环
 
-- TEXT 子块的完整字段、字体资源、排版和 glyph 绘制；
+- RFZ 解压后的字体数据库、TextCast 排版和 glyph 绘制；
 - 两个 UV 通道进入像素 shader 后的精确组合；它们的 D3D9 stage 0/1 资源绑定已经闭环；
 - 最终混合状态如何消费 primary/secondary 两个 packed color；其运行时来源和 Image/Number 的 additive 预乘已经闭环。
 

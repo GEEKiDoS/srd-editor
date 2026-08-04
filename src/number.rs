@@ -538,6 +538,7 @@ impl NumberDefinition {
             field_a1: 0,
             node_index: self.node_index,
             has_text_child: false,
+            text: None,
         }
     }
 }

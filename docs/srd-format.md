@@ -21,6 +21,7 @@
 - CIMG、CREF/CRE1 双通道与 SrImageCast：[`evidence/cimg-image-cast.md`](evidence/cimg-image-cast.md)
 - CNUM 解析、SrNumberCast 初值与 glyph 映射：[`evidence/cnum-number-cast.md`](evidence/cnum-number-cast.md)
 - SrImage 尺寸 `11/12`、顶点色 `13..16` 与双坐标描述符 `17/20` 动画：[`evidence/image-coordinate-animation.md`](evidence/image-coordinate-animation.md)
+- TEXT、PROJ FONT/CHAR、SrTextCast 初始化与外部 RFZ BinaryLZW 边界：[`evidence/text-font-records.md`](evidence/text-font-records.md)
 - CRFD、SrRefCast 与引用动画帧通道 `23`：[`evidence/crfd-reference-cast.md`](evidence/crfd-reference-cast.md)
 - PROJ/SCN 同文件场景表与 CRFD 的 SCN/LAYR 两级解析：[`evidence/project-scene-reference.md`](evidence/project-scene-reference.md)
 - TEX `0x62`、双采样包装对象、SrSliceCast 选择与 D3D9 采样状态：[`evidence/texture-binding.md`](evidence/texture-binding.md)
