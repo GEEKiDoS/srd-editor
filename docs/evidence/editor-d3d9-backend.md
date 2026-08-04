@@ -67,7 +67,7 @@ Windows 上 winit 优先调用 Per-Monitor V2 DPI awareness，系统不支持时
 - 右侧 `Properties`；
 - 下方 `Layers & Timeline`，固定的层/状态列和可横向滚动的时间轴位于同一张 table，因此共享垂直滚动和行选择。
 
-命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。普通编辑器打开独立 SRD 时不会再把 SRD CAM 冒充为 target Camera；在用户选择宿主 profile 前，Composition 明确显示 `Host target/camera profile not selected`。已有 GPU smoke 仍可用，但其 project-camera host 只在 smoke flag 下显式构造并标记为诊断输入。
+命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene、ANMS/SANM、layer/NODE、变换、纹理与动画 frame。Properties 的 ANMS 选择器和下方 frame slider 会重建当前运行时页面；Composition 不再把同一 SCN 的所有互斥 LAYR 同时提交。普通编辑器打开独立 SRD 时不会再把 SRD CAM 冒充为 target Camera；在用户选择宿主 profile 前，Composition 明确显示 `Host target/camera profile not selected`。已有 GPU smoke 仍可用，但其 project-camera host 只在 smoke flag 下显式构造并标记为诊断输入。
 
 Composition texture 使用当前 D3D9Ex backbuffer 的实际格式创建，属于编辑器集成选择，不被表述为 SRD 文件格式语义。面板以 ImGui 逻辑坐标计算保持宽高比的居中显示矩形，renderer 再使用 `display_framebuffer_scale` 把顶点和 scissor 转为物理像素。因此跨显示器 DPI 变化只改变 UI 栅格化与显示尺寸，不改变固定 SCN 像素纹理、CAM 或 `FirstCalcMatrix`。
 
@@ -79,12 +79,12 @@ Composition texture 使用当前 D3D9Ex backbuffer 的实际格式创建，属�
 cargo run -- --d3d9ex-smoke
 cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
-cargo run --release -- --srd-texture-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_Advertise_00_v10.srd"
+cargo run --release -- --srd-texture-smoke --advertise-logo-host=MainScene@1080x1920@1920x1080 "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_Advertise_00_v10.srd"
 ```
 
-四条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。带文件的命令还在帧生成前实际解析指定 SRD 并构建文档面板；无贴图 smoke 另外提交 format 14 SRD draw 并断言黑色采样像素，贴图 smoke 则在 reset 前后读取完整 Composition 并确认单个 stage-0 draw 产生非清屏色像素。贴图 smoke 暴露的宿主矩阵边界见 [`render-first-textured-draw.md`](render-first-textured-draw.md)。
+这些命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。AdvertiseLogo 动画集 draw smoke 在 reset 前后均得到 2,073,600 个 changed pixels、`white_pixels=0` 和 FNV-1a `97D30483E5DD6325`；二维贴图 smoke 得到 849,776 个一致像素、`white_pixels=0` 和 `09DF61BBE19B88A5`。动画集证据见 [`scene-animation-sets.md`](scene-animation-sets.md)，2D shader/常量见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
 
-同次检查后继续加入首个证据完整 draw-list、贴图 draw 与完整 DDS 解码路径语料测试；当前回归为 99 个单元测试及 21 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。
+同次检查后继续加入动画集、证据完整 draw-list、贴图 draw 与完整 DDS 解码路径语料测试；当前回归为 106 个单元测试及 23 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 

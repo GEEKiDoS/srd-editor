@@ -58,6 +58,28 @@ pub struct Scene {
     pub width: f32,
     pub height: f32,
     pub layers: Vec<Layer>,
+    pub animation_sets: Vec<AnimationSetDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneAnimationSlot {
+    pub animation_name: Vec<u8>,
+    pub enabled: i32,
+}
+
+impl SceneAnimationSlot {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled != 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationSetDefinition {
+    pub name: Vec<u8>,
+    pub start_frame: i32,
+    pub runtime_duration: i32,
+    pub declared_slot_count: i32,
+    pub slots: Vec<SceneAnimationSlot>,
 }
 
 impl Scene {
@@ -77,11 +99,12 @@ impl Scene {
             .filter(|child| child.is_tag(b"LAYR"))
             .map(|child| Layer::from_block(file, child))
             .collect::<Result<Vec<_>, _>>()?;
-        let animation_set_count = block
+        let animation_sets = block
             .children
             .iter()
             .filter(|child| child.is_tag(b"ANMS"))
-            .count();
+            .map(|child| AnimationSetDefinition::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
 
         validate_declared_count(
             declared_layer_count,
@@ -91,7 +114,7 @@ impl Scene {
         )?;
         validate_declared_count(
             declared_animation_set_count,
-            animation_set_count,
+            animation_sets.len(),
             "SCN  ANMS",
             block.offset,
         )?;
@@ -103,6 +126,52 @@ impl Scene {
             width,
             height,
             layers,
+            animation_sets,
+        })
+    }
+}
+
+impl AnimationSetDefinition {
+    pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, SceneError> {
+        if !block.is_tag(b"ANMS") {
+            return Err(SceneError("block is not ANMS".into()));
+        }
+
+        let name = optional_fixed_name(file, block, 0x03, 64, "ANMS 0x03")?;
+        let start_frame = optional_signed(file, block, 0x18)?.unwrap_or(0);
+        let runtime_duration = optional_signed(file, block, 0x19)?.unwrap_or(0);
+        let declared_slot_count = optional_signed(file, block, 0x0e)?.unwrap_or(0);
+        let slots = block
+            .children
+            .iter()
+            .filter(|child| child.is_tag(b"SANM"))
+            .map(|child| SceneAnimationSlot::from_block(file, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_signed_declared_count(
+            declared_slot_count,
+            slots.len(),
+            "ANMS SANM",
+            block.offset,
+        )?;
+
+        Ok(Self {
+            name,
+            start_frame,
+            runtime_duration,
+            declared_slot_count,
+            slots,
+        })
+    }
+}
+
+impl SceneAnimationSlot {
+    pub fn from_block(file: &SrdFile, block: &Block) -> Result<Self, SceneError> {
+        if !block.is_tag(b"SANM") {
+            return Err(SceneError("block is not SANM".into()));
+        }
+        Ok(Self {
+            animation_name: optional_fixed_name(file, block, 0x03, 64, "SANM 0x03")?,
+            enabled: optional_signed(file, block, 0x0f)?.unwrap_or(1),
         })
     }
 }
@@ -824,6 +893,25 @@ fn fixed_name(
         .map(|bytes| bytes.iter().copied().take(capacity).collect())
 }
 
+fn optional_fixed_name(
+    file: &SrdFile,
+    block: &Block,
+    code: u8,
+    capacity: usize,
+    label: &str,
+) -> Result<Vec<u8>, SceneError> {
+    block
+        .last_property(code)
+        .map(|property| {
+            property
+                .string_bytes(file)
+                .ok_or_else(|| SceneError(format!("{label} is not a string")))
+                .map(|bytes| bytes.iter().copied().take(capacity).collect())
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 fn validate_declared_count(
     declared: u32,
     parsed: usize,
@@ -840,10 +928,37 @@ fn validate_declared_count(
     Ok(())
 }
 
+fn validate_signed_declared_count(
+    declared: i32,
+    parsed: usize,
+    label: &str,
+    offset: usize,
+) -> Result<(), SceneError> {
+    let declared = usize::try_from(declared)
+        .map_err(|_| SceneError(format!("{label} count is negative: {declared}")))?;
+    if declared != parsed {
+        return Err(SceneError(format!(
+            "{label} count mismatch at {offset:#x}: declared {declared}, parsed {parsed}"
+        )));
+    }
+    Ok(())
+}
+
 fn read_unsigned(file: &SrdFile, block: &Block, code: u8) -> Result<u32, SceneError> {
     required_property(block, code)?
         .read_unsigned_scalar(file)
         .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+}
+
+fn optional_signed(file: &SrdFile, block: &Block, code: u8) -> Result<Option<i32>, SceneError> {
+    block
+        .last_property(code)
+        .map(|property| {
+            property
+                .read_signed_scalar(file)
+                .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+        })
+        .transpose()
 }
 
 fn optional_float(file: &SrdFile, block: &Block, code: u8) -> Result<f32, SceneError> {

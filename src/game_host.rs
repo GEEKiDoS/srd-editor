@@ -117,12 +117,20 @@ impl ChusanAdvertiseLogoPlayerProfile {
         target: ChusanAirSceneTargetProfile,
         present_width: u32,
         present_height: u32,
+        target_screen_size: [u32; 2],
     ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+        if target_screen_size.contains(&0) {
+            return Err(GameHostProfileError(format!(
+                "{} target screen size must be non-zero, got {}x{}",
+                target.name, target_screen_size[0], target_screen_size[1]
+            )));
+        }
         let target_projection_view =
             target.projection_view_for_present_size(present_width, present_height)?;
         Ok(SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             target_projection_view,
+            target_screen_size,
         ))
     }
 }
@@ -203,7 +211,7 @@ mod tests {
     #[test]
     fn advertise_logo_host_context_keeps_identity_root_and_explicit_target_camera() {
         let context = CHUSAN_ADVERTISE_LOGO_PLAYER
-            .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920)
+            .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
             .unwrap();
         assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
         assert_eq!(
@@ -212,5 +220,6 @@ mod tests {
                 .projection_view_for_present_size(1080, 1920)
                 .unwrap()
         );
+        assert_eq!(context.target_screen_size, [1920, 1080]);
     }
 }

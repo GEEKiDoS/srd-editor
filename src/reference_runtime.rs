@@ -4,7 +4,7 @@ use crate::animation::RuntimeAnimationState;
 use crate::csli::{add_color_saturating_game, multiply_color_game};
 use crate::image::{ImageDefinition, RuntimeImageState};
 use crate::reference::ReferenceAnimationRequest;
-use crate::scene::{Layer, Project, ReferenceTarget};
+use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget};
 use crate::texture::TextureList;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
@@ -145,6 +145,7 @@ pub struct ReferenceRuntime {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectLayerRuntimeState {
     pub target: ReferenceTarget,
+    pub enabled: bool,
     pub cast_transforms: Vec<SpatialTransform>,
     pub image_bases: Vec<ImageDefinition>,
     pub image_states: Vec<RuntimeImageState>,
@@ -505,6 +506,7 @@ impl ProjectLayerRuntimeState {
         let image_states = runtime_image_states(layer, &image_bases);
         Self {
             target,
+            enabled: layer.flags & 0x100 != 0,
             cast_transforms: layer
                 .transforms
                 .iter()
@@ -623,6 +625,76 @@ impl ProjectRuntime {
         }
         Ok(Some(tree))
     }
+
+    pub fn apply_animation_set(
+        &mut self,
+        project: &Project,
+        textures: &TextureList,
+        scene_index: usize,
+        animation_set_index: usize,
+        frame: f32,
+    ) -> Result<RuntimeAnimationTreeApplication, crate::animation::AnimationError> {
+        let scene = project.scenes.get(scene_index).ok_or_else(|| {
+            crate::animation::AnimationError(format!(
+                "SCN[{scene_index}] is outside the project runtime"
+            ))
+        })?;
+        let animation_set = scene
+            .animation_sets
+            .get(animation_set_index)
+            .ok_or_else(|| {
+                crate::animation::AnimationError(format!(
+                    "SCN[{scene_index}]/ANMS[{animation_set_index}] is outside the scene"
+                ))
+            })?;
+        self.apply_animation_set_definition(project, textures, scene_index, animation_set, frame)
+    }
+
+    fn apply_animation_set_definition(
+        &mut self,
+        project: &Project,
+        textures: &TextureList,
+        scene_index: usize,
+        animation_set: &AnimationSetDefinition,
+        frame: f32,
+    ) -> Result<RuntimeAnimationTreeApplication, crate::animation::AnimationError> {
+        let layer_count = self
+            .project_layers
+            .get(scene_index)
+            .map(Vec::len)
+            .ok_or_else(|| {
+                crate::animation::AnimationError(format!(
+                    "SCN[{scene_index}] is outside the project runtime"
+                ))
+            })?;
+        let slots = animation_set
+            .slots
+            .iter()
+            .take(layer_count)
+            .map(|slot| (slot.is_enabled(), slot.animation_name.clone()))
+            .collect::<Vec<_>>();
+        let mut result = RuntimeAnimationTreeApplication::default();
+
+        for (layer_index, (enabled, animation_name)) in slots.into_iter().enumerate() {
+            self.project_layers[scene_index][layer_index].enabled = enabled;
+            if animation_name.is_empty() {
+                continue;
+            }
+            if let Some(application) = self.apply_layer_animation(
+                project,
+                textures,
+                ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                },
+                &animation_name,
+                frame,
+            )? {
+                result.include_tree(application);
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -731,6 +803,7 @@ mod tests {
                 width: 0.0,
                 height: 0.0,
                 layers,
+                animation_sets: Vec::new(),
             }],
         }
     }

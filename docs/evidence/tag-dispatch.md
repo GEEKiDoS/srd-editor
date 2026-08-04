@@ -60,6 +60,7 @@
 | `TRK ` | `0xAA3FF0` | `KEY ` → 根据 format 分派多种记录解析器 |
 
 关键记录的精确布局见 [`animation-records.md`](animation-records.md)。
+SCN 级 `ANMS/SANM` 的记录布局、逐层动画绑定、enable gate 和 identity 消费见 [`scene-animation-sets.md`](scene-animation-sets.md)。
 
 ## 纹理和字体
 

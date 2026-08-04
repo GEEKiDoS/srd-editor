@@ -33,7 +33,7 @@ packet 构造器 `0x6CD8A0` 初始化 `+0x1C/+0x20=0`、`+0x24=1`、`+0x3C/+0x40
 `CHU_UI_System_00_v10.srd` 中证据闭环的非 TEXT 图像节点 `C_fill` 选择 Simple key：
 
 ```text
-AAEBABBAAAGAAAAAAA
+EAEBABBAAAGAAAAAAA
 ```
 
 对应 VS 读取 position、两个 color、texcoord0，以及：
@@ -41,9 +41,9 @@ AAEBABBAAAGAAAAAAA
 ```text
 c0..c3   mtxWorld
 c8       fixedParam0
-c10..c13 mtxPrjView
+c10       screenParam = [source_width/2, source_height/2, 0, 0]
 ```
 
-对应 PS 不读取 sampler，只读取两个 color 和 `c0.z`。同层的 `T_title/T_message` 虽然 NODE 低字节同为 type 1，但其 CIMG 同时具有 TEXT 子块和 flags `0x100`，游戏工厂会建立 `SrTextCast`；审计工具现将它们排除，不能拿 ImageCast 路径替代 TEXT。因而首个闭环 draw 是唯一的无贴图 `C_fill`，其固定 packet 常量已由上述提交链闭环，`c10..c13` 则由 `sea::AllEnvBasic` 的 `Projection*View` provider 闭环，详见 [`projection.md`](projection.md)。
+对应 PS 不读取 sampler，只读取两个 color 和 `c0.z`。同层的 `T_title/T_message` 虽然 NODE 低字节同为 type 1，但其 CIMG 同时具有 TEXT 子块和 flags `0x100`，游戏工厂会建立 `SrTextCast`；审计工具现将它们排除，不能拿 ImageCast 路径替代 TEXT。因而首个闭环 draw 是唯一的无贴图 `C_fill`。该 layer 为二维层，CAST 二维标志写入 packet `+0x60` bit 7 并附加 `ShapeEnv2D`；其 `c10` 来自 filter source 半宽/半高，而不是 target Camera matrix。完整链见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。三维 sibling 才由 `sea::AllEnvBasic` 提供 `c10..c13 Projection*View`，详见 [`projection.md`](projection.md)。
 
-Rust `CeylonSrdFixedShaderConstants::initial_2d_for_target` 现保存这组初始寄存器值，并要求调用者显式传入接收 packet 的 target `Projection*View`。`SrdHostDrawContext` 没有 `Default`，因此调用端不能再静默使用 SRD CAM。对应的 332-byte VS 和 216-byte PS 也已按对齐的 `u32` token 表嵌入 `shader_bytecode.rs`；lookup 只接受精确 key `AAEBABBAAAGAAAAAAA`，其他 key 返回 `None`，不会用近似 shader 代替。
+Rust `CeylonSrdFixedShaderConstants::initial_for_target` 同时保存二维 `screenParam` 和三维 target `Projection*View`，renderer 按 draw 类型只上传其中一条。`SrdHostDrawContext` 没有 `Default`，并要求显式 target screen size，因此调用端不能静默使用 SRD CAM、present size 或 SCN size 代替。二维对应的 384-byte VS 和 216-byte PS 已按对齐 `u32` token 表嵌入；lookup 只接受精确 key，不会用近似 shader 代替。

@@ -42,7 +42,7 @@ Advertise common init `sub_C955D0` 的前三个调用可逐条解释：
 - `2DLayer=100`；
 - `Enable=false`。
 
-后续状态机何时再次启用 player、选择哪段动画，仍须按具体状态调用闭环；本 profile 不自行指定启动动画。
+后续 `sub_C931E0` 已证明会经 `sub_422377 -> sub_BA7B00` 再次启用 player，并从六阶段表选择入口动画集 identity；`sub_C93B10` 在入口完成、等待及出口完成后推进 stage。identity 到 SCN/ANMS 的精确解码、六阶段入口/出口映射和 SANM layer gate 见 [`scene-animation-sets.md`](scene-animation-sets.md)。外部条件可把初始 stage 从 0 改为 1，因此独立编辑器仍要求显式选择 ANMS，不冒充机台当前状态。
 
 ## scene-node 父矩阵
 

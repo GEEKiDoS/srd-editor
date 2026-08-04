@@ -14,6 +14,7 @@
 - VTBF 读取逻辑：[`evidence/vtbf-reader.md`](evidence/vtbf-reader.md)
 - 标签分派图：[`evidence/tag-dispatch.md`](evidence/tag-dispatch.md)
 - 动画记录布局：[`evidence/animation-records.md`](evidence/animation-records.md)
+- SCN `ANMS/SANM` 场景动画集、layer gate 与 AdvertiseLogo 阶段 identity：[`evidence/scene-animation-sets.md`](evidence/scene-animation-sets.md)
 - LAYR/NODE/TRS、公共动画通道和矩阵链：[`evidence/scene-transform.md`](evidence/scene-transform.md)
 - CSLI/SLIC 网格、NODE `0x32` 与父级单元偏移：[`evidence/csli-layout.md`](evidence/csli-layout.md)
 - SrSliceCast active 单元局部顶点、CREF 选择与最终 UV：[`evidence/slice-geometry.md`](evidence/slice-geometry.md)

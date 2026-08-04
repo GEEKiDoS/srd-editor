@@ -9,14 +9,14 @@
 - 它是 `SrImageCast`，不是带 `TEXT` 子块及 CIMG flags `0x100` 的 `SrTextCast`；
 - 它不绑定纹理；
 - Shape key 为 `00000000:00371F90`；
-- Simple compact key 为 `AAEBABBAAAGAAAAAAA`，对应已经嵌入并由真实 D3D9 HAL device 创建验证的 VS/PS；
+- layer 为二维，因此 Simple compact key 为 `EAEBABBAAAGAAAAAAA`，对应已经嵌入并由真实 D3D9 HAL device 创建验证的 VS/PS；
 - 初始 packet 精确导出 `CULL_NONE`、`SOLID`、color-write `0xF`，且 Z disabled。
 
 对应证据链分别见 [`cimg-image-cast.md`](cimg-image-cast.md)、[`render-shader-constants.md`](render-shader-constants.md)、[`render-shader-bytecode.md`](render-shader-bytecode.md)、[`render-raster-state.md`](render-raster-state.md) 与 [`render-alpha-depth-stencil.md`](render-alpha-depth-stencil.md)。
 
 ## FirstCalcMatrix 边界
 
-`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix` 和 target Camera 的 `Projection*View`。语料测试对两者传入 identity，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用 identity。两者都不在独立 SRD 文件中，详见 [`projection.md`](projection.md) 与 [`render-target-routing.md`](render-target-routing.md)。
+`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix`、target Camera 的 `Projection*View` 与 target screen size。语料测试对矩阵传入 identity、screen size 传入 `1920x1080`，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用这些值。详见 [`projection.md`](projection.md)、[`render-target-routing.md`](render-target-routing.md) 与 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
 
 编辑器未来的 fit-to-view 属于 Composition 显示变换，必须与这个游戏根矩阵分层保存。HiDPI 只改变窗口/backbuffer 的物理像素和 ImGui 的逻辑到物理比例，也不能进入 SRD 的 `FirstCalcMatrix`。
 
@@ -40,11 +40,11 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 
 - 遇到 CAST 特殊矩阵 flags `0x0007_0000` 时返回错误；
 - 排除 `SrTextCast`；
-- 暂不产出有纹理 draw；
+- 只产出 CREF/CRE1 绑定、sampler 与 exact shader pair 都已闭环的纹理 draw；
 - 暂不产出没有已注册 VS/PS bytecode 的 shader key；
 - CNUM、CSLI 与引用层递归尚未进入这个首个 draw list。
 
-因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。当前 97 个单元测试和 20 个本地/完整游戏语料测试均通过；其中本页 fixture 测试断言 draw 数量、节点、shader key、四顶点、两组顶点色、color-write 和深度状态。
+因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。本页 fixture 测试断言 draw 数量、节点、二维 shader key、`screenParam`、四顶点、两组顶点色、color-write 和深度状态。
 
 ## 实际 D3D9Ex 提交与像素验证
 
@@ -59,8 +59,8 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 
 material scissor 在二进制中是外部 context，而不是 SRD 属性，所以 renderer API 要求显式传入 `SrdDx9ExternalContext`。独立 smoke 明确使用 disabled scissor；这只是测试宿主输入，不外推为游戏任意调用现场的状态。当前首个 GPU 子集同样排除需要未知基础 alpha function/reference 的 alpha-test 或 stencil draw。
 
-`--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`。为保留既有 GPU 诊断，它只在 smoke flag 下显式构造“SRD CAM 作为 target Camera”的诊断 host；该 host 不会用于普通编辑器预览，也不声称等于游戏 target。`EndScene` 后用 `GetRenderTargetData` 复制到 SYSTEMMEM surface，并在 fixture 内部采样点验证 B/G/R 为零。随后它进入 ImGui draw 和 `PresentEx`，再强制 `ResetEx`、释放并重建 SRD/ImGui DEFAULT-pool 资源，第二帧重复同一像素断言。
+`--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`。未给出 game host 参数时，它只在 smoke flag 下显式构造“SRD CAM 作为 target Camera、SCN size 作为合成 screen”的诊断 host；该 host 不会用于普通编辑器预览，也不声称等于游戏 target。给出 `--advertise-logo-host` 时，target、present 与 screen source size 都由调用者显式指定。`EndScene` 后通过 `GetRenderTargetData` 验证 Composition 存在非清屏覆盖，并检查 backbuffer 诊断采样发生变化；强制 `ResetEx` 后第二帧重复验证。
 
 Composition 现已创建与 SCN 尺寸一致、格式取自实际 backbuffer 的 DEFAULT-pool render-target texture，并把它注册到 ImGui texture table。面板按可用逻辑尺寸保持宽高比居中显示；HiDPI framebuffer scale 只作用于 ImGui 最终顶点与 scissor。`ResetEx` 前会先从 texture table 移除 COM 引用并释放 target，reset 后重建和重新注册。
 
-smoke 在 `EndScene` 后同时回读 Composition texture 和主 backbuffer 的 fixture 内部像素，两者均验证为黑色；随后强制 reset 的第二帧重复通过。这里的 aspect-fit 是编辑器显示层变换，不会回写或替代 `FirstCalcMatrix`。
+smoke 在 `EndScene` 后回读 Composition texture 并诊断主 backbuffer；随后强制 reset 的第二帧重复通过。这里的 aspect-fit 是编辑器显示层变换，不会回写或替代 `FirstCalcMatrix`、target Camera 或 ShapeEnv2D `screenParam`。

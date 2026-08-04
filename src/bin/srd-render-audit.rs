@@ -89,6 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
                 packet.set_render_preset_id(preset);
+                packet.set_srd_quad_is_2d(layer.is_2d());
                 apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
                 let shape_key = packet.srd_quad_shader_key(slots.texture_present());
                 let simple_key = shape_key

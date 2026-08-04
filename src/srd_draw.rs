@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::image::{ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource};
 use crate::projection::Matrix4x4;
+use crate::reference_runtime::{ProjectLayerRuntimeState, ProjectRuntime};
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
     CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw,
@@ -32,6 +33,7 @@ pub struct EvidenceCompleteSrdDraw {
     pub scene_index: usize,
     pub layer_index: usize,
     pub node_index: usize,
+    pub is_2d: bool,
     pub shader_key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
     pub quad: SrdQuadDraw,
     pub packet: CeylonDrawPacketPresetState,
@@ -55,13 +57,19 @@ pub struct EvidenceSrdTextureBinding {
 pub struct SrdHostDrawContext {
     pub first_calc_matrix: Affine3x4,
     pub target_projection_view: Matrix4x4,
+    pub target_screen_size: [u32; 2],
 }
 
 impl SrdHostDrawContext {
-    pub const fn new(first_calc_matrix: Affine3x4, target_projection_view: Matrix4x4) -> Self {
+    pub const fn new(
+        first_calc_matrix: Affine3x4,
+        target_projection_view: Matrix4x4,
+        target_screen_size: [u32; 2],
+    ) -> Self {
         Self {
             first_calc_matrix,
             target_projection_view,
+            target_screen_size,
         }
     }
 }
@@ -83,28 +91,87 @@ pub fn build_evidence_complete_initial_image_draws(
     scene_index: usize,
     host: SrdHostDrawContext,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    build_evidence_complete_image_draws(project, textures, scene_index, host, None)
+}
+
+pub fn build_evidence_complete_animation_set_image_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    animation_set_index: usize,
+    frame: f32,
+    host: SrdHostDrawContext,
+) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    let mut runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    runtime
+        .apply_animation_set(project, textures, scene_index, animation_set_index, frame)
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    let runtime_layers = runtime
+        .project_layers
+        .get(scene_index)
+        .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the runtime")))?;
+    build_evidence_complete_image_draws(project, textures, scene_index, host, Some(runtime_layers))
+}
+
+fn build_evidence_complete_image_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    runtime_layers: Option<&[ProjectLayerRuntimeState]>,
+) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    if host.target_screen_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target screen size must be non-zero, got {}x{}",
+            host.target_screen_size[0], host.target_screen_size[1]
+        )));
+    }
     let scene = project
         .scenes
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
-    let fixed_constants =
-        CeylonSrdFixedShaderConstants::initial_2d_for_target(host.target_projection_view);
+    let fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+        host.target_projection_view,
+        host.target_screen_size,
+    );
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
-        let transforms = layer
-            .transforms
-            .iter()
-            .copied()
-            .map(|transform| transform.spatial())
-            .collect::<Vec<_>>();
+        let runtime_layer = runtime_layers
+            .map(|layers| {
+                layers.get(layer_index).ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}] is missing from the runtime"
+                    ))
+                })
+            })
+            .transpose()?;
+        let layer_enabled = runtime_layer
+            .map(|runtime_layer| runtime_layer.enabled)
+            .unwrap_or(layer.flags & 0x100 != 0);
+        if !layer_enabled {
+            continue;
+        }
+        let is_2d = layer.is_2d();
+        let transforms = runtime_layer.map_or_else(
+            || {
+                layer
+                    .transforms
+                    .iter()
+                    .copied()
+                    .map(|transform| transform.spatial())
+                    .collect::<Vec<_>>()
+            },
+            |runtime_layer| runtime_layer.cast_transforms.clone(),
+        );
         if reject_special_matrix_branches(layer).is_err() {
             continue;
         }
         let world_matrices = layer
             .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
             .map_err(|error| SrdDrawError(error.to_string()))?;
-        let world_colors = compose_initial_world_colors(layer, &transforms)?;
+        let world_colors = compose_initial_world_colors(layer, &transforms, layer_enabled)?;
 
         for node_index in 0..layer.nodes.len() {
             let Some(image) = layer.image_by_node[node_index]
@@ -118,10 +185,16 @@ pub fn build_evidence_complete_initial_image_draws(
                 continue;
             }
 
-            let mut image_state = image.initial_runtime_state();
-            if let Some(ext_param) = layer.ext_param_for_node(node_index) {
-                image_state.render_preset_override = ext_param.render_preset_override;
-            }
+            let image_state = runtime_layer.map_or_else(
+                || {
+                    let mut image_state = image.initial_runtime_state();
+                    if let Some(ext_param) = layer.ext_param_for_node(node_index) {
+                        image_state.render_preset_override = ext_param.render_preset_override;
+                    }
+                    image_state
+                },
+                |runtime_layer| runtime_layer.image_states[node_index],
+            );
             let preset = select_srd_image_render_preset(
                 image.flags,
                 image_state.render_preset_override,
@@ -168,6 +241,7 @@ pub fn build_evidence_complete_initial_image_draws(
 
             let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
             packet.set_render_preset_id(preset);
+            packet.set_srd_quad_is_2d(is_2d);
             apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
             let mut renderer_counter = 0u8;
             apply_srd_image_alpha_stencil_packet_fields(
@@ -194,7 +268,7 @@ pub fn build_evidence_complete_initial_image_draws(
             }
 
             let local_positions = image
-                .build_quad_with_geometry(image_state.geometry, layer.is_2d())
+                .build_quad_with_geometry(image_state.geometry, is_2d)
                 .positions;
             let positions =
                 local_positions.map(|point| world_matrices[node_index].transform_point_game(point));
@@ -212,6 +286,7 @@ pub fn build_evidence_complete_initial_image_draws(
                 scene_index,
                 layer_index,
                 node_index,
+                is_2d,
                 shader_key,
                 quad,
                 packet,
@@ -242,6 +317,7 @@ fn reject_special_matrix_branches(layer: &Layer) -> Result<(), SrdDrawError> {
 fn compose_initial_world_colors(
     layer: &Layer,
     transforms: &[SpatialTransform],
+    layer_enabled: bool,
 ) -> Result<Vec<InitialWorldColorState>, SrdDrawError> {
     let hierarchy = layer
         .build_hierarchy()
@@ -257,7 +333,7 @@ fn compose_initial_world_colors(
     let layer_world = InitialWorldColorState {
         multiply: [255; 4],
         additive: [0; 4],
-        visible: layer.flags & 0x100 != 0,
+        visible: layer_enabled,
     };
     for &root in &hierarchy.roots {
         compose_initial_world_color_node(

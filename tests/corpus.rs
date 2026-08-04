@@ -18,8 +18,13 @@ use srd_editor::render::{
 };
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
-use srd_editor::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY};
-use srd_editor::srd_draw::{SrdHostDrawContext, build_evidence_complete_initial_image_draws};
+use srd_editor::shader_bytecode::{
+    FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+};
+use srd_editor::srd_draw::{
+    SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
+    build_evidence_complete_initial_image_draws,
+};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -31,7 +36,7 @@ enum CorpusProfile {
 }
 
 fn identity_host_context() -> SrdHostDrawContext {
-    SrdHostDrawContext::new(Affine3x4::IDENTITY, identity_matrix4x4_game())
+    SrdHostDrawContext::new(Affine3x4::IDENTITY, identity_matrix4x4_game(), [1920, 1080])
 }
 
 fn srd_corpus_profile(file_count: usize) -> CorpusProfile {
@@ -145,7 +150,6 @@ fn builds_the_first_evidence_complete_srd_draw() {
     assert_eq!(draws.len(), 1);
     let draw = draws[0];
     assert_eq!((draw.layer_index, draw.node_index), (0, 1));
-    assert_eq!(draw.shader_key, FIRST_FIXTURE_SIMPLE_KEY);
     assert_eq!(
         draw.quad.vertices.map(|vertex| vertex.position),
         [
@@ -172,6 +176,12 @@ fn builds_the_first_evidence_complete_srd_draw() {
     assert!(!draw.blend.alpha_test_enabled);
     assert_eq!(draw.packet.flags_0c & 0x100, 0);
     assert_eq!(draw.texture_bindings, [None; 3]);
+    assert!(draw.is_2d);
+    assert_eq!(draw.shader_key, FIRST_2D_FIXTURE_SIMPLE_KEY);
+    assert_eq!(
+        draw.fixed_constants.vertex_c10_screen_param,
+        [960.0, 540.0, 0.0, 0.0]
+    );
     assert_eq!(
         draw.fixed_constants.vertex_c10_c13_projection_view,
         identity_matrix4x4_game()
@@ -184,6 +194,53 @@ fn builds_the_first_evidence_complete_srd_draw() {
             .runtime_matrices(1920.0)
             .projection_view
     );
+}
+
+#[test]
+fn advertise_animation_sets_gate_mutually_exclusive_pages() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
+    let scene = &document.project.scenes[0];
+    assert_eq!(scene.layers.len(), 12);
+    assert_eq!(scene.animation_sets.len(), 19);
+    assert_eq!(scene.animation_sets[0].name, b"AS_warning_in");
+    assert_eq!(scene.animation_sets[13].name, b"AS_movie_in");
+
+    let warning = build_evidence_complete_animation_set_image_draws(
+        &document.project,
+        &document.textures,
+        0,
+        0,
+        30.0,
+        identity_host_context(),
+    )
+    .unwrap();
+    assert!(warning.iter().all(|draw| matches!(draw.layer_index, 0 | 5)));
+    assert!(warning.iter().any(|draw| {
+        draw.layer_index == 5
+            && draw
+                .quad
+                .vertices
+                .iter()
+                .all(|vertex| vertex.primary_color[3] == 0xff)
+    }));
+
+    let movie = build_evidence_complete_animation_set_image_draws(
+        &document.project,
+        &document.textures,
+        0,
+        13,
+        20.0,
+        identity_host_context(),
+    )
+    .unwrap();
+    assert_eq!(movie.len(), 1);
+    assert_eq!((movie[0].layer_index, movie[0].node_index), (4, 4));
+    assert_eq!(movie[0].shader_key, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY);
 }
 
 #[test]
@@ -208,12 +265,13 @@ fn builds_evidence_complete_single_texture_draws() {
                     [0.0, 0.0, 0.0, 1.0],
                 ],
             },
+            [1920, 1080],
         ),
     )
     .unwrap();
     let textured = draws
         .iter()
-        .filter(|draw| draw.shader_key == FIRST_TEXTURED_FIXTURE_SIMPLE_KEY)
+        .filter(|draw| draw.shader_key == FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY)
         .collect::<Vec<_>>();
     assert!(!textured.is_empty());
     assert!(textured.iter().all(|draw| {
@@ -227,6 +285,7 @@ fn builds_evidence_complete_single_texture_draws() {
         .find(|draw| (draw.layer_index, draw.node_index) == (4, 4))
         .expect("advertise C_movie_dummy fixture draw");
     assert_eq!(fixture.texture_bindings[0].unwrap().texture_index, 5);
+    assert!(fixture.is_2d);
     assert_eq!(
         fixture.fixed_constants.vertex_c10_c13_projection_view.rows[0][0],
         2.0
@@ -1411,6 +1470,84 @@ fn parses_runtime_animation_slots_names_and_durations() {
     assert!(applied_common_channels > 0);
     eprintln!(
         "animations={animation_count}, empty MOT slots={empty_motion_slots}, automatic durations={automatic_durations}, applied common channels={applied_common_channels}"
+    );
+}
+
+#[test]
+fn parses_and_applies_scene_animation_sets() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut set_count = 0usize;
+    let mut slot_count = 0usize;
+    let mut enabled_slots = 0usize;
+    let mut named_slots = 0usize;
+    let mut unresolved_names = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        let textures = TextureList::from_file(&file)
+            .unwrap()
+            .unwrap_or(TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            });
+        let mut runtime = ProjectRuntime::new(&project)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+
+        for (scene_index, scene) in project.scenes.iter().enumerate() {
+            for (set_index, set) in scene.animation_sets.iter().enumerate() {
+                assert_eq!(set.slots.len(), set.declared_slot_count as usize);
+                assert!(set.slots.len() <= scene.layers.len());
+                for (layer_index, slot) in set.slots.iter().enumerate() {
+                    enabled_slots += usize::from(slot.is_enabled());
+                    named_slots += usize::from(!slot.animation_name.is_empty());
+                    unresolved_names += usize::from(
+                        !slot.animation_name.is_empty()
+                            && scene.layers[layer_index]
+                                .find_animation(&slot.animation_name)
+                                .is_none(),
+                    );
+                }
+                runtime
+                    .apply_animation_set(
+                        &project,
+                        &textures,
+                        scene_index,
+                        set_index,
+                        set.start_frame as f32,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{} SCN[{scene_index}]/ANMS[{set_index}]: {error}",
+                            path.display()
+                        )
+                    });
+                for (layer_index, slot) in set.slots.iter().enumerate() {
+                    assert_eq!(
+                        runtime.project_layers[scene_index][layer_index].enabled,
+                        slot.is_enabled()
+                    );
+                }
+                set_count += 1;
+                slot_count += set.slots.len();
+            }
+        }
+    }
+
+    assert!(set_count > 0);
+    assert!(slot_count > 0);
+    assert!(enabled_slots > 0);
+    assert!(named_slots > 0);
+    assert_eq!(unresolved_names, 0);
+    eprintln!(
+        "ANMS sets={set_count}, SANM slots={slot_count}, enabled={enabled_slots}, named={named_slots}"
     );
 }
 

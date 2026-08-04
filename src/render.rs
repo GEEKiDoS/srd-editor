@@ -590,21 +590,30 @@ pub struct CeylonSrdFixedShaderConstants {
     pub vertex_c4_c7: Matrix4x4,
     pub vertex_c8_fixed_param0: [f32; 4],
     pub vertex_c9_fixed_param1: [f32; 4],
+    pub vertex_c10_screen_param: [f32; 4],
     pub vertex_c10_c13_projection_view: Matrix4x4,
     pub pixel_c0_fixed_param0: [f32; 4],
 }
 
 impl CeylonSrdFixedShaderConstants {
-    /// Builds the fixed constants for a 2D SRD packet after it has reached a
-    /// concrete render target. `target_projection_view` is the target Camera
-    /// value supplied through `sea::AllEnvBasic::mtxPrjView`; it is not the
-    /// CAM record embedded in the SRD project.
-    pub fn initial_2d_for_target(target_projection_view: Matrix4x4) -> Self {
+    /// Builds both mutually exclusive c10 inputs used by the proven SRD quad
+    /// shader variants. A 2D draw uploads `screenParam = [width/2, height/2,
+    /// 0, 0]`; a 3D draw uploads the target Camera's Projection*View matrix.
+    pub fn initial_for_target(
+        target_projection_view: Matrix4x4,
+        target_screen_size: [u32; 2],
+    ) -> Self {
         Self {
             vertex_c0_c3_world: identity_matrix4x4_game(),
             vertex_c4_c7: identity_matrix4x4_game(),
             vertex_c8_fixed_param0: [0.0; 4],
             vertex_c9_fixed_param1: [0.0; 4],
+            vertex_c10_screen_param: [
+                target_screen_size[0] as f32 * 0.5,
+                target_screen_size[1] as f32 * 0.5,
+                0.0,
+                0.0,
+            ],
             vertex_c10_c13_projection_view: target_projection_view,
             pixel_c0_fixed_param0: [0.0, 0.0, 1.0, 0.0],
         }
@@ -664,6 +673,14 @@ impl CeylonDrawPacketPresetState {
         if requested_preset_id > 32 {
             self.flags_60 |= 0x20;
         }
+    }
+
+    /// Reproduces the bit update in `ceylon_submit_vertex_batch`: the boolean
+    /// captured by `srd_begin_quad_draw` becomes packet+0x60 bit 7 before the
+    /// ShapeEnv key is generated.
+    pub fn set_srd_quad_is_2d(&mut self, is_2d: bool) {
+        let encoded = u32::from(is_2d) << 7;
+        self.flags_60 ^= (self.flags_60 ^ encoded) & 0x80;
     }
 
     pub fn srd_quad_shader_key(self, texture_present: [bool; 3]) -> CeylonShaderKey {
@@ -1158,15 +1175,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_2d_fixed_shader_constants_match_the_packet_and_provider_chain() {
+    fn initial_fixed_shader_constants_include_both_proven_c10_sources() {
         let projection_view = Matrix4x4 {
             rows: [[2.0; 4]; 4],
         };
-        let constants = CeylonSrdFixedShaderConstants::initial_2d_for_target(projection_view);
+        let constants =
+            CeylonSrdFixedShaderConstants::initial_for_target(projection_view, [1920, 1080]);
         assert_eq!(constants.vertex_c0_c3_world, identity_matrix4x4_game());
         assert_eq!(constants.vertex_c4_c7, identity_matrix4x4_game());
         assert_eq!(constants.vertex_c8_fixed_param0, [0.0; 4]);
         assert_eq!(constants.vertex_c9_fixed_param1, [0.0; 4]);
+        assert_eq!(constants.vertex_c10_screen_param, [960.0, 540.0, 0.0, 0.0]);
         assert_eq!(constants.vertex_c10_c13_projection_view, projection_view);
         assert_eq!(constants.pixel_c0_fixed_param0, [0.0, 0.0, 1.0, 0.0]);
     }
@@ -1359,6 +1378,20 @@ mod tests {
         assert_eq!((key.low >> 13) & 3, 2);
         assert_eq!((key.low >> 15) & 0x1f, 14);
         assert_eq!((key.low >> 20) & 0x3f, 3);
+
+        let bits_3d = key.srd_simple_shader_direct_contributions().unwrap();
+        let key_3d = bits_3d.compact_key();
+        assert!(!bits_3d.contains(2));
+        packet.set_srd_quad_is_2d(true);
+        assert_eq!(packet.flags_60 & 0x80, 0x80);
+        let key_2d = packet.srd_quad_shader_key([true, true, false]);
+        assert_eq!(key_2d.low ^ key.low, 1 << 3);
+        let bits_2d = key_2d.srd_simple_shader_direct_contributions().unwrap();
+        assert_ne!(bits_2d.compact_key(), key_3d);
+        assert!(bits_2d.contains(2));
+        packet.set_srd_quad_is_2d(false);
+        assert_eq!(packet.flags_60 & 0x80, 0);
+        assert_eq!(packet.srd_quad_shader_key([true, true, false]), key);
     }
 
     #[test]

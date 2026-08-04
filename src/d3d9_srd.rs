@@ -37,9 +37,9 @@ pub struct SrdDx9ExternalContext {
 }
 
 impl SrdDx9ExternalContext {
-    /// Explicit context used by the standalone smoke harness. This is not
-    /// inferred from SRD and is not claimed to be every game caller's state.
-    pub const fn smoke_without_scissor() -> Self {
+    /// Explicit host input stating that the external material scissor is
+    /// disabled. Callers must choose this state; it is not inferred from SRD.
+    pub const fn without_scissor() -> Self {
         Self {
             scissor: CeylonRenderScissorState {
                 enabled: false,
@@ -51,6 +51,12 @@ impl SrdDx9ExternalContext {
                 },
             },
         }
+    }
+
+    /// Explicit context used by the standalone smoke harness. This is not
+    /// inferred from SRD and is not claimed to be every game caller's state.
+    pub const fn smoke_without_scissor() -> Self {
+        Self::without_scissor()
     }
 }
 
@@ -321,15 +327,23 @@ impl SrdDx9Renderer {
                 constants.vertex_c9_fixed_param1.as_ptr(),
                 1,
             )?;
-            self.device.SetVertexShaderConstantF(
-                10,
-                constants
-                    .vertex_c10_c13_projection_view
-                    .rows
-                    .as_ptr()
-                    .cast(),
-                4,
-            )?;
+            if draw.is_2d {
+                self.device.SetVertexShaderConstantF(
+                    10,
+                    constants.vertex_c10_screen_param.as_ptr(),
+                    1,
+                )?;
+            } else {
+                self.device.SetVertexShaderConstantF(
+                    10,
+                    constants
+                        .vertex_c10_c13_projection_view
+                        .rows
+                        .as_ptr()
+                        .cast(),
+                    4,
+                )?;
+            }
             self.device
                 .SetPixelShaderConstantF(0, constants.pixel_c0_fixed_param0.as_ptr(), 1)?;
 

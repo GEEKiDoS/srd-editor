@@ -30,6 +30,7 @@ SRD 加载路径 `sub_AAAFE0` (`0xAAAFE0`) 遍历上述 `PROJ` 场景数组，�
 1. 把解析 SCN 指针写到运行时条目 `+0x04`；
 2. 把 SCN `char[0x40]` 名称复制为运行时条目 `+0x0C` 的字符串；
 3. 遍历 SCN `+0x44/+0x48` 的 LAYR 数组，逐层建立运行时层并保存到条目 `+0x24` 的向量。
+4. 遍历 SCN `+0x54/+0x58` 的 ANMS 数组，建立 `surfride::SrAnimationSet` 并保存到条目 `+0x30` 的向量；详见 [`scene-animation-sets.md`](scene-animation-sets.md)。
 
 这些条目被加入 `SrPlayer::Impl+0x294`。`srd_player_get_runtime_scene_table` (`0xAAAFA0`) 直接返回这一地址；多个公开句柄解析函数也以它作为最高层场景索引表。
 
@@ -55,6 +56,7 @@ Rust 现在实现：
 - `SRFF -> SRCK -> PROJ -> SCN  -> LAYR` 的已证明层级；
 - PROJ/SCN 声明数量与直接子块数量验证；
 - SCN 64 字节名称和直接 LAYR 表；
+- SCN 的直接 ANMS 表及其 SANM 逐层动画槽；
 - `Project::resolve_reference` 的首次、完整、区分大小写的两级匹配。
 
 本地 53 个 SRD 共解析出 192 个 `SCN `；1090 个 CRFD 全部在其所属文件的项目场景表内解析到 SCN 和 LAYR，未使用任何外部路径回退。

@@ -16,6 +16,32 @@ const COMPOSITION_WINDOW: &CStr = c"Composition";
 const PROPERTIES_WINDOW: &CStr = c"Properties";
 const TIMELINE_WINDOW: &CStr = c"Layers & Timeline";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewTargetSelection {
+    Unselected,
+    MainScene,
+    BgScene,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewScissorSelection {
+    Unselected,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewHostSettings {
+    pub scene_index: usize,
+    pub animation_set_index: usize,
+    pub animation_frame: i32,
+    pub target: PreviewTargetSelection,
+    pub present_width: i32,
+    pub present_height: i32,
+    pub screen_width: i32,
+    pub screen_height: i32,
+    pub scissor: PreviewScissorSelection,
+}
+
 pub struct EditorWorkspace {
     build_default_layout: bool,
     frame: i32,
@@ -23,10 +49,17 @@ pub struct EditorWorkspace {
     document: Option<EditorDocument>,
     load_error: Option<String>,
     selected_scene: usize,
+    selected_animation_set: usize,
     selected_layer: usize,
     selected_node: Option<usize>,
     composition_texture: Option<(TextureId, [u32; 2])>,
     composition_unavailable_reason: Option<String>,
+    preview_target: PreviewTargetSelection,
+    preview_present_width: i32,
+    preview_present_height: i32,
+    preview_screen_width: i32,
+    preview_screen_height: i32,
+    preview_scissor: PreviewScissorSelection,
 }
 
 impl EditorWorkspace {
@@ -45,10 +78,17 @@ impl EditorWorkspace {
             document,
             load_error,
             selected_scene: 0,
+            selected_animation_set: 0,
             selected_layer: 0,
             selected_node: None,
             composition_texture: None,
             composition_unavailable_reason: None,
+            preview_target: PreviewTargetSelection::Unselected,
+            preview_present_width: 0,
+            preview_present_height: 0,
+            preview_screen_width: 0,
+            preview_screen_height: 0,
+            preview_scissor: PreviewScissorSelection::Unselected,
         }
     }
 
@@ -93,6 +133,52 @@ impl EditorWorkspace {
         self.composition_unavailable_reason = reason;
     }
 
+    pub fn preview_host_settings(&self) -> PreviewHostSettings {
+        PreviewHostSettings {
+            scene_index: self.selected_scene,
+            animation_set_index: self.selected_animation_set,
+            animation_frame: self.frame,
+            target: self.preview_target,
+            present_width: self.preview_present_width,
+            present_height: self.preview_present_height,
+            screen_width: self.preview_screen_width,
+            screen_height: self.preview_screen_height,
+            scissor: self.preview_scissor,
+        }
+    }
+
+    pub fn validate_preview_host_settings(&self) -> Result<PreviewHostSettings, String> {
+        if self.document.is_none() {
+            return Err("No SRD loaded".to_string());
+        }
+        let settings = self.preview_host_settings();
+        if settings.target == PreviewTargetSelection::Unselected {
+            return Err("Select a Chusan target profile".to_string());
+        }
+        if settings.present_width <= 0 || settings.present_height <= 0 {
+            return Err("Enter the target present width and height".to_string());
+        }
+        if settings.screen_width <= 0 || settings.screen_height <= 0 {
+            return Err("Enter the target screenParam source width and height".to_string());
+        }
+        if settings.scissor == PreviewScissorSelection::Unselected {
+            return Err("Select the external material scissor state".to_string());
+        }
+        let scene = self
+            .document
+            .as_ref()
+            .and_then(|document| document.project.scenes.get(settings.scene_index))
+            .ok_or_else(|| "Select a valid SRD scene".to_string())?;
+        if scene
+            .animation_sets
+            .get(settings.animation_set_index)
+            .is_none()
+        {
+            return Err("Select a scene animation set".to_string());
+        }
+        Ok(settings)
+    }
+
     fn draw_menu(&mut self, ui: &Ui) {
         ui.main_menu_bar(|| {
             ui.menu("File", || {
@@ -113,7 +199,9 @@ impl EditorWorkspace {
                     self.playing = !self.playing;
                 }
                 if ui.menu_item("Go to start") {
-                    self.frame = 0;
+                    self.frame = self
+                        .selected_animation_set()
+                        .map_or(0, |set| set.start_frame);
                 }
             });
         });
@@ -165,20 +253,40 @@ impl EditorWorkspace {
                 .build()
             {
                 self.selected_scene = scene_index;
+                self.selected_animation_set = 0;
                 self.selected_layer = 0;
                 self.selected_node = None;
+                self.frame = scene
+                    .animation_sets
+                    .first()
+                    .map_or(0, |set| set.start_frame);
             }
             if self.selected_scene == scene_index {
                 for (layer_index, layer) in scene.layers.iter().enumerate() {
                     let layer_name = display_srd_name(&layer.name);
+                    let animation_slot = scene
+                        .animation_sets
+                        .get(self.selected_animation_set)
+                        .and_then(|set| set.slots.get(layer_index));
+                    let state = animation_slot
+                        .map_or("base", |slot| if slot.is_enabled() { "on" } else { "off" });
+                    let animation_name = animation_slot
+                        .filter(|slot| !slot.animation_name.is_empty())
+                        .map(|slot| display_srd_name(&slot.animation_name))
+                        .unwrap_or_default();
                     if ui
-                        .selectable_config(format!("    Layer {layer_index}: {layer_name}"))
+                        .selectable_config(format!(
+                            "    [{state}] Layer {layer_index}: {layer_name} {animation_name}"
+                        ))
                         .selected(self.selected_layer == layer_index)
                         .build()
                     {
                         self.selected_layer = layer_index;
                         self.selected_node = None;
-                        self.frame = 0;
+                        self.frame = scene
+                            .animation_sets
+                            .get(self.selected_animation_set)
+                            .map_or(0, |set| set.start_frame);
                     }
                 }
             }
@@ -233,8 +341,101 @@ impl EditorWorkspace {
         }
     }
 
-    fn draw_properties(&self, ui: &Ui) {
+    fn draw_properties(&mut self, ui: &Ui) {
         ui.text_disabled("PROPERTIES");
+        ui.separator();
+        ui.text_disabled("GAME HOST PREVIEW");
+        if let Some(animation_sets) = self.selected_scene().map(|scene| {
+            scene
+                .animation_sets
+                .iter()
+                .enumerate()
+                .map(|(index, set)| {
+                    (
+                        format!("{index}: {}", display_srd_name(&set.name)),
+                        set.start_frame,
+                        set.runtime_duration,
+                    )
+                })
+                .collect::<Vec<_>>()
+        }) {
+            let animation_set_names = animation_sets
+                .iter()
+                .map(|(name, _, _)| name.clone())
+                .collect::<Vec<_>>();
+            let animation_set_labels = animation_set_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !animation_set_labels.is_empty() {
+                let mut animation_set_index = self
+                    .selected_animation_set
+                    .min(animation_set_labels.len() - 1);
+                self.selected_animation_set = animation_set_index;
+                if ui.combo_simple_string(
+                    "Animation set",
+                    &mut animation_set_index,
+                    &animation_set_labels,
+                ) {
+                    self.selected_animation_set = animation_set_index;
+                    self.frame = animation_sets[animation_set_index].1;
+                }
+                let start_frame = animation_sets[self.selected_animation_set].1;
+                let runtime_duration = animation_sets[self.selected_animation_set].2;
+                ui.text(format!(
+                    "ANMS start / duration: {} / {}",
+                    start_frame, runtime_duration
+                ));
+            } else {
+                ui.text_colored([0.92, 0.68, 0.25, 1.0], "Scene has no ANMS entries");
+            }
+        }
+        let mut target_index = match self.preview_target {
+            PreviewTargetSelection::Unselected => 0,
+            PreviewTargetSelection::MainScene => 1,
+            PreviewTargetSelection::BgScene => 2,
+        };
+        if ui.combo_simple_string(
+            "Target",
+            &mut target_index,
+            &["Not selected", "MainScene", "BgScene"],
+        ) {
+            self.preview_target = match target_index {
+                1 => PreviewTargetSelection::MainScene,
+                2 => PreviewTargetSelection::BgScene,
+                _ => PreviewTargetSelection::Unselected,
+            };
+        }
+        ui.input_int("Present width", &mut self.preview_present_width)
+            .build();
+        ui.input_int("Present height", &mut self.preview_present_height)
+            .build();
+        ui.input_int("Target screen width", &mut self.preview_screen_width)
+            .build();
+        ui.input_int("Target screen height", &mut self.preview_screen_height)
+            .build();
+        ui.text_wrapped(
+            "Target screen size drives ShapeEnv2D screenParam and is intentionally independent from the Camera present size.",
+        );
+        let mut scissor_index = match self.preview_scissor {
+            PreviewScissorSelection::Unselected => 0,
+            PreviewScissorSelection::Disabled => 1,
+        };
+        if ui.combo_simple_string(
+            "External scissor",
+            &mut scissor_index,
+            &["Not selected", "Disabled"],
+        ) {
+            self.preview_scissor = match scissor_index {
+                1 => PreviewScissorSelection::Disabled,
+                _ => PreviewScissorSelection::Unselected,
+            };
+        }
+        ui.text_wrapped("AdvertiseLogo FirstCalcMatrix: identity (game binary evidence)");
+        match self.validate_preview_host_settings() {
+            Ok(_) => ui.text_colored([0.35, 0.82, 0.48, 1.0], "Host inputs complete"),
+            Err(reason) => ui.text_colored([0.92, 0.68, 0.25, 1.0], reason),
+        }
         ui.separator();
         if let Some(document) = &self.document {
             let camera = document.project.camera;
@@ -285,13 +486,27 @@ impl EditorWorkspace {
         }
         ui.same_line();
         if ui.small_button("Start") {
-            self.frame = 0;
+            self.frame = self
+                .selected_animation_set()
+                .map_or(0, |set| set.start_frame);
         }
         ui.same_line();
-        let duration = self.selected_layer().map_or(300, layer_duration).max(1);
+        let (start_frame, runtime_duration) = self
+            .selected_animation_set()
+            .map(|set| {
+                (
+                    set.start_frame,
+                    set.runtime_duration.max(set.start_frame + 1),
+                )
+            })
+            .unwrap_or_else(|| {
+                let duration = self.selected_layer().map_or(300, layer_duration).max(1);
+                (0, duration)
+            });
         ui.set_next_item_width(130.0);
-        ui.slider_config("Frame", 0, duration)
+        ui.slider_config("Frame", start_frame, runtime_duration)
             .build(&mut self.frame);
+        let duration = runtime_duration.max(1);
         ui.separator();
 
         let columns = [
@@ -324,6 +539,11 @@ impl EditorWorkspace {
             ui.table_setup_scroll_freeze(1, 1);
             ui.table_headers_row();
 
+            let selected_animation_name = self
+                .selected_animation_set()
+                .and_then(|set| set.slots.get(self.selected_layer))
+                .filter(|slot| !slot.animation_name.is_empty())
+                .map(|slot| slot.animation_name.clone());
             let Some(layer) = self.selected_layer() else {
                 ui.table_next_row();
                 ui.table_next_column();
@@ -348,7 +568,14 @@ impl EditorWorkspace {
                     clicked_node = Some(node_index);
                 }
                 ui.table_next_column();
-                draw_node_timeline(ui, layer, node_index, duration, self.frame);
+                draw_node_timeline(
+                    ui,
+                    layer,
+                    node_index,
+                    duration,
+                    self.frame,
+                    selected_animation_name.as_deref(),
+                );
             }
             if let Some(node_index) = clicked_node {
                 self.selected_node = Some(node_index);
@@ -366,6 +593,12 @@ impl EditorWorkspace {
             .project
             .scenes
             .get(self.selected_scene)
+    }
+
+    fn selected_animation_set(&self) -> Option<&crate::scene::AnimationSetDefinition> {
+        self.selected_scene()?
+            .animation_sets
+            .get(self.selected_animation_set)
     }
 
     fn selected_layer_and_node(&self) -> Option<(&Layer, usize)> {
@@ -399,7 +632,14 @@ fn cast_type_name(cast_type: Option<u8>) -> &'static str {
     }
 }
 
-fn draw_node_timeline(ui: &Ui, layer: &Layer, node_index: usize, duration: i32, frame: i32) {
+fn draw_node_timeline(
+    ui: &Ui,
+    layer: &Layer,
+    node_index: usize,
+    duration: i32,
+    frame: i32,
+    animation_name: Option<&[u8]>,
+) {
     let origin = ui.cursor_screen_pos();
     let size = [
         ui.content_region_avail()[0].max(360.0),
@@ -414,7 +654,10 @@ fn draw_node_timeline(ui: &Ui, layer: &Layer, node_index: usize, duration: i32, 
             [0.28, 0.30, 0.34, 1.0],
         )
         .build();
-    if let Some(animation) = layer.animations.first() {
+    if let Some(animation) = animation_name
+        .and_then(|name| layer.find_animation(name))
+        .map(|(_, animation)| animation)
+    {
         for motion in animation
             .motions
             .iter()

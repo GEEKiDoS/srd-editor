@@ -14,13 +14,18 @@ use winit::window::{Window, WindowId};
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
 use crate::d3d9_texture::{SrdD3d9TextureSet, audit_dds_device_uploads};
-use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
+use crate::editor_workspace::{
+    EditorWorkspace, PreviewHostSettings, PreviewScissorSelection, PreviewTargetSelection,
+    apply_editor_style,
+};
+use crate::game_host::{CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_MAIN_SCENE};
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::shader_bytecode::{
-    FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
+    FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use crate::srd_draw::{
-    EvidenceCompleteSrdDraw, SrdHostDrawContext, build_evidence_complete_initial_image_draws,
+    EvidenceCompleteSrdDraw, SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
+    build_evidence_complete_initial_image_draws,
 };
 use crate::transform::Affine3x4;
 
@@ -28,6 +33,7 @@ const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let advertise_logo_host = parse_advertise_logo_host_argument(&arguments)?;
     let srd_draw_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-draw-smoke");
@@ -54,6 +60,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         srd_draw_smoke,
         srd_texture_smoke,
         dds_device_audit,
+        advertise_logo_host,
         document_path,
     );
     event_loop.run_app(&mut application)?;
@@ -70,7 +77,25 @@ struct EditorApplication {
     srd_draw_smoke: bool,
     srd_texture_smoke: bool,
     dds_device_audit: bool,
+    advertise_logo_host: Option<AdvertiseLogoHostArgument>,
     document_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdvertiseLogoHostArgument {
+    target: PreviewTargetSelection,
+    present_width: u32,
+    present_height: u32,
+    screen_width: u32,
+    screen_height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EditorSmokeOptions {
+    srd_draw: bool,
+    srd_texture: bool,
+    dds_device_audit: bool,
+    advertise_logo_host: Option<AdvertiseLogoHostArgument>,
 }
 
 struct EditorWindow {
@@ -83,6 +108,7 @@ struct EditorWindow {
     srd_textures: Option<SrdD3d9TextureSet>,
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
     composition_texture_id: Option<TextureId>,
+    applied_preview_host: Option<PreviewHostSettings>,
     verify_srd_pixels: bool,
     verify_textured_pixels: bool,
     verify_hidpi: bool,
@@ -97,6 +123,7 @@ impl EditorApplication {
         srd_draw_smoke: bool,
         srd_texture_smoke: bool,
         dds_device_audit: bool,
+        advertise_logo_host: Option<AdvertiseLogoHostArgument>,
         document_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -106,6 +133,7 @@ impl EditorApplication {
             srd_draw_smoke,
             srd_texture_smoke,
             dds_device_audit,
+            advertise_logo_host,
             document_path,
         }
     }
@@ -116,11 +144,15 @@ impl EditorWindow {
         window: Window,
         d3d9: D3d9ExDevice,
         smoke_test: bool,
-        srd_draw_smoke: bool,
-        srd_texture_smoke: bool,
-        dds_device_audit: bool,
+        smoke: EditorSmokeOptions,
         document_path: Option<PathBuf>,
     ) -> Result<Self, String> {
+        let EditorSmokeOptions {
+            srd_draw: srd_draw_smoke,
+            srd_texture: srd_texture_smoke,
+            dds_device_audit,
+            advertise_logo_host,
+        } = smoke;
         let mut imgui = Context::create();
         imgui.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
         let ini_path = if smoke_test { None } else { editor_ini_path() };
@@ -158,19 +190,65 @@ impl EditorWindow {
         let draw_result = if require_srd_draw {
             workspace.document().and_then(|document| {
                 let scene = document.project.scenes.first()?;
-                eprintln!(
-                    "SRD smoke host=diagnostic-project-camera first_calc=identity target_width={}",
-                    scene.width.max(1.0)
-                );
-                let host =
-                    diagnostic_project_camera_smoke_host(&document.project, scene.width.max(1.0));
-                Some((
+                let host = if let Some(host) = advertise_logo_host {
+                    let target = match host.target {
+                        PreviewTargetSelection::MainScene => CHUSAN_MAIN_SCENE,
+                        PreviewTargetSelection::BgScene => CHUSAN_BG_SCENE,
+                        PreviewTargetSelection::Unselected => unreachable!(),
+                    };
+                    eprintln!(
+                        "SRD smoke host=AdvertiseLogo/{} first_calc=identity present={}x{} screen={}x{}",
+                        target.name,
+                        host.present_width,
+                        host.present_height,
+                        host.screen_width,
+                        host.screen_height
+                    );
+                    CHUSAN_ADVERTISE_LOGO_PLAYER
+                        .host_context_for_target(
+                            target,
+                            host.present_width,
+                            host.present_height,
+                            [host.screen_width, host.screen_height],
+                        )
+                        .expect("validated AdvertiseLogo host dimensions")
+                } else {
+                    eprintln!(
+                        "SRD smoke host=diagnostic-project-camera first_calc=identity target_width={}",
+                        scene.width.max(1.0)
+                    );
+                    diagnostic_project_camera_smoke_host(
+                        &document.project,
+                        scene.width.max(1.0),
+                        [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
+                    )
+                };
+                let draws = if srd_texture_smoke {
                     build_evidence_complete_initial_image_draws(
                         &document.project,
                         &document.textures,
                         0,
                         host,
-                    ),
+                    )
+                } else {
+                    let animation_set = scene.animation_sets.first().ok_or_else(|| {
+                        crate::srd_draw::SrdDrawError(
+                            "SRD draw smoke scene has no ANMS entry".to_string(),
+                        )
+                    });
+                    animation_set.and_then(|animation_set| {
+                        build_evidence_complete_animation_set_image_draws(
+                            &document.project,
+                            &document.textures,
+                            0,
+                            0,
+                            animation_set.runtime_duration as f32,
+                            host,
+                        )
+                    })
+                };
+                Some((
+                    draws,
                     [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
                 ))
             })
@@ -201,13 +279,19 @@ impl EditorWindow {
         if srd_texture_smoke {
             srd_draws.retain(|draw| {
                 (draw.layer_index, draw.node_index) == (4, 4)
-                    && draw.shader_key == FIRST_TEXTURED_FIXTURE_SIMPLE_KEY
+                    && draw.shader_key == FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY
             });
             if srd_draws.len() != 1 {
                 return Err(format!(
-                    "textured SRD smoke expected exactly layer 4/node 4 with shader key AAEBABBAABGAAAAAAA, found {} draws",
+                    "textured SRD smoke expected exactly layer 4/node 4 with shader key EAEBABBAABGAAAAAAA, found {} draws",
                     srd_draws.len()
                 ));
+            }
+            if advertise_logo_host.is_some() {
+                eprintln!(
+                    "AdvertiseLogo textured smoke vertices={:?}",
+                    srd_draws[0].quad.vertices.map(|vertex| vertex.position)
+                );
             }
         }
         let required_texture_indices = srd_draws
@@ -263,6 +347,7 @@ impl EditorWindow {
             srd_textures,
             srd_draws,
             composition_texture_id,
+            applied_preview_host: None,
             verify_srd_pixels: srd_draw_smoke,
             verify_textured_pixels: srd_texture_smoke,
             verify_hidpi: smoke_test,
@@ -336,6 +421,9 @@ impl EditorWindow {
         self.platform
             .prepare_frame(self.imgui.io_mut(), &self.window)
             .map_err(|error| error.to_string())?;
+        if !self.verify_srd_pixels && !self.verify_textured_pixels {
+            self.sync_preview_host();
+        }
         if self.verify_hidpi {
             validate_hidpi_frame_contract(&self.window, &self.platform, &self.imgui)?;
         }
@@ -347,11 +435,16 @@ impl EditorWindow {
         self.d3d9
             .clear_and_begin_scene(CLEAR_COLOR_ARGB)
             .map_err(|error| error.to_string())?;
+        let composition_external = if self.verify_srd_pixels || self.verify_textured_pixels {
+            SrdDx9ExternalContext::smoke_without_scissor()
+        } else {
+            SrdDx9ExternalContext::without_scissor()
+        };
         if let Some(renderer) = &mut self.srd_renderer {
             renderer
                 .render_to_composition(
                     &self.srd_draws,
-                    SrdDx9ExternalContext::smoke_without_scissor(),
+                    composition_external,
                     self.srd_textures.as_ref(),
                     CLEAR_COLOR_ARGB,
                 )
@@ -374,25 +467,38 @@ impl EditorWindow {
                 .srd_renderer
                 .as_ref()
                 .ok_or_else(|| "SRD draw smoke lost the composition renderer".to_string())?;
-            let composition_size = renderer
-                .composition_size()
-                .ok_or_else(|| "SRD draw smoke lost the composition target".to_string())?;
-            let composition_pixel = renderer
-                .read_composition_pixel(composition_size[0] / 2 + 1, composition_size[1] / 4)
+            let readback = renderer
+                .read_composition_bgra()
                 .map_err(|error| format!("SRD composition readback failed: {error}"))?;
-            if composition_pixel[..3] != [0, 0, 0] {
-                return Err(format!(
-                    "SRD composition expected a black identity-host sample pixel, got raw BGRA/XRGB {composition_pixel:02X?}"
-                ));
+            let diagnostic = analyze_composition_readback(
+                readback.width,
+                readback.height,
+                &readback.bgra,
+                [0x26, 0x22, 0x20],
+            )?;
+            if diagnostic.changed_pixels == 0 {
+                return Err(
+                    "SRD draw did not change any Composition pixel from the clear color".into(),
+                );
             }
+            eprintln!(
+                "SRD composition pixels={} white_pixels={} bbox=({}, {})..({}, {}) fnv1a64={:016X}",
+                diagnostic.changed_pixels,
+                diagnostic.white_pixels,
+                diagnostic.min_x,
+                diagnostic.min_y,
+                diagnostic.max_x,
+                diagnostic.max_y,
+                diagnostic.fnv1a64,
+            );
             let size = self.window.inner_size();
             let pixel = self
                 .d3d9
                 .read_backbuffer_pixel(size.width / 2 + 1, size.height / 4)
                 .map_err(|error| format!("SRD backbuffer readback failed: {error}"))?;
-            if pixel[..3] != [0, 0, 0] {
+            if pixel[..3] == [0x26, 0x22, 0x20] {
                 return Err(format!(
-                    "SRD draw smoke expected a black identity-host sample pixel, got raw BGRA/XRGB {pixel:02X?}"
+                    "SRD direct draw did not change the diagnostic backbuffer sample from clear; raw BGRA/XRGB {pixel:02X?}"
                 ));
             }
             self.d3d9.begin_scene().map_err(|error| error.to_string())?;
@@ -418,8 +524,9 @@ impl EditorWindow {
                 );
             }
             eprintln!(
-                "textured SRD composition pixels={} bbox=({}, {})..({}, {}) fnv1a64={:016X}",
+                "textured SRD composition pixels={} white_pixels={} bbox=({}, {})..({}, {}) fnv1a64={:016X}",
                 diagnostic.changed_pixels,
+                diagnostic.white_pixels,
                 diagnostic.min_x,
                 diagnostic.min_y,
                 diagnostic.max_x,
@@ -439,6 +546,165 @@ impl EditorWindow {
         render_result?;
         present_result
     }
+
+    fn sync_preview_host(&mut self) {
+        let settings = self.workspace.preview_host_settings();
+        if self.applied_preview_host == Some(settings) {
+            return;
+        }
+        self.applied_preview_host = Some(settings);
+        self.clear_preview_resources();
+
+        let settings = match self.workspace.validate_preview_host_settings() {
+            Ok(settings) => settings,
+            Err(reason) => {
+                self.workspace
+                    .set_composition_unavailable_reason(Some(reason));
+                return;
+            }
+        };
+        if settings.scissor != PreviewScissorSelection::Disabled {
+            self.workspace.set_composition_unavailable_reason(Some(
+                "The selected external scissor mode is not implemented".to_string(),
+            ));
+            return;
+        }
+
+        if let Err(error) = self.rebuild_preview_resources(settings) {
+            self.clear_preview_resources();
+            self.workspace
+                .set_composition_unavailable_reason(Some(error));
+        }
+    }
+
+    fn clear_preview_resources(&mut self) {
+        if let Some(texture_id) = self.composition_texture_id.take() {
+            self.imgui_renderer.textures_mut().remove(texture_id);
+        }
+        self.workspace.set_composition_texture(None);
+        self.srd_renderer = None;
+        self.srd_textures = None;
+        self.srd_draws.clear();
+    }
+
+    fn rebuild_preview_resources(&mut self, settings: PreviewHostSettings) -> Result<(), String> {
+        let target = match settings.target {
+            PreviewTargetSelection::MainScene => CHUSAN_MAIN_SCENE,
+            PreviewTargetSelection::BgScene => CHUSAN_BG_SCENE,
+            PreviewTargetSelection::Unselected => {
+                return Err("Select a Chusan target profile".to_string());
+            }
+        };
+        let present_width = u32::try_from(settings.present_width)
+            .map_err(|_| "Present width must be positive".to_string())?;
+        let present_height = u32::try_from(settings.present_height)
+            .map_err(|_| "Present height must be positive".to_string())?;
+        let screen_width = u32::try_from(settings.screen_width)
+            .map_err(|_| "Target screen width must be positive".to_string())?;
+        let screen_height = u32::try_from(settings.screen_height)
+            .map_err(|_| "Target screen height must be positive".to_string())?;
+        let host = CHUSAN_ADVERTISE_LOGO_PLAYER
+            .host_context_for_target(
+                target,
+                present_width,
+                present_height,
+                [screen_width, screen_height],
+            )
+            .map_err(|error| error.to_string())?;
+
+        let document = self
+            .workspace
+            .document()
+            .ok_or_else(|| "No SRD loaded".to_string())?;
+        let scene = document
+            .project
+            .scenes
+            .get(settings.scene_index)
+            .ok_or_else(|| format!("Scene {} is no longer available", settings.scene_index))?;
+        let composition_size = checked_scene_composition_size(scene.width, scene.height)?;
+        scene
+            .animation_sets
+            .get(settings.animation_set_index)
+            .ok_or_else(|| {
+                format!(
+                    "Animation set {} is no longer available",
+                    settings.animation_set_index
+                )
+            })?;
+        let draws = build_evidence_complete_animation_set_image_draws(
+            &document.project,
+            &document.textures,
+            settings.scene_index,
+            settings.animation_set_index,
+            settings.animation_frame as f32,
+            host,
+        )
+        .map_err(|error| error.to_string())?;
+        if draws.is_empty() {
+            return Err("No evidence-complete GPU draw for this scene".to_string());
+        }
+        let required_texture_indices = draws
+            .iter()
+            .flat_map(|draw| draw.texture_bindings.iter().flatten())
+            .map(|binding| binding.texture_index)
+            .collect::<Vec<_>>();
+        let textures = if required_texture_indices.is_empty() {
+            None
+        } else {
+            let game_data_root = find_game_data_root(&document.path).ok_or_else(|| {
+                format!(
+                    "Could not locate the game data root above {}",
+                    document.path.display()
+                )
+            })?;
+            Some(
+                SrdD3d9TextureSet::load_required(
+                    self.d3d9.device(),
+                    &game_data_root,
+                    &document.textures,
+                    required_texture_indices,
+                )
+                .map_err(|error| format!("Failed to load SRD textures: {error}"))?,
+            )
+        };
+
+        let mut renderer = SrdDx9Renderer::new(self.d3d9.device())
+            .map_err(|error| format!("Failed to create the SRD D3D9 renderer: {error}"))?;
+        renderer
+            .configure_composition_target(composition_size[0], composition_size[1])
+            .map_err(|error| format!("Failed to create SRD Composition target: {error}"))?;
+        let texture_id = self.imgui_renderer.textures_mut().insert(
+            renderer
+                .composition_texture()
+                .map_err(|error| error.to_string())?,
+        );
+        self.workspace
+            .set_composition_texture(Some((texture_id, composition_size)));
+        self.composition_texture_id = Some(texture_id);
+        self.srd_renderer = Some(renderer);
+        self.srd_textures = textures;
+        self.srd_draws = draws;
+        Ok(())
+    }
+}
+
+fn checked_scene_composition_size(width: f32, height: f32) -> Result<[u32; 2], String> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err(format!(
+            "Scene Composition size must be finite and positive, got {width}x{height}"
+        ));
+    }
+    if width.fract() != 0.0 || height.fract() != 0.0 {
+        return Err(format!(
+            "Fractional Scene Composition sizes are not yet evidence-complete: {width}x{height}"
+        ));
+    }
+    if width > u32::MAX as f32 || height > u32::MAX as f32 {
+        return Err(format!(
+            "Scene Composition size exceeds D3D9 dimensions: {width}x{height}"
+        ));
+    }
+    Ok([width as u32, height as u32])
 }
 
 /// Preserves the existing GPU smoke as an explicit diagnostic host. This is
@@ -447,6 +713,7 @@ impl EditorWindow {
 fn diagnostic_project_camera_smoke_host(
     project: &crate::scene::Project,
     target_width: f32,
+    target_screen_size: [u32; 2],
 ) -> SrdHostDrawContext {
     SrdHostDrawContext::new(
         Affine3x4::IDENTITY,
@@ -454,7 +721,72 @@ fn diagnostic_project_camera_smoke_host(
             .camera
             .runtime_matrices(target_width)
             .projection_view,
+        target_screen_size,
     )
+}
+
+fn parse_advertise_logo_host_argument(
+    arguments: &[String],
+) -> Result<Option<AdvertiseLogoHostArgument>, String> {
+    let Some(value) = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--advertise-logo-host="))
+    else {
+        return Ok(None);
+    };
+    let mut fields = value.split('@');
+    let target = fields.next().unwrap_or_default();
+    let present_size = fields.next().ok_or_else(|| {
+        "--advertise-logo-host must use TARGET@PRESENT_WIDTHxPRESENT_HEIGHT@SCREEN_WIDTHxSCREEN_HEIGHT, for example MainScene@1080x1920@1920x1080".to_string()
+    })?;
+    let screen_size = fields.next().ok_or_else(|| {
+        "--advertise-logo-host requires an explicit screenParam source size after the present size"
+            .to_string()
+    })?;
+    if fields.next().is_some() {
+        return Err("--advertise-logo-host contains too many @-separated fields".to_string());
+    }
+    let target = match target {
+        "MainScene" => PreviewTargetSelection::MainScene,
+        "BgScene" => PreviewTargetSelection::BgScene,
+        _ => {
+            return Err(format!(
+                "unsupported AdvertiseLogo target {target:?}; expected MainScene or BgScene"
+            ));
+        }
+    };
+    let (width, height) = present_size.split_once('x').ok_or_else(|| {
+        "--advertise-logo-host present size must use WIDTHxHEIGHT, for example 1080x1920"
+            .to_string()
+    })?;
+    let present_width = width
+        .parse::<u32>()
+        .map_err(|_| format!("invalid AdvertiseLogo present width {width:?}"))?;
+    let present_height = height
+        .parse::<u32>()
+        .map_err(|_| format!("invalid AdvertiseLogo present height {height:?}"))?;
+    if present_width == 0 || present_height == 0 {
+        return Err("AdvertiseLogo present dimensions must be non-zero".to_string());
+    }
+    let (width, height) = screen_size.split_once('x').ok_or_else(|| {
+        "--advertise-logo-host screen size must use WIDTHxHEIGHT, for example 1920x1080".to_string()
+    })?;
+    let screen_width = width
+        .parse::<u32>()
+        .map_err(|_| format!("invalid AdvertiseLogo screen width {width:?}"))?;
+    let screen_height = height
+        .parse::<u32>()
+        .map_err(|_| format!("invalid AdvertiseLogo screen height {height:?}"))?;
+    if screen_width == 0 || screen_height == 0 {
+        return Err("AdvertiseLogo screen dimensions must be non-zero".to_string());
+    }
+    Ok(Some(AdvertiseLogoHostArgument {
+        target,
+        present_width,
+        present_height,
+        screen_width,
+        screen_height,
+    }))
 }
 
 fn editor_ini_path() -> Option<PathBuf> {
@@ -525,6 +857,7 @@ fn validate_hidpi_frame_contract(
 
 struct CompositionReadbackDiagnostic {
     changed_pixels: usize,
+    white_pixels: usize,
     min_x: u32,
     min_y: u32,
     max_x: u32,
@@ -547,6 +880,7 @@ fn analyze_composition_readback(
     }
     let mut result = CompositionReadbackDiagnostic {
         changed_pixels: 0,
+        white_pixels: 0,
         min_x: width,
         min_y: height,
         max_x: 0,
@@ -557,6 +891,9 @@ fn analyze_composition_readback(
         for byte in pixel {
             result.fnv1a64 ^= u64::from(*byte);
             result.fnv1a64 = result.fnv1a64.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        if pixel[..3] == [0xff, 0xff, 0xff] {
+            result.white_pixels += 1;
         }
         if pixel[..3] == clear_bgr {
             continue;
@@ -593,9 +930,12 @@ impl ApplicationHandler for EditorApplication {
                             window,
                             d3d9,
                             self.smoke_test,
-                            self.srd_draw_smoke,
-                            self.srd_texture_smoke,
-                            self.dds_device_audit,
+                            EditorSmokeOptions {
+                                srd_draw: self.srd_draw_smoke,
+                                srd_texture: self.srd_texture_smoke,
+                                dds_device_audit: self.dds_device_audit,
+                                advertise_logo_host: self.advertise_logo_host,
+                            },
                             self.document_path.clone(),
                         )
                     })
@@ -710,5 +1050,53 @@ mod tests {
         assert_eq!(result.changed_pixels, 2);
         assert_eq!([result.min_x, result.min_y], [0, 1]);
         assert_eq!([result.max_x, result.max_y], [1, 1]);
+    }
+
+    #[test]
+    fn advertise_logo_host_argument_requires_explicit_target_present_and_screen_sizes() {
+        let arguments = vec!["--advertise-logo-host=MainScene@1080x1920@1920x1080".to_string()];
+        assert_eq!(
+            parse_advertise_logo_host_argument(&arguments).unwrap(),
+            Some(AdvertiseLogoHostArgument {
+                target: PreviewTargetSelection::MainScene,
+                present_width: 1080,
+                present_height: 1920,
+                screen_width: 1920,
+                screen_height: 1080,
+            })
+        );
+        assert!(
+            parse_advertise_logo_host_argument(&["--advertise-logo-host=MainScene".to_string()])
+                .is_err()
+        );
+        assert!(
+            parse_advertise_logo_host_argument(&[
+                "--advertise-logo-host=Unknown@1080x1920@1920x1080".to_string()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_advertise_logo_host_argument(&[
+                "--advertise-logo-host=BgScene@0x1920@1920x1080".to_string()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_advertise_logo_host_argument(&[
+                "--advertise-logo-host=BgScene@1080x1920@0x1080".to_string()
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn composition_size_rejects_unproven_fractional_conversion() {
+        assert_eq!(
+            checked_scene_composition_size(1080.0, 1920.0).unwrap(),
+            [1080, 1920]
+        );
+        assert!(checked_scene_composition_size(1080.5, 1920.0).is_err());
+        assert!(checked_scene_composition_size(f32::NAN, 1920.0).is_err());
+        assert!(checked_scene_composition_size(0.0, 1920.0).is_err());
     }
 }
