@@ -30,7 +30,7 @@ packet 构造器 `0x6CD8A0` 初始化 `+0x1C/+0x20=0`、`+0x24=1`、`+0x3C/+0x40
 
 ## 选定无贴图 fixture
 
-`CHU_UI_System_00_v10.srd` 的三个首批候选节点都选择 Simple key：
+`CHU_UI_System_00_v10.srd` 中证据闭环的非 TEXT 图像节点 `C_fill` 选择 Simple key：
 
 ```text
 AAEBABBAAAGAAAAAAA
@@ -44,6 +44,6 @@ c8       fixedParam0
 c10..c13 mtxPrjView
 ```
 
-对应 PS 不读取 sampler，只读取两个 color 和 `c0.z`。因此这个 fixture 的首批绘制不依赖纹理加载；它需要的固定 packet 常量已由上述提交链闭环，`c10..c13` 则由 `sea::AllEnvBasic` 的 `Projection*View` provider 闭环，详见 [`projection.md`](projection.md)。
+对应 PS 不读取 sampler，只读取两个 color 和 `c0.z`。同层的 `T_title/T_message` 虽然 NODE 低字节同为 type 1，但其 CIMG 同时具有 TEXT 子块和 flags `0x100`，游戏工厂会建立 `SrTextCast`；审计工具现将它们排除，不能拿 ImageCast 路径替代 TEXT。因而首个闭环 draw 是唯一的无贴图 `C_fill`，其固定 packet 常量已由上述提交链闭环，`c10..c13` 则由 `sea::AllEnvBasic` 的 `Projection*View` provider 闭环，详见 [`projection.md`](projection.md)。
 
 Rust `CeylonSrdFixedShaderConstants::initial_2d` 现保存这组初始寄存器值。对应的 332-byte VS 和 216-byte PS 也已按对齐的 `u32` token 表嵌入 `shader_bytecode.rs`；lookup 只接受精确 key `AAEBABBAAAGAAAAAAA`，其他 key 返回 `None`，不会用近似 shader 代替。

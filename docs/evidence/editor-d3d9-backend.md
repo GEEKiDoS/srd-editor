@@ -78,7 +78,7 @@ cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_
 
 两条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。第二条命令还在帧生成前实际解析指定 SRD 并构建文档面板。
 
-同次检查还执行完整回归：95 个单元测试及 18 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
+同次检查还执行完整回归：97 个单元测试及 18 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 

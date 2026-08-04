@@ -55,7 +55,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         for (layer_index, layer) in scene.layers.iter().enumerate() {
             for node_index in 0..layer.nodes.len() {
                 let Some(image) = (match layer.nodes[node_index].cast_type() {
-                    Some(1) => layer.image_by_node[node_index].clone(),
+                    Some(1) => layer.image_by_node[node_index]
+                        .clone()
+                        .filter(|image| !image.creates_text_cast()),
                     Some(2) => layer.csli_by_node[node_index]
                         .as_ref()
                         .map(ImageDefinition::from_csli_runtime_base),

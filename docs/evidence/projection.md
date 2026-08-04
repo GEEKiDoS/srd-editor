@@ -3,7 +3,7 @@
 本页只记录由游戏二进制和本地 SRD 样本闭环得到的结论。
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`
-- 本轮保存后的 IDB SHA-256：`7BE4A919000CC62E435A8BCBD534916D14DC17991C9E0C6DBA4E7A97D8C767B8`
+- 本轮保存后的 IDB SHA-256：`189A48449F4761584712182DB6755698526D50BDDD0A00C113DF376E5C01096F`
 
 ## SRD 文件中的 CAM 记录
 
@@ -117,6 +117,18 @@ mtxPrjView = Projection * View
 ```
 
 结果写入 `sea::AllEnvBasic+0x40` 对应的 shader resource，参数注册函数把它以名字 `mtxPrjView` 放到逻辑 slot 2。选定 Simple VS 的 `c10..c13` 正是这个矩阵，因而不再是未证明的占位常量。
+
+## SrPlayer 的 FirstCalcMatrix 输入边界
+
+顶层 runtime layer 不直接以 identity 作为 CAST 根。`srd_update_runtime_layer` (`0xABE710`) 在没有 owning RefCast 时执行：
+
+```text
+layer_world(+0x16C) = SrRenderer(+0xB8) * layer_local(+0x13C)
+```
+
+`srd_reset_runtime_layer_state` (`0xAC15A0`) 把 layer local 初始化为单位变换。`SrRenderer+0xB8` 则由 `srd_renderer_configure_project_camera` 从 `SrPlayer` 虚表 `+0x40` 返回的 3x4 matrix 复制；该虚函数最终是 `0x60A230`，返回玩家 scene-node 的组合矩阵。SrPlayer 构造器把属性 3 注册为 `FirstCalcMatrix`，但这个 bool 只选择返回本地或组合矩阵，矩阵数值本身来自 SrPlayer 所在的外部 scene graph，而不在 SRD 文件中。
+
+因此编辑器必须把 preview placement 明确作为宿主输入：SRD 负责 CAM、layer local 与 CAST local；宿主负责等价于 `FirstCalcMatrix` 的根 3x4。当前代码不会把 identity 冒充成游戏在任意调用现场的最终父矩阵。Composition 的 fit-to-view 可以作为编辑器显示变换实现，但必须与游戏证据矩阵分层保存。
 
 ## SrRenderer 屏幕矩阵
 

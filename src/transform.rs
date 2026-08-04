@@ -140,6 +140,16 @@ impl Affine3x4 {
         }
         Self { rows: result }
     }
+
+    /// Applies the exact scalar grouping used by `srd_render_image_cast`
+    /// before its CPU-transformed positions are copied into format 14 vertices.
+    pub fn transform_point_game(self, point: [f32; 3]) -> [f32; 3] {
+        self.rows.map(|row| {
+            let xy = row[1] * point[1] + row[0] * point[0];
+            let xyz = xy + row[2] * point[2];
+            xyz + row[3]
+        })
+    }
 }
 
 pub fn build_local_matrix(
@@ -393,6 +403,21 @@ mod tests {
                     [0.0, 0.0, 4.0, 33.0],
                 ]
             }
+        );
+    }
+
+    #[test]
+    fn affine_point_transform_uses_the_image_cast_scalar_order() {
+        let matrix = Affine3x4 {
+            rows: [
+                [2.0, 3.0, 5.0, 7.0],
+                [11.0, 13.0, 17.0, 19.0],
+                [23.0, 29.0, 31.0, 37.0],
+            ],
+        };
+        assert_eq!(
+            matrix.transform_point_game([41.0, 43.0, 47.0]),
+            [453.0, 1828.0, 3684.0]
         );
     }
 

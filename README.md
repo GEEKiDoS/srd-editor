@@ -42,6 +42,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 绘制包到 64 位 ShapeEnv shader cache key 的全部位来源、CREF/CRE1 到 D3D9 texture stage 0/1 的映射、vertex-format/blend/multi-texture 模块索引，以及完整 `surfboard` 语料 19,484 个初始 image node 的实际 key 回归。
 - ShaderSelector 注册顺序、SRD/ShapeEnv 对 Simple 槽位 9 的实际选择、Simple 的 18 字节键与 71 项表、Default 的 46 字节键机制、嵌入式 Cg source 的精确 dword 解码/include 闭包、format 14 的双 UV/双顶点色公式，以及 stage 0/1 到 pixel/vertex Shader resource 的映射。
 - 默认及逐 packet 的 VS `c0..c9`、PS `c0` 常量提交，以及选定无贴图 fixture 的 VS `c10..c13 = Projection*View` provider。
+- draw packet 到 D3D9 cull/fill/color-write 的精确覆盖：首个 fixture 为 `CULL_NONE`、`SOLID`、四通道写入，不依赖编辑器侧显示性兜底。
 - 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
 - 可运行的原生 D3D9Ex 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 的 `Direct3DCreate9Ex`/`IDirect3DDevice9Ex` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 `PresentEx`/`ResetEx` 冒烟测试。
 - Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。

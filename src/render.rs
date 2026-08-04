@@ -11,10 +11,12 @@ pub enum D3d9PrimitiveType {
 #[repr(u32)]
 pub enum D3d9RenderState {
     ZEnable = 7,
+    FillMode = 8,
     ZWriteEnable = 14,
     AlphaTestEnable = 15,
     SourceBlend = 19,
     DestinationBlend = 20,
+    CullMode = 22,
     ZFunction = 23,
     AlphaReference = 24,
     AlphaFunction = 25,
@@ -28,6 +30,7 @@ pub enum D3d9RenderState {
     StencilMask = 58,
     StencilWriteMask = 59,
     BlendOperation = 171,
+    ColorWriteEnable = 168,
     ScissorTestEnable = 174,
     SlopeScaleDepthBias = 175,
     BlendFactor = 193,
@@ -36,6 +39,39 @@ pub enum D3d9RenderState {
     SourceBlendAlpha = 207,
     DestinationBlendAlpha = 208,
     BlendOperationAlpha = 209,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum D3d9CullMode {
+    None = 1,
+    Clockwise = 2,
+    CounterClockwise = 3,
+}
+
+pub const fn d3d9_cull_mode_from_internal(value: u32) -> Option<D3d9CullMode> {
+    match value {
+        0 => Some(D3d9CullMode::Clockwise),
+        1 => Some(D3d9CullMode::CounterClockwise),
+        2 | 3 => Some(D3d9CullMode::None),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum D3d9FillMode {
+    Point = 1,
+    Wireframe = 2,
+    Solid = 3,
+}
+
+pub const fn d3d9_fill_mode_from_internal(value: u32) -> D3d9FillMode {
+    match value {
+        0 => D3d9FillMode::Point,
+        1 => D3d9FillMode::Wireframe,
+        _ => D3d9FillMode::Solid,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +221,53 @@ impl CeylonRenderScissorState {
     pub fn apply_command(&mut self, command: CeylonScissorStateCommand) {
         self.enabled = command.enabled;
         self.rectangle = command.rectangle;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeylonRasterState {
+    pub cull_mode_internal: u32,
+    pub fill_mode_internal: u32,
+    pub color_write_mask: u32,
+}
+
+impl Default for CeylonRasterState {
+    fn default() -> Self {
+        Self {
+            cull_mode_internal: 1,
+            fill_mode_internal: 2,
+            color_write_mask: 0x0f,
+        }
+    }
+}
+
+impl CeylonRasterState {
+    /// Reproduces the raster fields assembled in
+    /// `ceylon_apply_draw_packet_state` after the base RenderState copy.
+    pub fn apply_draw_packet(&mut self, packet: CeylonDrawPacketPresetState) {
+        if packet.draw_flags_00 & 0x0080_0000 == 0 {
+            self.cull_mode_internal = 2;
+        }
+
+        let mut color_write_mask = u32::from(packet.draw_flags_00 & 0x2000 != 0);
+        if packet.draw_flags_00 & 0x4000 != 0 {
+            color_write_mask |= 2;
+        }
+        if packet.draw_flags_00 & 0x8000 != 0 {
+            color_write_mask |= 4;
+        }
+        if packet.draw_flags_00 & 0x1_0000 != 0 || packet.flags_60 & 0x2000 != 0 {
+            color_write_mask |= 8;
+        }
+        self.color_write_mask = color_write_mask;
+    }
+
+    pub fn cull_mode(self) -> Option<D3d9CullMode> {
+        d3d9_cull_mode_from_internal(self.cull_mode_internal)
+    }
+
+    pub fn fill_mode(self) -> D3d9FillMode {
+        d3d9_fill_mode_from_internal(self.fill_mode_internal)
     }
 }
 
@@ -1082,6 +1165,43 @@ mod tests {
         assert_eq!(constants.vertex_c9_fixed_param1, [0.0; 4]);
         assert_eq!(constants.vertex_c10_c13_projection_view, projection_view);
         assert_eq!(constants.pixel_c0_fixed_param0, [0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn raster_tables_and_initial_srd_packet_match_the_d3d9_backend() {
+        assert_eq!(
+            (0..=3)
+                .map(d3d9_cull_mode_from_internal)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(D3d9CullMode::Clockwise),
+                Some(D3d9CullMode::CounterClockwise),
+                Some(D3d9CullMode::None),
+                Some(D3d9CullMode::None),
+            ]
+        );
+        assert_eq!(d3d9_cull_mode_from_internal(4), None);
+        assert_eq!(d3d9_fill_mode_from_internal(0), D3d9FillMode::Point);
+        assert_eq!(d3d9_fill_mode_from_internal(1), D3d9FillMode::Wireframe);
+        assert_eq!(d3d9_fill_mode_from_internal(2), D3d9FillMode::Solid);
+
+        let mut raster = CeylonRasterState::default();
+        raster.apply_draw_packet(CeylonDrawPacketPresetState::srd_renderer_initial());
+        assert_eq!(raster.cull_mode(), Some(D3d9CullMode::None));
+        assert_eq!(raster.fill_mode(), D3d9FillMode::Solid);
+        assert_eq!(raster.color_write_mask, 0x0f);
+
+        let mut preserve_base = CeylonRasterState::default();
+        preserve_base.apply_draw_packet(CeylonDrawPacketPresetState {
+            draw_flags_00: 0x0080_0000,
+            flags_60: 0,
+            ..CeylonDrawPacketPresetState::default()
+        });
+        assert_eq!(
+            preserve_base.cull_mode(),
+            Some(D3d9CullMode::CounterClockwise)
+        );
+        assert_eq!(preserve_base.color_write_mask, 0);
     }
 
     #[test]

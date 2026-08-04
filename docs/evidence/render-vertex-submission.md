@@ -70,6 +70,6 @@ DrawPrimitive(D3DPT_TRIANGLESTRIP, start_vertex, 2)
 
 ## 仍未闭环
 
-- draw packet 的 shader、blend、depth、scissor/cull 等全部状态位到 D3D9 常量的映射。
+- draw packet 的 shader、blend、depth、stencil、scissor、cull、fill 与 color-write 已分别闭环；剩余的是把这些已建模状态接到编辑器的真实 draw submission，并继续追踪尚未命名的其他 packet 状态。
 - Image/Text 双 UV 在 shader 或固定管线中的组合公式。
 - DDS 描述符、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；内部格式转换、cube request 和设备丢失/重建仍待闭环。
