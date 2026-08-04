@@ -35,8 +35,8 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 尚未闭合：
 
 - TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
-- record `+0x0C & 0x40000` 的第二组 effect glyph 参数与生成来源；
+- record `+0x0C & 0x40000` 的上游生成来源/控制 token。第二组 effect glyph 的 record copy、逐角 RGB 替换与 alpha 相乘、TextBox `+0x90/+0x94` 位移、effect-first buffer 分段和 clipped/unclipped 提交已经闭合并实现；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源。mode 6 已定位到非虚方法 `0xADA300..0xADA348`：启用时清 TEXT flags bit 0、写入 state `+0x130/+0x134/+0x12C` 并设 mode 6，关闭时置回 bit 0 与 mode 0；当前 IDB 中该方法只有无调用引用的 jump-island thunk `0x45335F`，不是 `off_190E210` 虚表项，因此不得假定 SRD 首帧或动画会自动触发它。调用方显式给出 runtime flags/clip size 时，normal-glyph 动态裁剪批次已经可用；自动上游连接仍禁止猜测；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 
-在这些输入闭环前，不得自行补 effect、动态 mode 更新或 rehash 行为。
+在这些输入闭环前，不得自行补 effect 控制语法、动态 mode 更新或 rehash 行为。

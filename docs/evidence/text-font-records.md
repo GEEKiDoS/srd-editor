@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal glyph 的 origin/effective-scale/2D CPU matrix 链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是内部行元数据与效果/裁剪分支。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是内部行元数据、动态 mode 与 effect flag 的上游生成来源。
 
 ## TEXT 记录
 
@@ -312,7 +312,18 @@ Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固
 - TextBox position 由 `sub_AC6F50` 写为 `(-SrImage.origin_x,-SrImage.origin_y,0)`，Y 再加布局返回的 `+0x108`；
 - 2D 分支通过 `sub_604010` 计算 `TextBox.+0x2EC * local_translation` 后交给 `sub_7C10B0`；3D 分支给 CPU 顶点生成器的只有 local translation，`+0x2EC` 另交 renderer 状态。
 
-Rust 的 `build_fennel_static_unclipped_vertex_batches` 按已证明的 texture 前向链顺序执行上述 normal-glyph 路径，并校验 record/runtime glyph texture token 一致。完整 1292 条 RFZ TEXT 均成功建立批次，单条最多 1620 个顶点；当前语料构造输入未进入 effect。任何 record `+0x0C & 0x40000` 仍明确报错，不生成半套第二 glyph。
+Rust 的 `build_fennel_static_unclipped_vertex_batches` 按已证明的 texture 前向链顺序执行上述 normal-glyph 路径，并校验 record/runtime glyph texture token 一致。完整 1292 条 RFZ TEXT 均成功建立批次，单条最多 1620 个顶点；当前语料构造输入未进入 effect。
+
+`sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
+
+- `sub_7BF0C0` 先把同一份 116 字节 record 完整复制两次，normal 与 effect 各持一份；
+- `sub_F2D730` 对 effect copy 的四个 `+0x34..+0x40` 颜色逐角处理：DWORD RGB 整体替换为 TextBox `+0x80..+0x8C` 的 effect color，alpha 则严格执行 `(effect_a/255)*(normal_a/255)*255` 后 `CVTTSS2SI`；
+- `fennel::FontObject` 构造函数 `sub_F2BB60` 把这四个 effect color 初始化为 `0xFF000000`，并把 TextBox `+0x90/+0x94` 初始化为 `(2.0,2.0)`；`sub_F2C890` 与 `sub_F2C640` 是对应的显式 setter；
+- effect origin 是 normal origin 再加 `+0x90/+0x94`。两次调用使用相同 effective scale、矩阵、TextBox flags 与 clip size，因此 effect 同样进入已实现的 clipped/unclipped `sub_7C10B0` 分支；
+- effect 调用虽然计算并传入 `TextBox+0xC0+0.1f`，但 `sub_7C10B0` 的该栈参数在整函数中没有任何读取，Rust 不制造无效的 Z 行为；
+- batch node `+0x10` 是 effect 数量。`sub_7C7F90` 令 effect 写指针从 buffer base 开始，normal 写指针从 `base + effect_count*0xA8` 开始，所以最终提交顺序精确为全部 effect vertices 在前、全部 normal vertices 在后。
+
+`build_fennel_normal_vertex_batches` 现已生成上述 effect-first 分段，同时仍要求调用方明确提供 effect colors/offset；静态包装器使用构造默认值。`0x40000` 是如何由未实现的 Fennel 控制 token/状态写入 placement `field_0c` 的上游来源仍未闭合，因此 Rust 不自动解析或启用任何 effect 语法。
 
 ### teaFontRenderer batch 与 format 13
 
@@ -400,4 +411,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 - `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源、mode 6 显式 API 的真实调用点，以及 `0x40000` 第二 glyph/effect 的具体来源；
+- SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源、mode 6 显式 API 的真实调用点，以及 `0x40000` effect flag 的上游控制 token/状态来源；

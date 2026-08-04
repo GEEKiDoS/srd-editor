@@ -26,6 +26,12 @@ pub const FENNEL_RECORD_STREAM_END: i32 = -0xFF;
 pub const FENNEL_LINE_START_CAPACITY: usize = 0x80;
 pub const FENNEL_UV_BIAS: f32 = f32::from_bits(0x3727_C5AC);
 pub const FENNEL_TRIANGLE_CORNER_INDICES: [usize; 6] = [1, 0, 2, 3, 1, 2];
+/// `fennel::FontObject` construction (`sub_F2BB60`) initializes the four
+/// effect colors at TextBoxObject `+0x80..+0x8C` to opaque black.
+pub const FENNEL_DEFAULT_EFFECT_COLORS: [u32; 4] = [0xFF00_0000; 4];
+/// The same constructor initializes the effect displacement at
+/// TextBoxObject `+0x90/+0x94` to `(2.0, 2.0)`.
+pub const FENNEL_DEFAULT_EFFECT_OFFSET: [f32; 2] = [2.0, 2.0];
 /// `sub_7BEB80` asks the hash-container prime table for at least 11 buckets;
 /// the first table entry is `0x11`, so a TextBoxObject starts with 17 buckets.
 pub const FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT: u32 = 17;
@@ -716,6 +722,11 @@ pub struct FennelNormalDrawInput {
     pub secondary_color: u32,
     pub textbox_flags: u32,
     pub clip_size: [f32; 2],
+    /// TextBoxObject `+0x80..+0x8C`. `sub_F2D730` replaces the effect record's
+    /// RGB with these values and multiplies the two alpha bytes.
+    pub effect_colors: [u32; 4],
+    /// TextBoxObject `+0x90/+0x94`, added only to the effect glyph origin.
+    pub effect_offset: [f32; 2],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -743,9 +754,6 @@ pub enum FennelStaticUnclippedBatchError {
         record_texture_token: u32,
         glyph_texture_token: u32,
     },
-    EffectGlyphUnsupported {
-        record_index: usize,
-    },
 }
 
 impl std::fmt::Display for FennelStaticUnclippedBatchError {
@@ -767,10 +775,6 @@ impl std::fmt::Display for FennelStaticUnclippedBatchError {
                 formatter,
                 "Fennel record {record_index} texture token {record_texture_token:#010x} does not match runtime glyph token {glyph_texture_token:#010x}"
             ),
-            Self::EffectGlyphUnsupported { record_index } => write!(
-                formatter,
-                "Fennel record {record_index} enters the not-yet-ported 0x40000 effect glyph path"
-            ),
         }
     }
 }
@@ -789,8 +793,8 @@ impl From<FennelTextureBatchRehashRequired> for FennelStaticUnclippedBatchError 
 ///
 /// Static construction proves correction mode byte `+0x98 == 0`, transform
 /// adjustment byte `+0x10C == 0`, draw offset `(0, 0)`, and unclipped flags
-/// `3` or `7`. The `0x40000` second/effect glyph path remains rejected until
-/// its separate record mutation and color/depth inputs are closed.
+/// `3` or `7`. A supplied `0x40000` record emits the exact default
+/// effect-first segment; static plain SRD text does not set that bit.
 pub fn build_fennel_static_unclipped_vertex_batches<F>(
     stream: &FennelPlainRecordStream,
     maximum_glyphs: i32,
@@ -814,6 +818,8 @@ where
             // and 7, select the same non-clipping branch.
             textbox_flags: 3,
             clip_size: [0.0; 2],
+            effect_colors: FENNEL_DEFAULT_EFFECT_COLORS,
+            effect_offset: FENNEL_DEFAULT_EFFECT_OFFSET,
         },
         runtime_glyph,
     )
@@ -821,7 +827,9 @@ where
 
 /// Reproduces the normal-glyph portion of `sub_7C7F90` and selects the exact
 /// clipped or unclipped `sub_7C10B0` branch from caller-supplied runtime state.
-/// The separate `record+0x0C & 0x40000` effect glyph remains rejected.
+/// Records with `record+0x0C & 0x40000` emit the game's effect segment before
+/// the normal segment. The upstream control-token source of that bit remains
+/// outside this function and is not inferred.
 pub fn build_fennel_normal_vertex_batches<F>(
     stream: &FennelPlainRecordStream,
     maximum_glyphs: i32,
@@ -846,14 +854,10 @@ where
 
     let mut batches = Vec::with_capacity(membership.batches.len());
     for batch in &membership.batches {
-        let mut vertices = Vec::with_capacity(batch.normal_glyph_count * 6);
+        let mut effect_vertices = Vec::with_capacity(batch.effect_glyph_count * 6);
+        let mut normal_vertices = Vec::with_capacity(batch.normal_glyph_count * 6);
         for &record_index in &batch.record_indices {
             let record = &stream.records[record_index];
-            if record.field_0c & 0x40000 != 0 {
-                return Err(FennelStaticUnclippedBatchError::EffectGlyphUnsupported {
-                    record_index,
-                });
-            }
             let glyph = runtime_glyph(record.glyph_token).ok_or(
                 FennelStaticUnclippedBatchError::MissingRuntimeGlyph {
                     record_index,
@@ -902,11 +906,47 @@ where
                     input.secondary_color,
                 )
             };
-            vertices.extend_from_slice(&glyph_vertices);
+            normal_vertices.extend_from_slice(&glyph_vertices);
+
+            if record.field_0c & 0x40000 != 0 {
+                let mut effect_record = *record;
+                effect_record.colors = std::array::from_fn(|corner| {
+                    fennel_effect_color(record.colors[corner], input.effect_colors[corner])
+                });
+                let effect_origin = [
+                    origin[0] + input.effect_offset[0],
+                    origin[1] + input.effect_offset[1],
+                ];
+                let effect_glyph_vertices = if input.textbox_flags & FENNEL_TEXTBOX_CLIP_FLAG != 0 {
+                    build_fennel_clipped_vertices(
+                        &effect_record,
+                        effect_origin,
+                        effective_scale,
+                        &cpu_transform,
+                        input.secondary_color,
+                        input.textbox_flags,
+                        input.clip_size[0],
+                        input.clip_size[1],
+                    )
+                } else {
+                    build_fennel_unclipped_vertices(
+                        &effect_record,
+                        effect_origin,
+                        effective_scale,
+                        &cpu_transform,
+                        input.secondary_color,
+                    )
+                };
+                effect_vertices.extend_from_slice(&effect_glyph_vertices);
+            }
         }
+        // `sub_7C7F90` sets the normal write pointer to
+        // `base + effect_glyph_count * 0xA8`, while the effect pointer starts
+        // at `base`. The submitted buffer is therefore effect-first.
+        effect_vertices.extend(normal_vertices);
         batches.push(FennelOwnedTextureBatch {
             texture_token: batch.texture_token,
-            vertices,
+            vertices: effect_vertices,
         });
     }
 
@@ -1695,6 +1735,18 @@ fn transform_fennel_point(transform: &Matrix4x4, x: f32, y: f32) -> [f32; 3] {
 fn fennel_packed_color_to_bgra(color: u32) -> [u8; 4] {
     let bytes = color.to_le_bytes();
     [bytes[2], bytes[1], bytes[0], bytes[3]]
+}
+
+/// Reproduces `sub_F2D730` for one packed color. The effect RGB replaces the
+/// normal RGB; only alpha is multiplied through the binary's two `/255`, one
+/// `*255`, and `CVTTSS2SI` sequence.
+fn fennel_effect_color(normal: u32, effect: u32) -> u32 {
+    let normal_alpha = normal.to_le_bytes()[3] as f32 / 255.0;
+    let effect_alpha = effect.to_le_bytes()[3] as f32 / 255.0;
+    let alpha = (effect_alpha * normal_alpha * 255.0).trunc() as u8;
+    let mut bytes = effect.to_le_bytes();
+    bytes[3] = alpha;
+    u32::from_le_bytes(bytes)
 }
 
 impl Default for FennelGlyphLayoutRecord {
@@ -2503,31 +2555,53 @@ mod tests {
     }
 
     #[test]
-    fn static_unclipped_batches_reject_the_unclosed_effect_path() {
+    fn effect_segment_precedes_normal_and_replaces_rgb_while_multiplying_alpha() {
         let mut stream = one_line_stream(&[1]);
-        stream.records[0].texture_token = 7;
-        stream.records[0].field_0c = 0x40000;
-        let glyph = RuhunaRuntimeGlyphRecord {
+        stream.records[0] = FennelGlyphLayoutRecord {
+            kind: 1,
+            glyph_token: 1,
             texture_token: 7,
+            field_0c: 0x40000,
+            y: -3.0,
+            width: 1.0,
+            height: 1.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            colors: [0x40FF_FFFF; 4],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 0.0],
+            uv2: [0.0, 1.0],
+            uv3: [1.0, 1.0],
             ..Default::default()
         };
-        assert_eq!(
-            build_fennel_static_unclipped_vertex_batches(
-                &stream,
-                -1,
-                FennelStaticUnclippedDrawInput {
-                    is_2d: true,
-                    textbox_position: [0.0; 3],
-                    textbox_scale: [1.0; 2],
-                    textbox_vertical_offset: 0.0,
-                    textbox_transform: identity_matrix4x4_game(),
-                    secondary_color: 0,
-                },
-                |_| Some(glyph),
-            )
-            .unwrap_err(),
-            FennelStaticUnclippedBatchError::EffectGlyphUnsupported { record_index: 0 }
+        let build = build_fennel_normal_vertex_batches(
+            &stream,
+            -1,
+            FennelNormalDrawInput {
+                is_2d: true,
+                textbox_position: [0.0; 3],
+                textbox_scale: [1.0; 2],
+                textbox_vertical_offset: 0.0,
+                textbox_transform: identity_matrix4x4_game(),
+                secondary_color: 0,
+                textbox_flags: 3,
+                clip_size: [0.0; 2],
+                effect_colors: [0x8040_3020; 4],
+                effect_offset: [2.0, 3.0],
+            },
+            |_| {
+                Some(RuhunaRuntimeGlyphRecord {
+                    texture_token: 7,
+                    ..Default::default()
+                })
+            },
         );
+        let vertices = &build.unwrap().batches[0].vertices;
+        assert_eq!(vertices.len(), 12);
+        assert_eq!(vertices[0].position, [3.0, 3.0, 0.0]);
+        assert_eq!(vertices[6].position, [1.0, 0.0, 0.0]);
+        assert_eq!(vertices[0].primary_color_bgra, [0x40, 0x30, 0x20, 0x20]);
+        assert_eq!(vertices[6].primary_color_bgra, [0xFF, 0xFF, 0xFF, 0x40]);
     }
 
     #[test]
@@ -2562,6 +2636,8 @@ mod tests {
                 secondary_color: 0,
                 textbox_flags: FENNEL_TEXTBOX_CLIP_FLAG | FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
                 clip_size: [2.0, 2.0],
+                effect_colors: FENNEL_DEFAULT_EFFECT_COLORS,
+                effect_offset: FENNEL_DEFAULT_EFFECT_OFFSET,
             },
             |_| {
                 Some(RuhunaRuntimeGlyphRecord {
