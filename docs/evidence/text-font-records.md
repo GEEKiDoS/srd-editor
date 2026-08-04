@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，以及外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源均已闭环。Ruhuna 字形如何接入 SrTextCast 的 FONT/TEX/CROP 运行时表仍在继续追踪，当前渲染器不会用系统字体代替。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，以及 Ruhuna Database/Glyph 到游戏 128 字节运行时 glyph 的转换均已闭环。该 glyph 对象如何进一步接入 SrTextCast 的 FONT/TEX/CROP 运行时表仍在继续追踪，当前渲染器不会用系统字体代替。
 
 ## TEXT 记录
 
@@ -109,10 +109,12 @@ AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 
 - `sub_AD9160` 为每个 12 字节行记录调用虚表 `+0xC4`；SrTextCast 在该槽进入 `sub_AD9490`。
 - `sub_AD9490` 使用 TEXT flags `0x04/0x08` 选择水平居中或右对齐，逐 code 再查 FONT/TEX/CROP，生成与当前 SrImage 路径相同的四顶点和两个相同 UV 通道。映射不存在时走明确的 16x16 fallback quad，而不是系统字体。
 
-因此外部 Ruhuna 字形不是一条可以随意替换的 ImGui 文本路径。仍需证明游戏把 RFZ glyph/page/box 数据写入 FONT/TEX/CROP 运行时表的具体转换链；在该链闭环前，Rust 不会把按字段名推导的 atlas 矩形冒充最终 SrTextCast 输出。
+`sub_7CB9B0` 已证明 RFZ Database/Glyph 到 128 字节运行时 glyph 的全部 box、bearing、advance、旋转和带一像素边框 UV 算法，细节见 [`ruhuna-font-archives.md`](ruhuna-font-archives.md)。这不是字段名推导，而是加载 AVTS 后实际执行的转换函数。
+
+外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。尚需证明上述 runtime glyph 对象到 FONT 两个 i16、动态 540 字节 TEX 和 16 字节 CROP 表的最终桥接与生命周期；在该链闭环前，Rust 不会把 runtime glyph 直接冒充 SrTextCast 的最终表结构。
 
 ## 下一证据目标
 
-- RFZ glyph/page/box 到 FONT lookup、动态 TEX/CROP 表的转换与生命周期；
+- 128 字节 runtime glyph 到 FONT lookup、动态 TEX/CROP 表的桥接与生命周期；
 - TEXT 缩放、字符间距、行距和 packed color 状态的完整 setter 来源；
 - 外部字体 glyph quad 进入当前已闭环 SrImage/D3D9 packet 的端到端语料回归。

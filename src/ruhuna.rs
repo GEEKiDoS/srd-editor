@@ -71,6 +71,107 @@ pub struct RuhunaGlyph {
     pub kerning_info_count: u16,
 }
 
+/// Host-independent representation of the game's 128-byte x86 runtime glyph
+/// record. Pointer fields are kept as caller-supplied 32-bit tokens; the editor
+/// never casts them to host pointers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuhunaRuntimeGlyphRecord {
+    pub owner_token: u32,
+    pub field_04: u16,
+    pub code: u16,
+    pub field_08: u32,
+    pub point_x: u16,
+    pub point_y: u16,
+    pub atlas_x: u32,
+    pub atlas_y: u32,
+    pub texture_token: u32,
+    pub inverse_texture_width: f32,
+    pub inverse_texture_height: f32,
+    pub enabled: u32,
+    pub bearing_x: i32,
+    pub bearing_y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub line_height: u32,
+    pub advance_x: u32,
+    pub advance_y: u32,
+    pub em_pixels_x: i32,
+    pub em_pixels_y: i32,
+    pub field_4c: i32,
+    pub flag_mode: u32,
+    pub field_54: u32,
+    pub field_58: i16,
+    pub field_5a: u16,
+    pub uv0: [f32; 2],
+    pub uv1: [f32; 2],
+    pub uv2: [f32; 2],
+    pub uv3: [f32; 2],
+    pub rotated: u16,
+    pub field_7e: u16,
+}
+
+impl Default for RuhunaRuntimeGlyphRecord {
+    fn default() -> Self {
+        Self {
+            owner_token: 0,
+            field_04: 0,
+            code: 0,
+            field_08: 0,
+            point_x: 0,
+            point_y: 0,
+            atlas_x: 0,
+            atlas_y: 0,
+            texture_token: 0,
+            inverse_texture_width: 0.0,
+            inverse_texture_height: 0.0,
+            enabled: 0,
+            bearing_x: 0,
+            bearing_y: 0,
+            width: 0,
+            height: 0,
+            line_height: 0,
+            advance_x: 0,
+            advance_y: 0,
+            em_pixels_x: 0,
+            em_pixels_y: 0,
+            field_4c: 0,
+            flag_mode: 0,
+            field_54: 0,
+            field_58: 0,
+            field_5a: 0,
+            uv0: [0.0; 2],
+            uv1: [0.0; 2],
+            uv2: [0.0; 2],
+            uv3: [0.0; 2],
+            rotated: 0,
+            field_7e: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuhunaRuntimeFont {
+    pub minimum_code: u16,
+    pub maximum_code: u16,
+    pub dense_glyph_indices: Vec<u16>,
+    pub glyph_pages: Vec<Option<u16>>,
+    pub glyphs: Vec<RuhunaRuntimeGlyphRecord>,
+}
+
+impl RuhunaRuntimeFont {
+    /// Returns the exact dense-table entry built by `sub_F47700` for an in-range
+    /// code. Zero is a valid entry and is also what the game leaves in holes.
+    pub fn dense_glyph_index(&self, code: u16) -> Option<u16> {
+        if code < self.minimum_code || code > self.maximum_code {
+            return None;
+        }
+        self.dense_glyph_indices
+            .get(usize::from(code - self.minimum_code))
+            .copied()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuhunaTextureResource {
     pub object_index: usize,
@@ -227,6 +328,177 @@ impl RuhunaFont {
     pub fn atlas_page_bytes(&self, page: &RuhunaAtlasPage) -> &[u8] {
         &self.yabx.bytes()[page.data.clone()]
     }
+
+    /// Reproduces `sub_F47700` and `sub_7CB9B0`. The callback mirrors the
+    /// game's page-index-to-texture-handle lookup and must return zero when a
+    /// page is unavailable. Tokens stay opaque so this remains valid on x86
+    /// and x64 hosts.
+    pub fn build_runtime_font<F>(
+        &self,
+        owner_token: u32,
+        mut texture_token_for_page: F,
+    ) -> Result<RuhunaRuntimeFont, RuhunaError>
+    where
+        F: FnMut(u16) -> u32,
+    {
+        let mut glyph_by_object = vec![None; self.yabx.objects.len()];
+        for glyph in &self.glyphs {
+            glyph_by_object[glyph.object_index] = Some(glyph);
+        }
+        let ordered_glyphs = self
+            .database
+            .glyph_object_indices
+            .iter()
+            .map(|&object_index| {
+                glyph_by_object[object_index].ok_or_else(|| {
+                    RuhunaError::Invalid(format!(
+                        "Database glyph reference {object_index} has no parsed Glyph"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let first = ordered_glyphs.first().ok_or_else(|| {
+            RuhunaError::Invalid(
+                "Database has no glyphs; the game lookup builder dereferences the first entry"
+                    .into(),
+            )
+        })?;
+        let last = ordered_glyphs.last().unwrap();
+        if last.code < first.code {
+            return Err(RuhunaError::Invalid(format!(
+                "Database glyph endpoints are not ascending: {} then {}",
+                first.code, last.code
+            )));
+        }
+
+        let minimum_code = first.code;
+        let maximum_code = last.code;
+        let lookup_len = usize::from(maximum_code - minimum_code) + 1;
+        let mut dense_glyph_indices = vec![0; lookup_len];
+        for (glyph_index, glyph) in ordered_glyphs.iter().enumerate() {
+            if glyph.code < minimum_code || glyph.code > maximum_code {
+                return Err(RuhunaError::Invalid(format!(
+                    "glyph {} code {} lies outside endpoint range {}..={}",
+                    glyph.object_index, glyph.code, minimum_code, maximum_code
+                )));
+            }
+            dense_glyph_indices[usize::from(glyph.code - minimum_code)] =
+                u16::try_from(glyph_index).map_err(|_| {
+                    RuhunaError::Invalid(format!(
+                        "glyph index {glyph_index} does not fit the game's u16 lookup entry"
+                    ))
+                })?;
+        }
+
+        let mut glyph_pages = Vec::with_capacity(ordered_glyphs.len());
+        let mut glyphs = Vec::with_capacity(ordered_glyphs.len());
+        for glyph in ordered_glyphs {
+            let page = (glyph.page != u16::MAX).then_some(glyph.page);
+            let texture_token = page.map_or(0, &mut texture_token_for_page);
+            glyph_pages.push(page);
+            glyphs.push(build_runtime_glyph_record(
+                &self.database,
+                glyph,
+                owner_token,
+                texture_token,
+            ));
+        }
+
+        Ok(RuhunaRuntimeFont {
+            minimum_code,
+            maximum_code,
+            dense_glyph_indices,
+            glyph_pages,
+            glyphs,
+        })
+    }
+}
+
+fn build_runtime_glyph_record(
+    database: &RuhunaDatabase,
+    glyph: &RuhunaGlyph,
+    owner_token: u32,
+    texture_token: u32,
+) -> RuhunaRuntimeGlyphRecord {
+    let inverse_texture_width = 1.0 / f32::from(database.texture_width);
+    let page_height = if u32::from(glyph.page) == database.texture_page_count.wrapping_sub(1) {
+        database.texture_last_height
+    } else {
+        database.texture_height
+    };
+    let inverse_texture_height = 1.0 / f32::from(page_height);
+    let em_pixels = (f32::from(database.point) * 1.333_333_4 + 0.5).trunc() as i32;
+    let flag_mode = (database.flags & 1) * 2;
+
+    let mut record = RuhunaRuntimeGlyphRecord {
+        owner_token,
+        code: glyph.code,
+        point_x: database.point,
+        point_y: database.point,
+        atlas_x: u32::from(glyph.box_x1),
+        atlas_y: u32::from(glyph.box_y1),
+        texture_token,
+        inverse_texture_width,
+        inverse_texture_height,
+        enabled: 1,
+        line_height: u32::from(database.max_ascent) + u32::from(database.max_descent),
+        advance_x: u32::from(glyph.cell_increment_x),
+        advance_y: u32::from(glyph.cell_increment_y),
+        em_pixels_x: em_pixels,
+        em_pixels_y: em_pixels,
+        field_4c: -1,
+        flag_mode,
+        field_58: -4096,
+        ..Default::default()
+    };
+
+    if texture_token != 0 {
+        if database.flags & 2 != 0 {
+            record.width = u32::from(glyph.box_y2)
+                .wrapping_sub(u32::from(glyph.box_y1))
+                .wrapping_add(1);
+            record.height = u32::from(glyph.box_x2)
+                .wrapping_sub(u32::from(glyph.box_x1))
+                .wrapping_add(1);
+            record.bearing_x = i32::from(database.max_descent) + i32::from(glyph.origin_y);
+            record.bearing_y = i32::from(glyph.origin_x);
+            record.advance_x = u32::from(glyph.cell_increment_y);
+            record.advance_y = u32::from(glyph.cell_increment_x).wrapping_add(1);
+            record.rotated = 1;
+
+            let x0 = (f32::from(glyph.box_x1) - 1.0) * inverse_texture_width;
+            let x1 = (f32::from(glyph.box_x2) + 1.0) * inverse_texture_width;
+            let y0 = (f32::from(glyph.box_y1) - 1.0) * inverse_texture_height;
+            let y1 = (f32::from(glyph.box_y2) + 1.0) * inverse_texture_height;
+            record.uv0 = [x0, y1];
+            record.uv1 = [x0, y0];
+            record.uv2 = [x1, y1];
+            record.uv3 = [x1, y0];
+        } else {
+            record.width = u32::from(glyph.box_x2)
+                .wrapping_sub(u32::from(glyph.box_x1))
+                .wrapping_add(1);
+            record.height = u32::from(glyph.box_y2)
+                .wrapping_sub(u32::from(glyph.box_y1))
+                .wrapping_add(1);
+            record.bearing_x = i32::from(glyph.origin_x);
+            record.bearing_y = i32::from(database.max_ascent) - i32::from(glyph.origin_y);
+
+            let x0 = (f32::from(glyph.box_x1) - 1.0) * inverse_texture_width;
+            let x1 = (glyph.box_x1 as f32 + record.width as f32 + 1.0) * inverse_texture_width;
+            let y0 = (f32::from(glyph.box_y1) - 1.0) * inverse_texture_height;
+            let y1 = (glyph.box_y1 as f32 + 1.0 + record.height as f32) * inverse_texture_height;
+            record.uv0 = [x0, y0];
+            record.uv1 = [x1, y0];
+            record.uv2 = [x0, y1];
+            record.uv3 = [x1, y1];
+        }
+    }
+
+    // Assembly at 0x7CBE48..0x7CBE61 doubles flags bit 0 into +0x50,
+    // doubles that value once more, then adds it to +0x2C.
+    record.bearing_y += i32::try_from(flag_mode * 2).unwrap();
+    record
 }
 
 fn objects_of_class<'a>(yabx: &'a YabxFile, expected_name: &[u8]) -> Vec<(usize, &'a YabxObject)> {
@@ -492,11 +764,139 @@ fn decode_object_reference(encoded: i16, object_count: usize) -> Result<usize, S
 mod tests {
     use super::*;
 
+    fn runtime_database(flags: u32) -> RuhunaDatabase {
+        RuhunaDatabase {
+            object_index: 0,
+            id: Vec::new(),
+            platform: Vec::new(),
+            library: Vec::new(),
+            name: Vec::new(),
+            comment: Vec::new(),
+            flags,
+            point: 18,
+            max_ascent: 15,
+            max_descent: 3,
+            max_glyph_width: 5,
+            max_glyph_height: 8,
+            texture_page_count: 2,
+            texture_width: 100,
+            texture_height: 200,
+            texture_last_height: 50,
+            glyph_margin: 1,
+            glyph_count: 1,
+            glyph_object_indices: vec![1],
+            texture_object_indices: vec![2],
+        }
+    }
+
+    fn runtime_glyph() -> RuhunaGlyph {
+        RuhunaGlyph {
+            object_index: 1,
+            code: 0x41,
+            cell_increment_x: 6,
+            cell_increment_y: 7,
+            page: 1,
+            origin_x: -2,
+            origin_y: 4,
+            box_x1: 10,
+            box_y1: 20,
+            box_x2: 14,
+            box_y2: 27,
+            kerning_info_count: 0,
+        }
+    }
+
+    fn assert_uv_close(actual: [f32; 2], expected: [f32; 2]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() <= f32::EPSILON);
+        }
+    }
+
     #[test]
     fn decodes_game_object_id_base() {
         assert_eq!(decode_object_reference(10_001, 2).unwrap(), 0);
         assert_eq!(decode_object_reference(10_002, 2).unwrap(), 1);
         assert!(decode_object_reference(10_000, 2).is_err());
         assert!(decode_object_reference(-1, 2).is_err());
+    }
+
+    #[test]
+    fn runtime_glyph_record_matches_binary_offsets() {
+        assert_eq!(std::mem::size_of::<RuhunaRuntimeGlyphRecord>(), 128);
+        assert_eq!(std::mem::offset_of!(RuhunaRuntimeGlyphRecord, code), 6);
+        assert_eq!(
+            std::mem::offset_of!(RuhunaRuntimeGlyphRecord, texture_token),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(RuhunaRuntimeGlyphRecord, bearing_x),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(RuhunaRuntimeGlyphRecord, advance_x),
+            60
+        );
+        assert_eq!(std::mem::offset_of!(RuhunaRuntimeGlyphRecord, uv0), 92);
+        assert_eq!(std::mem::offset_of!(RuhunaRuntimeGlyphRecord, rotated), 124);
+    }
+
+    #[test]
+    fn builds_normal_runtime_glyph_with_last_page_height() {
+        let record = build_runtime_glyph_record(&runtime_database(0), &runtime_glyph(), 9, 17);
+        assert_eq!(record.owner_token, 9);
+        assert_eq!(record.texture_token, 17);
+        assert_eq!(record.code, 0x41);
+        assert_eq!(record.point_x, 18);
+        assert_eq!(record.point_y, 18);
+        assert_eq!(record.atlas_x, 10);
+        assert_eq!(record.atlas_y, 20);
+        assert_eq!(record.inverse_texture_width, 0.01);
+        assert_eq!(record.inverse_texture_height, 0.02);
+        assert_eq!(record.bearing_x, -2);
+        assert_eq!(record.bearing_y, 11);
+        assert_eq!(record.width, 5);
+        assert_eq!(record.height, 8);
+        assert_eq!(record.line_height, 18);
+        assert_eq!(record.advance_x, 6);
+        assert_eq!(record.advance_y, 7);
+        assert_eq!(record.em_pixels_x, 24);
+        assert_eq!(record.em_pixels_y, 24);
+        assert_eq!(record.field_4c, -1);
+        assert_eq!(record.field_58, -4096);
+        assert_uv_close(record.uv0, [0.09, 0.38]);
+        assert_uv_close(record.uv1, [0.16, 0.38]);
+        assert_uv_close(record.uv2, [0.09, 0.58]);
+        assert_uv_close(record.uv3, [0.16, 0.58]);
+        assert_eq!(record.rotated, 0);
+    }
+
+    #[test]
+    fn builds_rotated_runtime_glyph_and_applies_flag_one_offset() {
+        let record = build_runtime_glyph_record(&runtime_database(3), &runtime_glyph(), 0, 1);
+        assert_eq!(record.bearing_x, 7);
+        assert_eq!(record.bearing_y, 2);
+        assert_eq!(record.width, 8);
+        assert_eq!(record.height, 5);
+        assert_eq!(record.advance_x, 7);
+        assert_eq!(record.advance_y, 7);
+        assert_eq!(record.flag_mode, 2);
+        assert_uv_close(record.uv0, [0.09, 0.56]);
+        assert_uv_close(record.uv1, [0.09, 0.38]);
+        assert_uv_close(record.uv2, [0.15, 0.56]);
+        assert_uv_close(record.uv3, [0.15, 0.38]);
+        assert_eq!(record.rotated, 1);
+    }
+
+    #[test]
+    fn unavailable_texture_zeroes_geometry_before_common_flag_adjustment() {
+        let record = build_runtime_glyph_record(&runtime_database(1), &runtime_glyph(), 0, 0);
+        assert_eq!(record.bearing_x, 0);
+        assert_eq!(record.bearing_y, 4);
+        assert_eq!(record.width, 0);
+        assert_eq!(record.height, 0);
+        assert_eq!(record.uv0, [0.0; 2]);
+        assert_eq!(record.uv1, [0.0; 2]);
+        assert_eq!(record.uv2, [0.0; 2]);
+        assert_eq!(record.uv3, [0.0; 2]);
     }
 }

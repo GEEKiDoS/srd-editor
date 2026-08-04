@@ -143,6 +143,53 @@ fn parses_complete_game_ruhuna_font_archives_and_embedded_dds_pages() {
                 page.page_index
             );
         }
+
+        // Nonzero values are test-only opaque tokens. The conversion itself
+        // must preserve the game's page lookup boundary without storing host
+        // pointers in the 128-byte x86 record image.
+        let runtime = font
+            .build_runtime_font(0x1234_5678, |page| u32::from(page) + 1)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(runtime.glyphs.len(), glyph_count, "{}", path.display());
+        assert_eq!(runtime.glyph_pages.len(), glyph_count, "{}", path.display());
+        assert_eq!(
+            runtime.dense_glyph_indices.len(),
+            usize::from(runtime.maximum_code - runtime.minimum_code) + 1,
+            "{}",
+            path.display()
+        );
+        for (glyph_index, record) in runtime.glyphs.iter().enumerate() {
+            assert_eq!(record.owner_token, 0x1234_5678, "{}", path.display());
+            assert_eq!(
+                runtime.dense_glyph_index(record.code),
+                Some(glyph_index as u16),
+                "{} code {:#06X}",
+                path.display(),
+                record.code
+            );
+            let Some(page) = runtime.glyph_pages[glyph_index] else {
+                assert_eq!(record.texture_token, 0, "{}", path.display());
+                continue;
+            };
+            assert_eq!(
+                record.texture_token,
+                u32::from(page) + 1,
+                "{}",
+                path.display()
+            );
+            let expected_height = if u32::from(page) == font.database.texture_page_count - 1 {
+                font.database.texture_last_height
+            } else {
+                font.database.texture_height
+            };
+            assert_eq!(
+                record.inverse_texture_height,
+                1.0 / f32::from(expected_height),
+                "{} code {:#06X}",
+                path.display(),
+                record.code
+            );
+        }
     }
 }
 

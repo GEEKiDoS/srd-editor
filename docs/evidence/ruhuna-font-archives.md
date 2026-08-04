@@ -77,3 +77,36 @@ All directory ranges are bounds-checked and non-overlapping in Rust. Every embed
 
 Every page is one-mip `A4R4G4B4`. The DDS page count equals `Database.tex_page`, page width equals `tex_w`, full-page height equals `tex_h`, and the final page height equals `tex_last_h` in all six archives.
 
+## Database lookup and 128-byte runtime glyph conversion
+
+`sub_F47700` is the post-load Database lookup builder called by both RFZ loaders. It takes the first and last glyph codes from the serialized glyph-reference order, allocates one `u16` entry for every code in that inclusive range, zero-fills the table, and writes each glyph index at `code - minimum_code`. Consequently an in-range hole remains index zero; Rust preserves that value rather than inventing a missing-glyph sentinel.
+
+`sub_7CB9B0` is called after the AVTS texture archive has loaded. It copies the dense table and converts every referenced Ruhuna glyph into a fixed 128-byte record. The record boundaries are independently confirmed by allocation `glyph_count << 7`, construction stride 128, and the zeroing constructor `sub_7CB6F0`.
+
+Important proven fields are:
+
+| Offset | Runtime value |
+| ---: | --- |
+| `+0x06` | glyph code |
+| `+0x0C/+0x0E` | Database point twice |
+| `+0x10/+0x14` | `box_x1/box_y1` promoted to u32 |
+| `+0x18` | page texture handle, or zero for page `0xFFFF`/unavailable page |
+| `+0x1C/+0x20` | reciprocal texture width/page height; the last page uses `tex_last_h` |
+| `+0x28/+0x2C` | glyph bearing/origin-derived offsets |
+| `+0x30/+0x34` | inclusive glyph width/height |
+| `+0x38` | `max_ascent + max_descent` |
+| `+0x3C/+0x40` | cell advances; swapped in the rotated branch, with rotated Y advance `cell_inc_x + 1` |
+| `+0x44/+0x48` | `trunc(point * 1.3333334 + 0.5)` |
+| `+0x4C` | `-1` |
+| `+0x50` | `(flags & 1) * 2` |
+| `+0x58` | signed `-4096` |
+| `+0x5C..+0x7B` | four UV pairs |
+| `+0x7C` | rotated marker (`0` or `1`) |
+
+For the normal branch (`flags & 2 == 0`), width/height are the inclusive X/Y box extents, bearing is `(origin_x, max_ascent - origin_y)`, and UVs use the exact one-pixel outer border: `(x1-1,y1-1)`, `(x1+width+1,y1-1)`, `(x1-1,y1+height+1)`, `(x1+width+1,y1+height+1)`.
+
+For the rotated branch, width and height are swapped, bearing becomes `(max_descent + origin_y, origin_x)`, advances become `(cell_inc_y, cell_inc_x + 1)`, and UV order is `(x1-1,y2+1)`, `(x1-1,y1-1)`, `(x2+1,y2+1)`, `(x2+1,y1-1)`.
+
+The final assembly at `0x7CBE48..0x7CBE61` proves a subtle common adjustment: bit zero is doubled into `+0x50`, doubled again, then added to bearing Y. Thus `flags & 1` adds four, not two. When the page handle is zero, geometry and UVs are first cleared, after which this common four-pixel adjustment still applies.
+
+Rust now exposes this conversion as a host-independent runtime font. Its exact game-layout record uses opaque `u32` tokens for the x86 pointer slots, so the editor does not truncate or reinterpret D3D objects on an x64 host. Unit tests lock all offsets and both orientation branches; the six real archives additionally validate dense lookup entries, page selection, and last-page reciprocal height.
