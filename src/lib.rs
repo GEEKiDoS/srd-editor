@@ -1,8 +1,13 @@
 pub mod animation;
 pub mod attribute;
 pub mod csli;
+pub mod d3d9_backend;
 pub mod dds;
+pub mod editor_app;
+pub mod editor_document;
+pub mod editor_workspace;
 pub mod image;
+pub mod imgui_dx9;
 pub mod number;
 pub mod projection;
 pub mod reference;
