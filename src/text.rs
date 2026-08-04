@@ -48,6 +48,26 @@ impl TextDefinition {
             field_41: optional_i16(file, block, 0x41)?,
         })
     }
+
+    /// Returns the exact 3-by-3 Fennel alignment code written to
+    /// `TextBoxObject+0x2D0` by `sub_AC6F50 -> sub_AC6BF0`.
+    ///
+    /// Horizontal flags are `0`, `0x04`, or `0x08`; vertical flags are `0`,
+    /// `0x10`, or `0x20`. The game returns zero when either masked group has
+    /// an unsupported combination (for example both bits set).
+    pub fn fennel_alignment_code(&self) -> Option<u32> {
+        self.field_78.map(fennel_alignment_code_from_text_flags)
+    }
+}
+
+/// Exact `sub_AC6BF0` mapping used by the RFZ/Fennel TextBox path.
+pub const fn fennel_alignment_code_from_text_flags(flags: u32) -> u32 {
+    match (flags & 0x0C, flags & 0x30) {
+        (horizontal @ (0 | 4 | 8), vertical @ (0 | 0x10 | 0x20)) => {
+            (vertical / 0x10) * 3 + horizontal / 4
+        }
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,4 +228,34 @@ fn signed_at(
     property
         .read_signed_scalar_at(file, index)
         .ok_or_else(|| TextError(format!("invalid {label}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fennel_alignment_code_from_text_flags;
+
+    #[test]
+    fn fennel_alignment_matches_all_nine_game_codes() {
+        for (flags, expected) in [
+            (0x00, 0),
+            (0x04, 1),
+            (0x08, 2),
+            (0x10, 3),
+            (0x14, 4),
+            (0x18, 5),
+            (0x20, 6),
+            (0x24, 7),
+            (0x28, 8),
+        ] {
+            assert_eq!(fennel_alignment_code_from_text_flags(flags), expected);
+        }
+    }
+
+    #[test]
+    fn fennel_alignment_preserves_the_game_invalid_combination_fallback() {
+        assert_eq!(fennel_alignment_code_from_text_flags(0x0C), 0);
+        assert_eq!(fennel_alignment_code_from_text_flags(0x30), 0);
+        assert_eq!(fennel_alignment_code_from_text_flags(0x3C), 0);
+        assert_eq!(fennel_alignment_code_from_text_flags(0xFFFF_FFFF), 0);
+    }
 }

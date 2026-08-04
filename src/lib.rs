@@ -4,6 +4,7 @@ pub mod avts;
 pub mod camera;
 pub mod csli;
 pub mod d3d9_backend;
+pub mod d3d9_fennel;
 pub mod d3d9_srd;
 pub mod d3d9_texture;
 pub mod dds;

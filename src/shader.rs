@@ -458,6 +458,14 @@ impl CeylonSimpleShaderBits {
         self.set_parameter(11, 2, 2);
     }
 
+    /// Applies the vertex inputs produced by Ceylon vertex format 13:
+    /// COLOR0/COLOR1 and TEXCOORD0. `sub_671D30` case 13 registers exactly
+    /// the first four elements of format 14 and omits only TEXCOORD1.
+    pub fn apply_fennel_vertex_format_13(&mut self) {
+        self.set_parameter(9, 2, 2);
+        self.set_parameter(11, 2, 1);
+    }
+
     /// Applies positions 36..38 once the selector's texture-feature gate is
     /// active. The binary sets BaseMap, MultiTexMap0 and MultiTexMap1 for the
     /// first, second and third non-null texture objects respectively.

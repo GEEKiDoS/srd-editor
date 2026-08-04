@@ -130,6 +130,7 @@ impl ChusanAdvertiseLogoPlayerProfile {
         Ok(SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             target_projection_view,
+            [present_width, present_height],
             target_screen_size,
         ))
     }
@@ -220,6 +221,7 @@ mod tests {
                 .projection_view_for_present_size(1080, 1920)
                 .unwrap()
         );
+        assert_eq!(context.target_render_size, [1080, 1920]);
         assert_eq!(context.target_screen_size, [1920, 1080]);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,11 @@ use srd_editor::dds::{
     D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat,
 };
 use srd_editor::editor_document::EditorDocument;
+use srd_editor::fennel::{
+    FennelFittingLayoutError, FennelLayoutGlyphMetrics, FennelPlainRecordError,
+    FennelStaticTextProperties, build_fennel_plain_record_stream, decode_fennel_game_text,
+    layout_fennel_static_fitting_lines, tokenize_fennel_plain_text,
+};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
@@ -37,7 +43,12 @@ enum CorpusProfile {
 }
 
 fn identity_host_context() -> SrdHostDrawContext {
-    SrdHostDrawContext::new(Affine3x4::IDENTITY, identity_matrix4x4_game(), [1920, 1080])
+    SrdHostDrawContext::new(
+        Affine3x4::IDENTITY,
+        identity_matrix4x4_game(),
+        [1920, 1080],
+        [1920, 1080],
+    )
 }
 
 fn srd_corpus_profile(file_count: usize) -> CorpusProfile {
@@ -127,6 +138,18 @@ fn parses_complete_game_ruhuna_font_archives_and_embedded_dds_pages() {
         let pages = font
             .atlas_pages(&font.textures[0])
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let sampler = font
+            .atlas_d3d9_sampler_state(&font.textures[0])
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(sampler.base.address_u as u32, 3, "{}", path.display());
+        assert_eq!(sampler.base.address_v as u32, 3, "{}", path.display());
+        assert_eq!(sampler.base.min_filter as u32, 2, "{}", path.display());
+        assert_eq!(sampler.base.mag_filter as u32, 2, "{}", path.display());
+        assert_eq!(sampler.mip_filter as u32, 1, "{}", path.display());
+        assert_eq!(sampler.max_mip_level, 1, "{}", path.display());
+        assert_eq!(sampler.max_anisotropy, 1, "{}", path.display());
+        assert_eq!(sampler.mip_lod_bias_bits, 0, "{}", path.display());
+        assert_eq!(sampler.border_color, 0, "{}", path.display());
         assert_eq!(pages.len(), page_count, "{}", path.display());
         for page in pages {
             assert_eq!(
@@ -373,6 +396,7 @@ fn builds_evidence_complete_single_texture_draws() {
                     [0.0, 0.0, 0.0, 1.0],
                 ],
             },
+            [1920, 1080],
             [1920, 1080],
         ),
     )
@@ -1674,6 +1698,12 @@ fn parses_text_records_and_resolves_project_fonts() {
     let mut inline_character_count = 0usize;
     let mut text_count = 0usize;
     let mut nonempty_text_count = 0usize;
+    let mut rfz_text_count = 0usize;
+    let mut valid_rfz_utf8_count = 0usize;
+    let mut plain_rfz_text_count = 0usize;
+    let mut complete_static_rfz_text_count = 0usize;
+    let mut missing_static_rfz_properties = BTreeMap::<u8, usize>::new();
+    let mut text_flag_counts = BTreeMap::<u32, usize>::new();
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let project = Project::from_file(&file).unwrap();
@@ -1696,12 +1726,49 @@ fn parses_text_records_and_resolves_project_fonts() {
             let Some(text) = &image.text else {
                 continue;
             };
+            *text_flag_counts
+                .entry(text.field_78.unwrap_or(0))
+                .or_default() += 1;
             if let Some(font_index) = text.font_index.filter(|index| *index >= 0) {
                 assert!(
                     project.resolve_text_font(text).is_some(),
                     "{} font index {font_index}",
                     path.display()
                 );
+            }
+            if let Some(font) = project.resolve_text_font(text) {
+                let lower_name = font
+                    .name
+                    .iter()
+                    .map(u8::to_ascii_lowercase)
+                    .collect::<Vec<_>>();
+                if lower_name.ends_with(b".rfz") {
+                    rfz_text_count += 1;
+                    match FennelStaticTextProperties::from_text_definition(
+                        text,
+                        image.width,
+                        image.height,
+                    ) {
+                        Ok(_) => complete_static_rfz_text_count += 1,
+                        Err(error) => {
+                            let srd_editor::fennel::FennelStaticTextPropertyError::MissingProperty {
+                                code,
+                            } = error;
+                            *missing_static_rfz_properties.entry(code).or_default() += 1;
+                        }
+                    }
+                    if let Ok(units) = decode_fennel_game_text(&text.text) {
+                        valid_rfz_utf8_count += 1;
+                        match tokenize_fennel_plain_text(&units) {
+                            Ok(_) => plain_rfz_text_count += 1,
+                            Err(error) => eprintln!(
+                                "unsupported RFZ text control: {}: {error}; bytes={:02X?}",
+                                path.display(),
+                                text.text
+                            ),
+                        }
+                    }
+                }
             }
             nonempty_text_count += usize::from(!text.text.is_empty());
             text_count += 1;
@@ -1711,8 +1778,140 @@ fn parses_text_records_and_resolves_project_fonts() {
     assert!(font_count > 0);
     assert!(text_count > 0);
     assert!(nonempty_text_count > 0);
+    assert_eq!(valid_rfz_utf8_count, rfz_text_count);
     eprintln!(
-        "FONT records={font_count}, inline CHAR mappings={inline_character_count}, TEXT records={text_count}, nonempty strings={nonempty_text_count}"
+        "FONT records={font_count}, inline CHAR mappings={inline_character_count}, TEXT records={text_count}, nonempty strings={nonempty_text_count}, RFZ texts={rfz_text_count}, complete static RFZ inputs={complete_static_rfz_text_count}, missing static RFZ properties={missing_static_rfz_properties:?}, valid RFZ UTF-8={valid_rfz_utf8_count}, plain RFZ token subset={plain_rfz_text_count}, TEXT 0x78={text_flag_counts:?}"
+    );
+}
+
+#[test]
+fn audits_binary_proven_static_fennel_layout_subset() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let Some(game_data_root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+
+    let mut runtime_fonts = BTreeMap::new();
+    let mut text_count = 0usize;
+    let mut fitting_count = 0usize;
+    let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
+    let mut layout_error_counts = BTreeMap::<&'static str, usize>::new();
+    let mut layout_error_samples = BTreeMap::<&'static str, Vec<String>>::new();
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        for image in project
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.layers)
+            .flat_map(|layer| &layer.image_by_node)
+            .flatten()
+        {
+            let Some(text) = &image.text else {
+                continue;
+            };
+            let Some(font) = project.resolve_text_font(text) else {
+                continue;
+            };
+            if !font
+                .name
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+                .ends_with(b".rfz")
+            {
+                continue;
+            }
+            text_count += 1;
+            let properties =
+                FennelStaticTextProperties::from_text_definition(text, image.width, image.height)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            if !runtime_fonts.contains_key(font.name.as_slice()) {
+                let name = std::str::from_utf8(&font.name)
+                    .unwrap_or_else(|error| panic!("{} font name: {error}", path.display()));
+                let rfz_path = game_data_root.join("A000/font").join(name);
+                let parsed = RuhunaFont::from_rfz(&fs::read(&rfz_path).unwrap())
+                    .unwrap_or_else(|error| panic!("{}: {error}", rfz_path.display()));
+                let runtime = parsed
+                    .build_runtime_font(1, |page| u32::from(page) + 1)
+                    .unwrap_or_else(|error| panic!("{}: {error}", rfz_path.display()));
+                runtime_fonts.insert(font.name.clone(), runtime);
+            }
+            let runtime = runtime_fonts.get(font.name.as_slice()).unwrap();
+            let mut stream = match build_fennel_plain_record_stream(
+                &text.text,
+                runtime,
+                properties.glyph_placement(0, 0, [0; 4]),
+                usize::MAX,
+                |code, _| u32::from(code),
+            ) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let category = match error {
+                        FennelPlainRecordError::Decode(_) => "decode",
+                        FennelPlainRecordError::Control(_) => "control",
+                        FennelPlainRecordError::MissingGlyph { .. } => "missing-glyph",
+                        FennelPlainRecordError::RecordCapacity { .. } => "capacity",
+                    };
+                    *record_error_counts.entry(category).or_default() += 1;
+                    continue;
+                }
+            };
+            match layout_fennel_static_fitting_lines(&mut stream, properties.layout, |token| {
+                let code = u16::try_from(token).ok()?;
+                runtime.glyph(code).map(FennelLayoutGlyphMetrics::from)
+            }) {
+                Ok(_) => fitting_count += 1,
+                Err(error) => {
+                    let category = match error {
+                        FennelFittingLayoutError::InvalidLineTable => "line-table",
+                        FennelFittingLayoutError::UnsupportedRecordKind { .. } => "record-kind",
+                        FennelFittingLayoutError::MissingGlyphMetrics { .. } => "glyph-metrics",
+                        FennelFittingLayoutError::HorizontalWrapRequired { .. } => "wrap",
+                        FennelFittingLayoutError::VerticalOverflow { .. } => "vertical-overflow",
+                    };
+                    *layout_error_counts.entry(category).or_default() += 1;
+                    layout_error_samples
+                        .entry(category)
+                        .or_default()
+                        .push(format!(
+                            "{} box={}x{} flags={:#x} scale={:?} spacing={} text={:?}",
+                            path.display(),
+                            image.width,
+                            image.height,
+                            properties.layout.text_flags,
+                            [properties.layout.scale_x, properties.layout.scale_y],
+                            properties.layout.line_spacing,
+                            String::from_utf8_lossy(&text.text)
+                        ));
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "static RFZ texts={text_count}, fitting subset={fitting_count}, record errors={record_error_counts:?}, layout branches={layout_error_counts:?}"
+    );
+    for (category, samples) in &layout_error_samples {
+        for sample in samples {
+            eprintln!("  {category}: {sample}");
+        }
+    }
+    assert!(text_count > 0);
+    assert!(fitting_count > 0);
+    assert_eq!(
+        text_count,
+        fitting_count
+            + record_error_counts.values().sum::<usize>()
+            + layout_error_counts.values().sum::<usize>()
     );
 }
 

@@ -721,6 +721,7 @@ fn diagnostic_project_camera_smoke_host(
             .camera
             .runtime_matrices(target_width)
             .projection_view,
+        [target_width as u32, target_screen_size[1]],
         target_screen_size,
     )
 }

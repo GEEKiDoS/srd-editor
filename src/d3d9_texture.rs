@@ -13,6 +13,7 @@ use windows::Win32::Graphics::Direct3D9::{
 };
 
 use crate::dds::{D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy};
+use crate::ruhuna::{RuhunaD3d9SamplerState, RuhunaFont};
 use crate::texture::TextureList;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,74 @@ pub struct D3d9Texture2d {
 pub struct SrdD3d9TextureSet {
     sources: Vec<Option<Vec<u8>>>,
     textures: Vec<Option<D3d9Texture2d>>,
+}
+
+/// Device-reset-safe D3D9 textures for the DDS pages embedded in one Ruhuna
+/// RFZ font. Page order is the AVTS/database page order already validated by
+/// `RuhunaFont::atlas_pages`.
+pub struct RuhunaD3d9AtlasSet {
+    sources: Vec<Vec<u8>>,
+    textures: Vec<Option<D3d9Texture2d>>,
+    sampler: RuhunaD3d9SamplerState,
+}
+
+impl RuhunaD3d9AtlasSet {
+    pub fn from_font(
+        device: &IDirect3DDevice9,
+        font: &RuhunaFont,
+    ) -> Result<Self, D3d9TextureError> {
+        if font.textures.len() != 1 {
+            return Err(D3d9TextureError(format!(
+                "Ruhuna D3D9 atlas currently requires the binary-proven single TextureResource, found {}",
+                font.textures.len()
+            )));
+        }
+        let pages = font
+            .atlas_pages(&font.textures[0])
+            .map_err(|error| D3d9TextureError(error.to_string()))?;
+        let sampler = font
+            .atlas_d3d9_sampler_state(&font.textures[0])
+            .map_err(|error| D3d9TextureError(error.to_string()))?;
+        let sources = pages
+            .iter()
+            .map(|page| font.atlas_page_bytes(page).to_vec())
+            .collect::<Vec<_>>();
+        let mut result = Self {
+            textures: (0..sources.len()).map(|_| None).collect(),
+            sources,
+            sampler,
+        };
+        result.create_device_objects(device)?;
+        Ok(result)
+    }
+
+    pub fn invalidate_device_objects(&mut self) {
+        for texture in &mut self.textures {
+            *texture = None;
+        }
+    }
+
+    pub fn create_device_objects(
+        &mut self,
+        device: &IDirect3DDevice9,
+    ) -> Result<(), D3d9TextureError> {
+        for (index, source) in self.sources.iter().enumerate() {
+            self.textures[index] = Some(D3d9Texture2d::from_dds_bytes(device, source)?);
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, page_index: usize) -> Option<&D3d9Texture2d> {
+        self.textures.get(page_index)?.as_ref()
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    pub fn sampler(&self) -> RuhunaD3d9SamplerState {
+        self.sampler
+    }
 }
 
 impl SrdD3d9TextureSet {

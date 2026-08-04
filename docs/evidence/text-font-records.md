@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，以及 RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流均已闭环。二进制证明 RFZ glyph 不会先被改写成 FONT 两个 i16；当前继续复现 `TextBoxObject` 的排版和最终 glyph draw。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。默认 `sub_7C1F90` 中无需自动断行且未触发垂直边界的静态排版路径也已实现并通过完整语料审计。当前剩余主线是自动断行状态机、垂直边界结果、裁剪/效果分支和真实 SRD/RFZ 像素回归。
 
 ## TEXT 记录
 
@@ -98,6 +98,20 @@ invalid nonnegative FONT indices=0
 
 AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 warning 页的 `WARNING` 与版权说明均解析到 FONT `[1]` 的 32pt RFZ。
 
+当前 `D:\sdhd\assets\data\surfboard` 完整目录的重新审计结果为：
+
+```text
+FONT records=365
+TEXT records=1292
+RFZ texts=1292
+显式具有 0x78/0x36/0x7C/0x41 的 RFZ texts=1292
+缺失上述静态排版输入的 RFZ texts=0
+有效游戏模式 UTF-8=1292
+当前已实现 token 子集=1292
+```
+
+因此 Rust 的静态 RFZ 输入转换器要求这四项属性显式存在；缺项直接返回错误，不需要也不允许为当前语料发明默认值。
+
 ## SrTextCast 排版与 glyph quad 路径
 
 主虚表 `0x190E210` 的 `+0xBC` 进入 `sub_AD8D50`，字符串/样式状态更新后触发重建。实际 draw 入口 `sub_AD9160` 已继续闭环出以下调用链：
@@ -116,6 +130,10 @@ AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 
 3. `sub_7BC820` 通过全局 `font::FontManager` 和 TextBox `+0x80` 的注册下标取得 `font::TextBoxObject`；
 4. `sub_AC5740` 把 SrTextCast 的矩阵、颜色、对齐、裁剪和字符串状态写给 TextBoxObject；成功时返回 `1`；
 5. `sub_AD9160` 对该返回值取反，只有 TextBox 路径返回 `0` 时才执行 `sub_AD8780/sub_AD8480/sub_AD9490` 的 FONT/TEX/CROP fallback。
+
+`sub_AC6F50` 把 `TEXT.flags & 0x0C` 和 `TEXT.flags & 0x30` 传给 `sub_AC6BF0`，并把返回值写到 `TextBoxObject+0x2D0`。反编译与逐指令结果一致：水平组 `0/0x04/0x08` 分别贡献 `0/1/2`，垂直组 `0/0x10/0x20` 分别选择 `+0/+3/+6`，因此 9 个合法组合映射为 `0..8`。若任一组含同时置位的非法组合，函数回退为 `0`。Rust 的 `fennel_alignment_code_from_text_flags` 精确保留这张映射表和非法组合回退，没有把它简化成对所有位模式都成立的算式。
+
+同一函数先调用 `sub_7C8DA0` 清除 `TextBoxObject+0x2E0` 的 `0x04/0x08`，再调用 `sub_7C8E80` 清除 `0x20/0x80/0x400/0x800/0x1000/0x2000/0x4000`。后续 `0..6` 模式 switch 会通过这两个 setter 重建对应位；已确认模式 `2..4` 会置位 `0x20`。`sub_7C90A0` 正是按 `0x20`、其次 `0x40`、否则默认路径选择三套大布局函数。当前尚未在这条初始化链找到 `0x40` 的写入来源，也尚未证明各模式的排版语义，因此 Rust 只实现已经闭合的 alignment code，不命名或选择这些布局分支。
 
 加载端与此完全对应。`srd_player_impl_load_project` 对每个 PROJ FONT 调用 `sub_AC4A80`。该函数为普通字体名建立并注册 `font::TextBox`，保存到同一个 `SrRenderer +0x26C` 资源树；但字体名包含 `.sbfont` 时明确跳过建立 TextBox。因此 `.sbfont` 必然进入旧式路径，而 RFZ 在 TextBox 可用时直接走 Fennel/Ruhuna；外部资源加载失败也会回退到旧式路径。二进制中不需要、也没有证据支持一个 RFZ runtime glyph 到 FONT/TEX/CROP 的写表桥。
 
@@ -139,11 +157,161 @@ AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 
 
 Rust 的 `FennelGlyphLayoutRecord` 固定为精确 116 字节，并已实现上述逐字段转换；仍未命名的 iterator 字段保留偏移名，不用猜测语义。
 
+### 游戏实际字符串编码与 token 子集
+
+FontManager 构造路径 `0x7B719C..0x7B71A4` 依次压入 `0x20` 和 `0`，调用 `sub_46B446 -> sub_F320F0 -> sub_F32B40`。后者把第一个参数 `0` 写到实现对象 `+0x04`，把第二个参数 `0x20` 用作最大 font slot 数，并把 `0x24` 写到 `+0x08`。因此本游戏的已执行配置是：
+
+- 字符串编码模式 `0`；
+- 最多 `0x20` 个 font slots；
+- Fennel 控制前缀为 UTF-16 `U+0024`，即 `$`。
+
+`font::TextBoxObject::setTextByString` (`sub_7C8F40`) 通过 `sub_F321C0` 读取模式。模式 `0` 明确调用 `sub_F525D0`：该函数按 UTF-8 continuation byte 解码，BMP 字符直接写一个 UTF-16 code unit，补充平面字符写 surrogate pair。转换成功后通过虚表 `+0x18` 进入 `sub_7C9070 -> sub_7C90A0`。所以 RFZ TextBox 路径不是旧 fallback 的“两字节 big-endian code”输入；当前游戏配置明确是 UTF-8。
+
+`sub_F3BB80` 建立 token iterator，`sub_F3BD40` 逐 token 输出。当前完整 SRD 语料实际需要且已在 Rust 复现的分支为：
+
+| 输入 | iterator 行为 |
+| --- | --- |
+| 普通 UTF-16 unit | `sub_F3DA10(..., type=0, code)`；code 写到 token `+0x08` |
+| CRLF、CR、LF | type `3` 换行；CRLF 只产生一次换行 |
+| `$$` | type `0` 的字面 `$` glyph |
+| `$N` / `$n` | type `3` 换行 |
+| `$t[x:y]` / `$T[x:y]` | T/t switch 的十进制有符号参数分支；把 x/y 写到 iterator 与 token `+0x20/+0x24`，不单独产生 glyph record |
+| NUL、`U+001A` | iterator 结束 |
+
+其他 `$` 命令仍明确返回 unsupported，不会被当作普通文字。当前完整 data 语料的 1237 条 RFZ TEXT 全部通过游戏模式的 UTF-8 解码；1234 条不含控制命令，另外 3 条只使用 `$t[-6:0]` 和 `$t[-10:0]`，因此上述子集覆盖当前 1237/1237 条 RFZ TEXT。
+
+`sub_7C90A0` 的 record stream 边界也已复现：普通 glyph 每个一条 116 字节记录；显式换行写 kind `-1`，超过 128 项 line-start 表时写 `-254`；iterator 结束后再写一个 kind `-1` 和最终 kind `-255`。缺字时游戏会尝试名为 `fennel_npc` 的 EmbeddedSprite；该 fallback 尚未闭环，因此 Rust 当前明确报缺字，不伪造替代 glyph。
+
+### 默认静态排版输入与 fitting 子集
+
+TextBoxObject 构造函数 `sub_7BEB80` 先写 `+0x2D0=0`、`+0x2E0=3`、`+0x2E4/+0x2E8=200.0`。`sub_AC6F50` 清除模式位后，静态 SrTextCast 内部状态的 mode 初值为 `0`：
+
+- TEXT `0x78 bit 0` 置位时，默认布局 flags 精确为 `3`；
+- TEXT `0x78 bit 0` 清零时，`sub_7C8DA0` 再置 `0x04`，默认布局 flags 精确为 `7`；
+- 两者都由 `sub_7C90A0` 选择 `sub_7C1F90`；bit `0x04` 只控制首行横向 auto-fit，不改变布局器选择。
+
+TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+0x6C` 清零。`sub_F2C670` 把 TEXT `+0x1C`（属性 `0x7C`）写到 TextBoxObject `+0x100`，`sub_F3BD40` 的普通 token 分支再把它复制到输出 `+0x6C`；`sub_7C90A0` 最终写入 layout record `+0x20`。同理，`sub_F2C620` 把 TEXT `+0x1E`（属性 `0x41`）写到 TextBoxObject `+0xFC`，作为行距；`sub_F2C5B0` 从 TEXT `0x36` 写入横纵缩放。因此 `FennelStaticTextProperties` 的来源为：
+
+| Rust 输入 | 游戏来源 |
+| --- | --- |
+| `initial_x/initial_y` | TextBoxObject 构造初值 `0/0`；之后可被 `$t[x:y]` 改写 |
+| `glyph_spacing` | TEXT `0x7C` → TextBoxObject `+0x100` → token `+0x6C` → record `+0x20` |
+| `scale_x/scale_y` | TEXT `0x36` → TextBoxObject `+0xC4/+0xC8` |
+| `line_spacing` | TEXT `0x41` → TextBoxObject `+0xFC` |
+| `box_width/box_height` | 所属 CIMG 当前几何尺寸 → TextBoxObject `+0x2E4/+0x2E8` |
+
+`sub_7C1F90` 的已实现 fitting 子集还精确保留：
+
+- 普通模式的视觉右边界为 runtime glyph `bearing_x + width`；水平 advance 为 `record.+0x20 + runtime advance_x`；行高取最大 `em_pixels_y`；
+- 首行 auto-fit 使用 `f32::from_bits(0x3F7FBE77)` 的缩放偏置；静态 mode 0 不做统一 Y 缩放；
+- 横向/纵向居中均使用 SSE `cvttss2si` 截断到整数后再转回 f32；
+- 行距只插在第二行及后续行之前，既不加在第一行之前，也不追加到最后一行之后；
+- 若任何 glyph 需要进入自动断行/禁则分支，或当前行进入垂直边界分支，函数保持输入记录不变并返回明确错误。
+
+真实 1292 条 RFZ TEXT 与对应六套 RFZ runtime font 的逐条审计为：
+
+```text
+无需未闭分支即可排版=1270
+进入自动断行/禁则=9
+进入垂直边界=13
+UTF-8/控制符/缺字/字体记录错误=0
+```
+
+这 22 条不是用启发式 fit 或截断掩盖；它们继续作为断行与边界状态机的取证样本。
+
+### FontManager 固定断行字符表
+
+`sub_F33C30` 先清空 FontManager implementation `+0xE0/+0xE4` 的两个集合，然后：
+
+- 把 `word_1940AB8` 的 45 个 UTF-16 值插入 `+0xE0`；`sub_F38DB0` 查询该集合；
+- 把 `word_1940A9C` 的 14 个 UTF-16 值插入 `+0xE4`；`sub_F38D20` 查询该集合。
+
+Rust 已按原始偏移名保存为 `FENNEL_FONT_MANAGER_SET_E0/E4`，并精确复现两个 membership 查询。虽然表中字符形态与日文禁则集合一致，但在 `sub_7C1F90` 的完整断行指针移动、word-break 候选和回退状态闭合前，不把这两个集合单独解释成足以实现断行的 Unicode 规则。
+
+### 116 字节记录到 glyph triangles
+
+`sub_7C10B0` 的无裁剪分支（TextBoxObject flags `& 0x400 == 0`）已经复现为 host-independent Rust 顶点生成器：
+
+- 输出顶点精确为 28 字节：`float3 position`、4 字节 primary color、4 字节 secondary color、`float2 UV`；
+- 四角索引表 `dword_18E8084` 的实值为 `[1, 0, 2, 3, 1, 2]`，即直接生成两个 triangle-list 三角形；
+- 每个 UV 分量提交前加 `f32::from_bits(0x3727C5AC)`，即约 `0.00001`；
+- primary color 取记录 `+0x34` 起对应角的 packed color，secondary color 取 TextBoxObject `+0x32C`；两个颜色都经过 `sub_F25B40 -> sub_5FF4A0`，在顶点内存中写为 BGRA byte 顺序；
+- 局部四角由记录 `width/height`、`scale_x/scale_y`、`+0x24..+0x30` 和调用方 x/y 组成；随后按函数中的 4x4 row dot product 做 perspective divide；
+- `RuhunaD3d9AtlasSet` 已复用现有无 D3DX DDS 上传器，可把 RFZ/AVTS 中按 page 排序的 DDS 建为可 device-reset 重建的 D3D9 纹理。
+
+`flags & 0x400 != 0` 的裁剪与 UV 重映射分支还未并入 Rust；因此当前顶点生成器名称和接口明确限定为 `unclipped`。
+
+### teaFontRenderer batch 与 format 13
+
+`teaFontRenderer` 的 RTTI/vtable 从 `0x18E7EC8` 闭环；虚表 `+0x34` 是上述 `sub_7C10B0`。`sub_7C04F0` 最终直接调用实际绘制函数 `sub_7C7F90`。后者按 texture batch node 迭代，在 `0x7C8284..0x7C82C6` 完成以下步骤：
+
+- 把 batch texture 写到内嵌 DrawPacket texture slot 0；slot 1/2 清零；
+- 以 vertex format `13`、primitive `3`、`glyph_count * 6` 个顶点和调用方 `is_2d` 配置 renderer `+0x150` 的动态 batch；
+- 每个普通 glyph 消耗 `0xA8 = 6 * 28` 字节；record flag `0x40000` 时再保留一组 `0xA8` 并第二次调用 `sub_7C10B0`；
+- 虚表 `+0x10` 进入 `sub_6DF020`，把 `is_2d` 复制到 DrawPacket `+0x60 bit 7` 后提交。
+
+`sub_671D30` 的 vertex declaration switch 中 case 13 精确注册：
+
+1. POSITION float3；
+2. COLOR0 D3DCOLOR；
+3. COLOR1 D3DCOLOR；
+4. TEXCOORD0 float2。
+
+case 14 在这四项之后才增加 TEXCOORD1。因此 Fennel format 13 精确是 SRD format 14 的前 28 字节，而不是根据 `sub_7C10B0` 输出形状反推的自定义声明。Rust 的 `FENNEL_D3D9_VERTEX_DECLARATION` 和 `FennelRenderVertex::STRIDE` 已固定并测试该布局。
+
+### DrawPacket、ShapeEnv 与 shader bytecode
+
+字体 renderer 构造后默认选择 render preset 3。DrawPacket 构造、renderer 初始化和 `sub_7C7F90` 默认模式的最终值为：
+
+```text
+draw_flags_00 = 0x02AFE003
+flags_60      = 0x00004020（2D 时再置 bit 7，成为 0x000040A0）
+field_28      = 31
+field_2c      = 0
+vertex_format = 13
+textures      = [present, null, null]
+```
+
+由已经复现的 ShapeEnv key 与 Simple selector 得到：
+
+| batch | ShapeEnv low:high | compact key |
+| --- | --- | --- |
+| 3D | `0x0036BFB0:0` | `AAMAAABAABGAAAAAAA` |
+| 2D | `0x0036BFB8:0` | `EAMAAABAABGAAAAAAA` |
+
+使用原游戏 `cg.dll` 和 `chusanApp.exe` 内的精确 Cg source 只做离线编译，两个 key 均通过 D3D assemble 和 HAL `CreateVertexShader/CreatePixelShader`。输出为：
+
+| shader | bytes | SHA-256 |
+| --- | ---: | --- |
+| 3D VS | 332 | `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61` |
+| 2D VS | 384 | `A3E0CA2EFA3452A529DDE7E92EB638FAAD4A230DF5A5537D2D50BE53BC045BD4` |
+| shared textured PS | 248 | `066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F` |
+
+这些 bytecode 分别与项目中已有的首个 3D VS、2D VS 和单贴图 PS 逐字节相等。`shader_bytecode.rs` 因此把两个 Fennel key 映射到相同的已验证数组，不嵌入重复副本。编辑器运行时不加载 Cg，也不使用 D3DX。
+
+### RFZ atlas sampler
+
+每个 RFZ 的 AVTS entry 0 是一个 Stevia YABX 数据库；其中每个 DDS atlas page 都有一个 `stevia::Texture` 对象。该类序列化字段前缀明确是 `_wrapU/_wrapV/_minFilter/_magFilter/_mipFilter/_anisoNumber/_lodBias`。本地完整六套字体的每一页均为：
+
+```text
+[2, 2, 1, 1, 0, 1, 0]
+```
+
+这组值也与 `ceylon::resource::Texture` 构造函数 `sub_E7E1E0` 在 `+0x18..+0x30` 写入的默认值逐项相同。`ceylon_texture_sync_sampler_state` (`sub_E7E8B0`) 把它们写入 backing sampler，`d3d9_flush_texture_sampler_state` (`sub_E59410`) 再明确提交：
+
+- type 1/2：ADDRESSU/V，经地址表把内部 2 映射为 D3D9 Clamp；
+- type 6/5/7：MIN/MAG/MIPFILTER，经 filter 表把内部 1/1/0 映射为 Linear/Linear/Point；
+- type 9/10/8/4：MAXMIPLEVEL、MAXANISOTROPY、MIPMAPLODBIAS、BORDERCOLOR。
+
+字体 DDS 当前均为一层 mip；`ceylon_image_initialize_from_stevia_request` 在 `0xE7FF5F..0xE7FF6E` 把零 mip count 至少提升到 1 并写到 image `+0x64/+0x68`，随后 `sub_E7E8B0` 将其用于 MAXMIPLEVEL。因此当前 atlas 的完整 D3D9 sampler 是 Clamp/Clamp、Linear/Linear/Point、max mip level 1、max anisotropy 1、LOD bias 0、border color 0。Rust 会解析并验证每个 Stevia texture object；页数不匹配、页间 sampler 不同或出现未证明值时直接报错。
+
+`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。它只接受已经排版和按 texture page 分批的六顶点 glyph 数据；当前尚未把未闭环的排版结果伪装成可用输入。
+
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 
 ## 下一证据目标
 
-- `sub_7C1F90/sub_7C4070/sub_7C5A20` 三个 116 字节记录排版器的对齐、换行、裁剪和方向分支；
-- Fennel token iterator 的字符串编码、控制 token 和位置输出；
-- `sub_7C10B0` 的 116 字节 glyph item 到 28 字节六顶点输出，以及 atlas texture 的最终提交状态；
+- `sub_7C1F90` 的自动断行、禁则、word-break 和垂直边界状态机，以及 `sub_7C4070/sub_7C5A20` 两个非默认排版器；
+- Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
+- `sub_7C10B0` 的 `flags & 0x400` 裁剪/UV 重映射分支和 `0x40000` 第二 glyph/effect 的具体来源；
 - 外部字体 glyph quad 进入 D3D9Ex composition 的真实 SRD/RFZ 端到端回归。

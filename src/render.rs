@@ -720,7 +720,8 @@ pub enum SrdSimpleShaderContributionError {
 
 impl CeylonShaderKey {
     /// Reproduces every Simple-selector feature contributed directly by the
-    /// Ceylon ShapeEnv object built from this key for an SRD quad.
+    /// Ceylon ShapeEnv object built from this key for the proven SRD format 14
+    /// and Fennel format 13 paths.
     ///
     /// Renderer-global parameter providers are deliberately outside this
     /// method: they are not encoded in the 64-bit ShapeEnv cache key. In
@@ -731,14 +732,16 @@ impl CeylonShaderKey {
         self,
     ) -> Result<CeylonSimpleShaderBits, SrdSimpleShaderContributionError> {
         let vertex_format = (self.low >> 15) & 0x1f;
-        if vertex_format != 14 {
-            return Err(SrdSimpleShaderContributionError::UnsupportedVertexFormat(
-                vertex_format,
-            ));
-        }
-
         let mut bits = CeylonSimpleShaderBits::default();
-        bits.apply_srd_vertex_format_14();
+        match vertex_format {
+            13 => bits.apply_fennel_vertex_format_13(),
+            14 => bits.apply_srd_vertex_format_14(),
+            _ => {
+                return Err(SrdSimpleShaderContributionError::UnsupportedVertexFormat(
+                    vertex_format,
+                ));
+            }
+        }
 
         // State slots are allocated from low 13..14. The selector takes the
         // maximum of this count and the number of actually bound textures.
@@ -1139,6 +1142,16 @@ pub const SRD_D3D9_VERTEX_DECLARATION: [D3d9VertexElement; 6] = [
     },
 ];
 
+/// Ceylon vertex format 13 registered by `sub_671D30`: the exact first four
+/// elements of format 14 followed by the D3D declaration terminator.
+pub const FENNEL_D3D9_VERTEX_DECLARATION: [D3d9VertexElement; 5] = [
+    SRD_D3D9_VERTEX_DECLARATION[0],
+    SRD_D3D9_VERTEX_DECLARATION[1],
+    SRD_D3D9_VERTEX_DECLARATION[2],
+    SRD_D3D9_VERTEX_DECLARATION[3],
+    SRD_D3D9_VERTEX_DECLARATION[5],
+];
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct SrdRenderVertex {
@@ -1290,12 +1303,12 @@ mod tests {
     fn srd_direct_simple_mapping_rejects_unproven_key_variants() {
         assert_eq!(
             CeylonShaderKey {
-                low: 13 << 15,
+                low: 12 << 15,
                 high: 0,
             }
             .srd_simple_shader_direct_contributions(),
             Err(SrdSimpleShaderContributionError::UnsupportedVertexFormat(
-                13
+                12
             ))
         );
         for variant in 5..=7 {
@@ -1952,5 +1965,12 @@ mod tests {
         assert_eq!(SRD_D3D9_VERTEX_DECLARATION[4].offset, 28);
         assert_eq!(SRD_D3D9_VERTEX_DECLARATION[5].stream, 0xff);
         assert_eq!(SRD_D3D9_VERTEX_DECLARATION[5].declaration_type, 17);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION.len(), 5);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION[0].offset, 0);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION[1].offset, 12);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION[2].offset, 16);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION[3].offset, 20);
+        assert_eq!(FENNEL_D3D9_VERTEX_DECLARATION[4].stream, 0xff);
+        assert_eq!(std::mem::size_of::<crate::fennel::FennelRenderVertex>(), 28);
     }
 }

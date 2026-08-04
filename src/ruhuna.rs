@@ -3,11 +3,13 @@ use std::ops::Range;
 
 use crate::avts::{AvtsError, AvtsFile};
 use crate::dds::{DdsDescriptor, DdsError};
+use crate::texture::{TextureAddressMode, TextureFilter, TextureSamplerState};
 use crate::yabx::{RfzYabxError, YabxFile, YabxObject};
 
 const DATABASE_CLASS: &[u8] = b"ruhuna::Database";
 const GLYPH_CLASS: &[u8] = b"ruhuna::Glyph";
 const TEXTURE_RESOURCE_CLASS: &[u8] = b"ruhuna::TextureResource";
+const STEVIA_TEXTURE_CLASS: &[u8] = b"stevia::Texture";
 const SERIALIZED_OBJECT_ID_BASE: i32 = 10_001;
 
 #[derive(Debug)]
@@ -212,6 +214,18 @@ pub struct RuhunaAtlasPage {
     data: Range<usize>,
 }
 
+/// Exact D3D9 sampler values carried by the `stevia::Texture` records inside
+/// the font AVTS metadata and by the matching Ceylon texture defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuhunaD3d9SamplerState {
+    pub base: TextureSamplerState,
+    pub mip_filter: TextureFilter,
+    pub max_mip_level: u32,
+    pub max_anisotropy: u32,
+    pub mip_lod_bias_bits: u32,
+    pub border_color: u32,
+}
+
 #[derive(Debug)]
 pub struct RuhunaFont {
     yabx: YabxFile,
@@ -349,6 +363,129 @@ impl RuhunaFont {
             )));
         }
         Ok(pages)
+    }
+
+    /// Resolves the sampler serialized beside the DDS atlas pages.
+    ///
+    /// Every page has one `stevia::Texture` metadata object. Page-to-object
+    /// ordering is immaterial here because this method requires every object
+    /// to carry the same seven fixed sampler fields before returning one
+    /// shared state. A differing archive is rejected instead of guessed.
+    pub fn atlas_d3d9_sampler_state(
+        &self,
+        texture: &RuhunaTextureResource,
+    ) -> Result<RuhunaD3d9SamplerState, RuhunaError> {
+        let avts = self.texture_avts(texture).map_err(RuhunaError::Avts)?;
+        let metadata_entry = avts
+            .entries
+            .first()
+            .ok_or_else(|| RuhunaError::Invalid("font AVTS has no metadata entry".into()))?;
+        let metadata_bytes = avts.entry_data(metadata_entry);
+        let metadata = YabxFile::parse(metadata_bytes.to_vec())
+            .map_err(|error| RuhunaError::Invalid(error.to_string()))?;
+        let (class_index, class) = metadata
+            .classes
+            .iter()
+            .enumerate()
+            .find(|(_, class)| class.name == STEVIA_TEXTURE_CLASS)
+            .ok_or_else(|| {
+                RuhunaError::Invalid("font AVTS metadata has no stevia::Texture class".into())
+            })?;
+        let expected_fields: [(&[u8], i16); 7] = [
+            (b"_wrapU", 4),
+            (b"_wrapV", 4),
+            (b"_minFilter", 4),
+            (b"_magFilter", 4),
+            (b"_mipFilter", 4),
+            (b"_anisoNumber", 4),
+            (b"_lodBias", 4),
+        ];
+        if class.fields.len() < expected_fields.len()
+            || !class
+                .fields
+                .iter()
+                .zip(expected_fields)
+                .all(|(actual, expected)| {
+                    actual.name == expected.0 && actual.storage_size == expected.1
+                })
+        {
+            return Err(RuhunaError::Invalid(
+                "stevia::Texture fixed sampler field prefix does not match the binary-proven layout"
+                    .into(),
+            ));
+        }
+
+        let serialized_class_index = i16::try_from(class_index + 1).map_err(|_| {
+            RuhunaError::Invalid("stevia::Texture class index does not fit i16".into())
+        })?;
+        let texture_objects = metadata
+            .objects
+            .iter()
+            .filter(|object| object.class_index == serialized_class_index)
+            .collect::<Vec<_>>();
+        if texture_objects.len() != self.database.texture_page_count as usize {
+            return Err(RuhunaError::Invalid(format!(
+                "font AVTS metadata has {} stevia::Texture objects for {} atlas pages",
+                texture_objects.len(),
+                self.database.texture_page_count
+            )));
+        }
+
+        let mut shared_fields = None;
+        for object in texture_objects {
+            let data = metadata.object_data(object);
+            let prefix = data.get(..28).ok_or_else(|| {
+                RuhunaError::Invalid("stevia::Texture sampler prefix is truncated".into())
+            })?;
+            let fields = std::array::from_fn(|index| {
+                u32::from_le_bytes(prefix[index * 4..index * 4 + 4].try_into().unwrap())
+            });
+            match shared_fields {
+                Some(previous) if previous != fields => {
+                    return Err(RuhunaError::Invalid(
+                        "font atlas pages use differing stevia::Texture sampler fields".into(),
+                    ));
+                }
+                None => shared_fields = Some(fields),
+                _ => {}
+            }
+        }
+        let fields = shared_fields.ok_or_else(|| {
+            RuhunaError::Invalid("font AVTS metadata contains no texture sampler".into())
+        })?;
+        if fields != [2, 2, 1, 1, 0, 1, 0] {
+            return Err(RuhunaError::Invalid(format!(
+                "unsupported stevia::Texture sampler fields {fields:?}"
+            )));
+        }
+
+        let pages = self.atlas_pages(texture)?;
+        let max_mip_level = pages
+            .first()
+            .map(|page| page.descriptor.mip_count.max(1))
+            .ok_or_else(|| RuhunaError::Invalid("font atlas contains no DDS pages".into()))?;
+        if pages
+            .iter()
+            .any(|page| page.descriptor.mip_count.max(1) != max_mip_level)
+        {
+            return Err(RuhunaError::Invalid(
+                "font atlas pages use differing mip counts".into(),
+            ));
+        }
+
+        Ok(RuhunaD3d9SamplerState {
+            base: TextureSamplerState {
+                address_u: TextureAddressMode::Clamp,
+                address_v: TextureAddressMode::Clamp,
+                min_filter: TextureFilter::Linear,
+                mag_filter: TextureFilter::Linear,
+            },
+            mip_filter: TextureFilter::Point,
+            max_mip_level,
+            max_anisotropy: 1,
+            mip_lod_bias_bits: 0,
+            border_color: 0,
+        })
     }
 
     pub fn atlas_page_bytes(&self, page: &RuhunaAtlasPage) -> &[u8] {

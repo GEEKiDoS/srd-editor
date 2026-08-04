@@ -60,6 +60,93 @@ pub fn mul_matrix4x4_game(lhs: &Matrix4x4, rhs: &Matrix4x4) -> Matrix4x4 {
     result
 }
 
+/// Reproduces `ceylon_inverse_matrix4x4` (`0x6B4170`). The game performs a
+/// scaled partial-pivot LU decomposition through four swappable row pointers,
+/// then solves the four identity columns. A zero source row or zero pivot is
+/// not reported as an error: the input matrix is copied to the output.
+pub fn inverse_matrix4x4_game(matrix: &Matrix4x4) -> Matrix4x4 {
+    let mut rows = matrix.rows;
+    let mut row_order = [0usize, 1, 2, 3];
+    let mut row_scale = [0.0f32; 4];
+
+    for row in 0..4 {
+        let mut largest = rows[row][0].abs();
+        largest = largest.max(rows[row][1].abs());
+        largest = largest.max(rows[row][2].abs());
+        largest = largest.max(rows[row][3].abs());
+        if largest == 0.0 {
+            return *matrix;
+        }
+        row_scale[row] = 1.0 / largest;
+    }
+
+    for column in 0..4 {
+        let mut pivot_slot = column;
+        let mut pivot_score =
+            (rows[row_order[column]][column] * row_scale[row_order[column]]).abs();
+        for slot in (column + 1)..4 {
+            let score = (rows[row_order[slot]][column] * row_scale[row_order[slot]]).abs();
+            if score > pivot_score {
+                pivot_score = score;
+                pivot_slot = slot;
+            }
+        }
+        row_order.swap(column, pivot_slot);
+
+        let pivot_row = row_order[column];
+        let pivot = rows[pivot_row][column];
+        if pivot == 0.0 {
+            return *matrix;
+        }
+
+        for slot in (column + 1)..4 {
+            let row = row_order[slot];
+            rows[row][column] = rows[row][column] / pivot;
+            let multiplier = rows[row][column];
+            for trailing_column in (column + 1)..4 {
+                rows[row][trailing_column] =
+                    rows[row][trailing_column] - (rows[pivot_row][trailing_column] * multiplier);
+            }
+        }
+    }
+
+    let mut inverse = Matrix4x4 {
+        rows: [[0.0; 4]; 4],
+    };
+    for output_column in 0..4 {
+        let mut solved = [0.0f32; 4];
+        for logical_row in 0..4 {
+            solved[logical_row] = if row_order[logical_row] == output_column {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        for logical_row in 0..4 {
+            let value = solved[logical_row];
+            for following_row in (logical_row + 1)..4 {
+                solved[following_row] =
+                    solved[following_row] - (rows[row_order[following_row]][logical_row] * value);
+            }
+        }
+
+        for logical_row in (0..4).rev() {
+            let mut value = solved[logical_row];
+            for following_column in (logical_row + 1)..4 {
+                value = value
+                    - (rows[row_order[logical_row]][following_column] * solved[following_column]);
+            }
+            solved[logical_row] = value / rows[row_order[logical_row]][logical_row];
+        }
+
+        for output_row in 0..4 {
+            inverse.rows[output_row][output_column] = solved[output_row];
+        }
+    }
+    inverse
+}
+
 pub fn compose_screen_matrix_game(
     width: i32,
     height: i32,
@@ -188,6 +275,45 @@ mod tests {
                 [1354.0, 1412.0, 1470.0, 1528.0],
             ]
         );
+    }
+
+    #[test]
+    fn inverse_identity_is_identity() {
+        let identity = identity_matrix4x4_game();
+        assert_eq!(inverse_matrix4x4_game(&identity), identity);
+    }
+
+    #[test]
+    fn inverse_round_trip_matches_identity() {
+        let matrix = Matrix4x4 {
+            rows: [
+                [2.0, 0.0, 0.0, 4.0],
+                [0.0, 3.0, 0.0, -6.0],
+                [0.0, 0.0, 5.0, 10.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        let inverse = inverse_matrix4x4_game(&matrix);
+        let product = mul_matrix4x4_game(&matrix, &inverse);
+        for row in 0..4 {
+            for column in 0..4 {
+                let expected = if row == column { 1.0 } else { 0.0 };
+                assert!((product.rows[row][column] - expected).abs() < 0.000001);
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_singular_matrix_copies_the_input() {
+        let singular = Matrix4x4 {
+            rows: [
+                [1.0, 2.0, 3.0, 4.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [5.0, 6.0, 7.0, 8.0],
+                [9.0, 10.0, 11.0, 12.0],
+            ],
+        };
+        assert_eq!(inverse_matrix4x4_game(&singular), singular);
     }
 
     #[test]

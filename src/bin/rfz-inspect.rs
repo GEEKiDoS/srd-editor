@@ -182,10 +182,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if data.starts_with(b"YABX") {
                     let metadata = YabxFile::parse(data.to_vec())?;
                     println!(
-                        " YABX={:?} objects={}",
+                        " YABX={:?} classes={} objects={}",
                         String::from_utf8_lossy(&metadata.database_name),
+                        metadata.classes.len(),
                         metadata.objects.len()
                     );
+                    for (class_index, class) in metadata.classes.iter().enumerate() {
+                        println!(
+                            "        metadata class {} {:?} parent={} fields={}",
+                            class_index + 1,
+                            String::from_utf8_lossy(&class.name),
+                            class.parent_index,
+                            class.fields.len()
+                        );
+                        for field in &class.fields {
+                            println!(
+                                "          {:?}: flags={:#04X} storage_size={}",
+                                String::from_utf8_lossy(&field.name),
+                                field.flags,
+                                field.storage_size
+                            );
+                        }
+                    }
+                    for (object_index, object) in metadata.objects.iter().enumerate() {
+                        let class_name = metadata
+                            .object_class(object)
+                            .map(|class| String::from_utf8_lossy(&class.name))
+                            .unwrap_or_else(|| "<unknown>".into());
+                        let object_data = metadata.object_data(object);
+                        println!(
+                            "        metadata object {object_index}: class={class_name:?} bytes={} data={:02X?}",
+                            object_data.len(),
+                            object_data
+                        );
+                    }
                 } else {
                     println!(" magic={:02X?}", &data[..data.len().min(4)]);
                 }

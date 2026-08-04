@@ -7,6 +7,14 @@ pub const FIRST_2D_FIXTURE_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
     *b"EAEBABBAAAGAAAAAAA";
 pub const FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
     *b"EAEBABBAABGAAAAAAA";
+/// Exact compact Simple-selector key compiled from the game's Cg source for a
+/// normal 3D Fennel atlas batch (Ceylon vertex format 13).
+pub const FENNEL_TEXTURED_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAMAAABAABGAAAAAAA";
+/// Exact compact Simple-selector key for the same Fennel batch with
+/// DrawPacket +0x60 bit 7 (`ShapeEnv2D`) set.
+pub const FENNEL_TEXTURED_2D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"EAMAAABAABGAAAAAAA";
 
 pub const FIRST_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61";
@@ -17,11 +25,13 @@ pub const FIRST_TEXTURED_FIXTURE_PIXEL_SHADER_SHA256: &str =
 pub const FIRST_2D_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "A3E0CA2EFA3452A529DDE7E92EB638FAAD4A230DF5A5537D2D50BE53BC045BD4";
 
-pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 4] = [
+pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 6] = [
     FIRST_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
     FIRST_2D_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+    FENNEL_TEXTURED_SIMPLE_KEY,
+    FENNEL_TEXTURED_2D_SIMPLE_KEY,
 ];
 
 pub struct EmbeddedSimpleShaderPair {
@@ -46,6 +56,14 @@ pub fn embedded_simple_shader_pair(
             pixel_shader: &FIRST_FIXTURE_PIXEL_SHADER,
         }),
         FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        FENNEL_TEXTURED_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        FENNEL_TEXTURED_2D_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
             vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
             pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
         }),
@@ -133,6 +151,18 @@ mod tests {
             embedded_simple_shader_pair(&FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY).unwrap();
         assert_eq!(textured_two_d.vertex_shader, two_d.vertex_shader);
         assert_eq!(textured_two_d.pixel_shader, textured.pixel_shader);
+
+        let fennel = embedded_simple_shader_pair(&FENNEL_TEXTURED_SIMPLE_KEY).unwrap();
+        assert_eq!(fennel.vertex_shader.len() * 4, 332);
+        assert_eq!(fennel.pixel_shader.len() * 4, 248);
+        assert_eq!(fennel.vertex_shader, textured.vertex_shader);
+        assert_eq!(fennel.pixel_shader, textured.pixel_shader);
+
+        let fennel_two_d = embedded_simple_shader_pair(&FENNEL_TEXTURED_2D_SIMPLE_KEY).unwrap();
+        assert_eq!(fennel_two_d.vertex_shader.len() * 4, 384);
+        assert_eq!(fennel_two_d.pixel_shader.len() * 4, 248);
+        assert_eq!(fennel_two_d.vertex_shader, textured_two_d.vertex_shader);
+        assert_eq!(fennel_two_d.pixel_shader, textured_two_d.pixel_shader);
 
         let mut unsupported = FIRST_FIXTURE_SIMPLE_KEY;
         unsupported[0] = b'B';

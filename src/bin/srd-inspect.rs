@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use srd_editor::animation::{KeyData, Track};
 use srd_editor::editor_document::{EditorDocument, display_srd_name};
-use srd_editor::projection::identity_matrix4x4_game;
+use srd_editor::projection::{
+    identity_matrix4x4_game, mul_matrix4x4_game, project_point_to_screen_game, viewport_matrix_game,
+};
 use srd_editor::srd_draw::{
     SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_image_draws,
@@ -144,8 +146,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(draw_selection) = draw_selection {
         let screen_size = draw_selection.screen_size();
-        let host =
-            SrdHostDrawContext::new(Affine3x4::IDENTITY, identity_matrix4x4_game(), screen_size);
+        let host = SrdHostDrawContext::new(
+            Affine3x4::IDENTITY,
+            identity_matrix4x4_game(),
+            screen_size,
+            screen_size,
+        );
         let draws = match draw_selection {
             DrawSelection::Initial { .. } => build_evidence_complete_initial_image_draws(
                 &document.project,
@@ -207,8 +213,39 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map(|binding| binding.texture_index as isize)
                     .unwrap_or(-1)
             });
+            let projected_bbox = if draw.is_2d {
+                None
+            } else {
+                let projection_world = mul_matrix4x4_game(
+                    &draw.fixed_constants.vertex_c10_c13_projection_view,
+                    &draw.fixed_constants.vertex_c0_c3_world,
+                );
+                let screen_matrix = mul_matrix4x4_game(
+                    &viewport_matrix_game(screen_size[0] as i32, screen_size[1] as i32),
+                    &projection_world,
+                );
+                let projected = draw
+                    .quad
+                    .vertices
+                    .map(|vertex| project_point_to_screen_game(vertex.position, &screen_matrix));
+                Some(projected.iter().fold(
+                    [
+                        f32::INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::NEG_INFINITY,
+                    ],
+                    |mut bounds, point| {
+                        bounds[0] = bounds[0].min(point[0]);
+                        bounds[1] = bounds[1].min(point[1]);
+                        bounds[2] = bounds[2].max(point[0]);
+                        bounds[3] = bounds[3].max(point[1]);
+                        bounds
+                    },
+                ))
+            };
             println!(
-                "  DRAW[{draw_index}] layer={}:{} node={}:{} is_2d={} preset={} shader={} bbox=({min_x},{min_y})..({max_x},{max_y}) color0={:02X?} color1={:02X?} textures={textures:?}",
+                "  DRAW[{draw_index}] layer={}:{} node={}:{} is_2d={} preset={} shader={} bbox=({min_x},{min_y})..({max_x},{max_y}) projected_bbox={projected_bbox:?} color0={:02X?} color1={:02X?} textures={textures:?}",
                 draw.layer_index,
                 display_srd_name(&layer.name),
                 draw.node_index,

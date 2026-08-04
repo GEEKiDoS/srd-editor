@@ -1,7 +1,9 @@
 use std::fmt;
 
 use crate::image::{ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource};
-use crate::projection::Matrix4x4;
+use crate::projection::{
+    Matrix4x4, identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
+};
 use crate::reference_runtime::{ProjectLayerRuntimeState, ProjectRuntime};
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
@@ -57,6 +59,7 @@ pub struct EvidenceSrdTextureBinding {
 pub struct SrdHostDrawContext {
     pub first_calc_matrix: Affine3x4,
     pub target_projection_view: Matrix4x4,
+    pub target_render_size: [u32; 2],
     pub target_screen_size: [u32; 2],
 }
 
@@ -64,11 +67,13 @@ impl SrdHostDrawContext {
     pub const fn new(
         first_calc_matrix: Affine3x4,
         target_projection_view: Matrix4x4,
+        target_render_size: [u32; 2],
         target_screen_size: [u32; 2],
     ) -> Self {
         Self {
             first_calc_matrix,
             target_projection_view,
+            target_render_size,
             target_screen_size,
         }
     }
@@ -121,6 +126,12 @@ fn build_evidence_complete_image_draws(
     host: SrdHostDrawContext,
     runtime_layers: Option<&[ProjectLayerRuntimeState]>,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    if host.target_render_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target render size must be non-zero, got {}x{}",
+            host.target_render_size[0], host.target_render_size[1]
+        )));
+    }
     if host.target_screen_size.contains(&0) {
         return Err(SrdDrawError(format!(
             "target screen size must be non-zero, got {}x{}",
@@ -131,10 +142,14 @@ fn build_evidence_complete_image_draws(
         .scenes
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
-    let fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
-        host.target_projection_view,
-        host.target_screen_size,
-    );
+    let external_inverse = inverse_matrix4x4_game(&host.target_projection_view);
+    let srd_projection_view = project
+        .camera
+        .runtime_matrices(host.target_render_size[0] as f32)
+        .projection_view;
+    let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+    let identity = identity_matrix4x4_game();
+    let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
@@ -183,6 +198,20 @@ fn build_evidence_complete_image_draws(
             let world_color = world_colors[node_index];
             if !world_color.visible {
                 continue;
+            }
+
+            let mut fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+                host.target_projection_view,
+                host.target_screen_size,
+            );
+            if is_2d {
+                fixed_constants.vertex_c0_c3_world = identity;
+                fixed_constants.vertex_c4_c7 = identity;
+                packet_current_matrix = identity;
+            } else {
+                fixed_constants.vertex_c4_c7 = packet_current_matrix;
+                fixed_constants.vertex_c0_c3_world = camera_bridge;
+                packet_current_matrix = camera_bridge;
             }
 
             let image_state = runtime_layer.map_or_else(
