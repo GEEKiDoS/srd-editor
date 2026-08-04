@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，以及外部 RFZ 的 BinaryLZW 容器入口已经闭环。RFZ 解压后的 `RHFONTDB` 字形记录、排版与最终 glyph draw 仍在继续追踪，当前渲染器不会用系统字体代替。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，以及外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源均已闭环。Ruhuna 字形如何接入 SrTextCast 的 FONT/TEX/CROP 运行时表仍在继续追踪，当前渲染器不会用系统字体代替。
 
 ## TEXT 记录
 
@@ -98,9 +98,21 @@ invalid nonnegative FONT indices=0
 
 AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 warning 页的 `WARNING` 与版权说明均解析到 FONT `[1]` 的 32pt RFZ。
 
+## SrTextCast 排版与 glyph quad 路径
+
+主虚表 `0x190E210` 的 `+0xBC` 进入 `sub_AD8D50`，字符串/样式状态更新后触发重建。实际 draw 入口 `sub_AD9160` 已继续闭环出以下调用链：
+
+- `sub_AD8780` 按字节读取文本：低于 `0x80` 的字节直接成为 u16 code，高位字节与下一字节组成 big-endian u16 code；只有 `CR LF` 组合切分新行。它不是 UTF-8 解码器。
+- `sub_AD8480` 对一行逐 code 查询 FONT `+0x50` 的两个 i16 映射，使用第一个值选择 540 字节 TEX 记录、第二个值选择 16 字节 CROP，并以 CROP 宽高和 TEX 像素尺寸累计行宽/行高；TEXT `+0x1C` 的字符间距会乘以 `count - 1` 加入宽度。
+- `sub_AD86D0` 对所有 12 字节行记录调用上述测量并累计总高度。
+- `sub_AD8620` 使用 TEXT flags `0x10/0x20` 选择垂直居中或底对齐，否则使用 TEXT `+0x18` 的原始 Y 起点。
+- `sub_AD9160` 为每个 12 字节行记录调用虚表 `+0xC4`；SrTextCast 在该槽进入 `sub_AD9490`。
+- `sub_AD9490` 使用 TEXT flags `0x04/0x08` 选择水平居中或右对齐，逐 code 再查 FONT/TEX/CROP，生成与当前 SrImage 路径相同的四顶点和两个相同 UV 通道。映射不存在时走明确的 16x16 fallback quad，而不是系统字体。
+
+因此外部 Ruhuna 字形不是一条可以随意替换的 ImGui 文本路径。仍需证明游戏把 RFZ glyph/page/box 数据写入 FONT/TEX/CROP 运行时表的具体转换链；在该链闭环前，Rust 不会把按字段名推导的 atlas 矩形冒充最终 SrTextCast 输出。
+
 ## 下一证据目标
 
-- `SerializeHandlerBinaryLZW` 的精确 bitstream/LZW 字典行为；
-- 解压后 `RHFONTDB` 的 glyph metrics、atlas/outline 数据与字符查找；
-- TextCast 虚表 `+0xBC` 重建路径的换行、对齐、缩放和顶点生成；
-- glyph draw 如何进入当前已闭环的 SrImage/D3D9 packet 路径。
+- RFZ glyph/page/box 到 FONT lookup、动态 TEX/CROP 表的转换与生命周期；
+- TEXT 缩放、字符间距、行距和 packed color 状态的完整 setter 来源；
+- 外部字体 glyph quad 进入当前已闭环 SrImage/D3D9 packet 的端到端语料回归。
