@@ -190,6 +190,20 @@ TextBoxObject 构造函数 `sub_7BEB80` 先写 `+0x2D0=0`、`+0x2E0=3`、`+0x2E4
 - TEXT `0x78 bit 0` 清零时，`sub_7C8DA0` 再置 `0x04`，默认布局 flags 精确为 `7`；
 - 两者都由 `sub_7C90A0` 选择 `sub_7C1F90`；bit `0x04` 只控制首行横向 auto-fit，不改变布局器选择。
 
+mode 来源也已从实际 SrTextCast 构造链闭环。`sub_AD8270` 在 TextCast `+0x1F4` 建立文本状态，并对状态 `+0x100` 调用 `sub_AE3580`；后者把扩展对象 `+0x08` 清零，因此 `sub_AC6F50` 读取的状态 `+0x108`（TextCast 总偏移 `+0x2FC`）构造值精确为 `0`。`sub_AC6F50` 先用 `sub_7C8DA0(0,0)` 清除 flags `0x04/0x08`，再用 `sub_7C8E80(0,0,0,0)` 清除 `0x7CA0` 模式位。若 TEXT `0x78 bit 0` 置位，函数跳过 mode switch；否则 mode `0..6` 对 fresh TextBoxObject 的最终 flags 为：
+
+| mode | flags | 裁剪 |
+| --- | --- | --- |
+| `0` | `0x0007` | 否 |
+| `1` | `0x000F` | 否 |
+| `2` | `0x1CA3` | 是，Y 区间使用扩展形式 |
+| `3` | `0x0CA3` | 是，Y 区间使用扩展形式 |
+| `4` | `0x2CA3` | 是，Y 区间使用扩展形式 |
+| `5` | `0x6C03` | 是，Y 区间为 `0..height` |
+| `6` | `0x7C03` | 是，Y 区间为 `0..height` |
+
+大于 `6` 的值走 switch default，保留低位 `3`。Rust 的 `fennel_fresh_srd_textbox_flags` 直接保存这张分派表；当前首帧只使用已由构造链证明的 mode `0`，没有把尚未找到写入来源的动态 mode 自行绑定到 SRD 属性或动画通道。
+
 TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+0x6C` 清零。`sub_F2C670` 把 TEXT `+0x1C`（属性 `0x7C`）写到 TextBoxObject `+0x100`，`sub_F3BD40` 的普通 token 分支再把它复制到输出 `+0x6C`；`sub_7C90A0` 最终写入 layout record `+0x20`。同理，`sub_F2C620` 把 TEXT `+0x1E`（属性 `0x41`）写到 TextBoxObject `+0xFC`，作为行距；`sub_F2C5B0` 从 TEXT `0x36` 写入横纵缩放。因此 `FennelStaticTextProperties` 的来源为：
 
 | Rust 输入 | 游戏来源 |
@@ -270,7 +284,14 @@ Rust 已按原始偏移名保存为 `FENNEL_FONT_MANAGER_SET_E0/E4`，并精确�
 - 局部四角由记录 `width/height`、独立调用参数 effective scale、`+0x24..+0x30` 和调用方 x/y 组成；随后按函数中的 4x4 row dot product 做 perspective divide。effective scale 不是重写后的 record 字段，而是 `sub_7C7F90` 计算的 `record.+0x44/+0x48 × TextBox.+0xC4/+0xC8`；
 - `RuhunaD3d9AtlasSet` 已复用现有无 D3DX DDS 上传器，可把 RFZ/AVTS 中按 page 排序的 DDS 建为可 device-reset 重建的 D3D9 纹理。
 
-`flags & 0x400 != 0` 的裁剪与 UV 重映射分支还未并入 Rust；因此当前顶点生成器名称和接口明确限定为 `unclipped`。
+`flags & 0x400 != 0` 的裁剪与 UV 重映射分支也已按 `0x7C1576..0x7C1698` 并入独立的 `build_fennel_clipped_vertices`：
+
+- X 在矩阵变换前按 SSE 比较顺序夹到 `[0, TextBox+0x2E4]`；
+- `TextBox+0x2E8` 先乘精确常量 `0.5f`。flags `0x4000` 清除此半高；再用 `0x80000000` sign mask 翻转下界符号。因此普通裁剪的 Y 区间为 `[-height*0.5, height*1.5]`，`0x4000` 分支为 `[-0.0, height]`；
+- U range 精确取 record `uv1.u-uv0.u`，V range 取 `uv2.v-uv0.v`；每个裁后角使用 `(clipped-original_near)/(original_far-original_near)` 从共同 `uv0` 重算 UV；
+- 裁后四角再走与无裁剪分支相同的 4x4 perspective divide、颜色转换、`[1,0,2,3,1,2]` 三角顺序和 UV bias。
+
+Rust 还保留 MAXSS 在 NaN/相等输入时选择第二操作数的语义，以免把 signed zero 边界悄悄改写。该函数目前是证据完整的纯顶点分支；静态 `build_fennel_static_unclipped_vertex_batches` 仍只处理构造 mode 0，因为动态 mode `2..6` 的实际运行时写入来源尚未闭环。
 
 静态 mode-zero SrTextCast 的 normal-glyph 调用输入也已闭合：
 
@@ -369,4 +390,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 - `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- `sub_7C10B0` 的 `flags & 0x400` 裁剪/UV 重映射分支和 `0x40000` 第二 glyph/effect 的具体来源；
+- SrTextCast state `+0x108` 从构造 mode 0 切换为 `2..6` 的实际写入来源，以及 `0x40000` 第二 glyph/effect 的具体来源；

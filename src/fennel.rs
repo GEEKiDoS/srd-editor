@@ -30,6 +30,37 @@ pub const FENNEL_TRIANGLE_CORNER_INDICES: [usize; 6] = [1, 0, 2, 3, 1, 2];
 /// the first table entry is `0x11`, so a TextBoxObject starts with 17 buckets.
 pub const FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT: u32 = 17;
 
+/// `sub_7C10B0` selects its local-rectangle clipping and UV-remap branch from
+/// TextBoxObject flags bit `0x400`.
+pub const FENNEL_TEXTBOX_CLIP_FLAG: u32 = 0x400;
+/// In the clipping branch, bit `0x4000` changes the Y clamp interval from
+/// `[-height * 0.5, height * 1.5]` to `[0, height]`.
+pub const FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG: u32 = 0x4000;
+
+/// Reproduces the flags left on a freshly constructed SRD TextBoxObject by
+/// `sub_AC6F50` after it clears the old alignment/special-mode bits and applies
+/// the SrTextCast state mode at `+0x108`.
+///
+/// TextBox construction supplies the preserved low bits `3`. TEXT flags bit
+/// zero skips the mode switch entirely. Modes `2..=6` all include clipping;
+/// modes `5..=6` additionally select the zero-based Y interval.
+pub const fn fennel_fresh_srd_textbox_flags(text_flags: u32, mode: u32) -> u32 {
+    const BASE: u32 = 3;
+    if text_flags & 1 != 0 {
+        return BASE;
+    }
+    BASE | match mode {
+        0 => 0x0004,
+        1 => 0x000c,
+        2 => 0x1ca0,
+        3 => 0x0ca0,
+        4 => 0x2ca0,
+        5 => 0x6c00,
+        6 => 0x7c00,
+        _ => 0,
+    }
+}
+
 /// The 45 UTF-16 values copied from `word_1940AB8` into the FontManager
 /// implementation's `+0xE0` lookup by `sub_F33C30`.
 pub const FENNEL_FONT_MANAGER_SET_E0: [u16; 45] = [
@@ -1133,11 +1164,7 @@ fn prepare_fennel_static_scales(
     metrics: &[Option<FennelLayoutGlyphMetrics>],
     stream_end_index: usize,
 ) -> FennelPreparedStaticLayout {
-    let static_layout_flags = if input.text_flags & 1 == 0 {
-        7u32
-    } else {
-        3u32
-    };
+    let static_layout_flags = fennel_fresh_srd_textbox_flags(input.text_flags, 0);
     let mut effective_scale_x = input.scale_x;
     let effective_scale_y = input.scale_y;
     let mut scale_x_multiplier = 1.0f32;
@@ -1459,6 +1486,93 @@ pub fn build_fennel_unclipped_vertices(
     })
 }
 
+/// Reproduces the clipping branch (`TextBoxObject flags & 0x400 != 0`) of
+/// `sub_7C10B0` for one already-positioned glyph record.
+///
+/// The game clamps local X to `[0, clip_width]`. Local Y is clamped to
+/// `[-clip_height * 0.5, clip_height * 1.5]`, except flag `0x4000` changes it
+/// to `[0, clip_height]`. UVs are then linearly remapped from the unclipped
+/// local rectangle before the same matrix transform and triangle order used by
+/// the non-clipping branch.
+pub fn build_fennel_clipped_vertices(
+    record: &FennelGlyphLayoutRecord,
+    origin: [f32; 2],
+    effective_scale: [f32; 2],
+    transform: &Matrix4x4,
+    secondary_color: u32,
+    textbox_flags: u32,
+    clip_width: f32,
+    clip_height: f32,
+) -> [FennelRenderVertex; 6] {
+    let far_x = record.width * effective_scale[0] + origin[0] - record.field_2c;
+    let far_y = record.height * effective_scale[1] + origin[1] - record.field_30;
+    let near_x = record.field_24 + origin[0];
+    let near_y = record.field_28 + origin[1];
+    let original_positions = [
+        [near_x, near_y],
+        [far_x, near_y],
+        [near_x, far_y],
+        [far_x, far_y],
+    ];
+
+    let y_half = if textbox_flags & FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG != 0 {
+        0.0
+    } else {
+        clip_height * 0.5
+    };
+    // The binary uses XORPS with four 0x80000000 lanes, so preserve the exact
+    // sign-bit operation (including -0.0 and NaN payloads).
+    let clip_min_y = f32::from_bits(y_half.to_bits() ^ 0x8000_0000);
+    let clip_max_y = y_half + clip_height;
+    let clipped_positions = original_positions.map(|[x, y]| {
+        [
+            fennel_sse_clamp(x, 0.0, clip_width),
+            fennel_sse_clamp(y, clip_min_y, clip_max_y),
+        ]
+    });
+
+    let u_range = record.uv1[0] - record.uv0[0];
+    let v_range = record.uv2[1] - record.uv0[1];
+    let x_span = far_x - near_x;
+    let y_span = far_y - near_y;
+    let uvs = clipped_positions.map(|[x, y]| {
+        [
+            record.uv0[0] + (x - near_x) * u_range / x_span,
+            record.uv0[1] + (y - near_y) * v_range / y_span,
+        ]
+    });
+    let positions = clipped_positions.map(|[x, y]| transform_fennel_point(transform, x, y));
+    let secondary_color_bgra = fennel_packed_color_to_bgra(secondary_color);
+
+    FENNEL_TRIANGLE_CORNER_INDICES.map(|corner| FennelRenderVertex {
+        position: positions[corner],
+        primary_color_bgra: fennel_packed_color_to_bgra(record.colors[corner]),
+        secondary_color_bgra,
+        texture_coordinates: [
+            uvs[corner][0] + FENNEL_UV_BIAS,
+            uvs[corner][1] + FENNEL_UV_BIAS,
+        ],
+    })
+}
+
+fn fennel_sse_clamp(value: f32, minimum: f32, maximum: f32) -> f32 {
+    if value > maximum {
+        maximum
+    } else {
+        fennel_sse_max(value, minimum)
+    }
+}
+
+/// SSE MAXSS returns its second operand for unordered or equal inputs. That
+/// detail matters for the binary's signed-zero clipping bounds.
+fn fennel_sse_max(left: f32, right: f32) -> f32 {
+    if left.is_nan() || right.is_nan() || left <= right {
+        right
+    } else {
+        left
+    }
+}
+
 fn transform_fennel_point(transform: &Matrix4x4, x: f32, y: f32) -> [f32; 3] {
     let rows = &transform.rows;
     let transformed_x = rows[0][0] * x + rows[0][1] * y + rows[0][3];
@@ -1751,6 +1865,33 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(FennelRenderVertex, texture_coordinates),
             20
+        );
+    }
+
+    #[test]
+    fn fresh_srd_textbox_mode_flags_match_ac6f50_dispatch() {
+        assert_eq!(fennel_fresh_srd_textbox_flags(1, 6), 3);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 0), 7);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 1), 15);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 2), 0x1ca3);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 3), 0x0ca3);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 4), 0x2ca3);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 5), 0x6c03);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 6), 0x7c03);
+        assert_eq!(fennel_fresh_srd_textbox_flags(0, 7), 3);
+        for mode in 2..=6 {
+            assert_ne!(
+                fennel_fresh_srd_textbox_flags(0, mode) & FENNEL_TEXTBOX_CLIP_FLAG,
+                0
+            );
+        }
+        assert_eq!(
+            fennel_fresh_srd_textbox_flags(0, 4) & FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
+            0
+        );
+        assert_ne!(
+            fennel_fresh_srd_textbox_flags(0, 5) & FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
+            0
         );
     }
 
@@ -2303,6 +2444,88 @@ mod tests {
                 [0.4 + FENNEL_UV_BIAS, 0.5 + FENNEL_UV_BIAS],
             ]
         );
+    }
+
+    #[test]
+    fn builds_clipped_vertices_and_remaps_uvs_before_transform() {
+        let record = FennelGlyphLayoutRecord {
+            width: 10.0,
+            height: 8.0,
+            colors: [0x4433_2211, 0x8877_6655, 0xCCBB_AA99, 0xFFEE_DDCC],
+            uv0: [0.2, 0.1],
+            uv1: [0.8, 0.1],
+            uv2: [0.2, 0.9],
+            uv3: [0.8, 0.9],
+            ..Default::default()
+        };
+        let vertices = build_fennel_clipped_vertices(
+            &record,
+            [-2.0, -1.0],
+            [1.0, 1.0],
+            &identity_matrix4x4_game(),
+            0xA4A3_A2A1,
+            FENNEL_TEXTBOX_CLIP_FLAG | FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
+            6.0,
+            6.0,
+        );
+
+        assert_eq!(
+            vertices.map(|vertex| vertex.position),
+            [
+                [6.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 6.0, 0.0],
+                [6.0, 6.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [0.0, 6.0, 0.0],
+            ]
+        );
+        let expected_uvs = [
+            [0.68, 0.2],
+            [0.32, 0.2],
+            [0.32, 0.8],
+            [0.68, 0.8],
+            [0.68, 0.2],
+            [0.32, 0.8],
+        ];
+        for (vertex, expected) in vertices.iter().zip(expected_uvs) {
+            assert!(
+                (vertex.texture_coordinates[0] - (expected[0] + FENNEL_UV_BIAS)).abs() < 1.0e-6
+            );
+            assert!(
+                (vertex.texture_coordinates[1] - (expected[1] + FENNEL_UV_BIAS)).abs() < 1.0e-6
+            );
+        }
+        assert_eq!(vertices[0].primary_color_bgra, [0x77, 0x66, 0x55, 0x88]);
+        assert_eq!(vertices[0].secondary_color_bgra, [0xA3, 0xA2, 0xA1, 0xA4]);
+    }
+
+    #[test]
+    fn clipped_vertices_use_the_expanded_y_interval_without_0x4000() {
+        let record = FennelGlyphLayoutRecord {
+            width: 1.0,
+            height: 25.0,
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 0.0],
+            uv2: [0.0, 1.0],
+            uv3: [1.0, 1.0],
+            ..Default::default()
+        };
+        let vertices = build_fennel_clipped_vertices(
+            &record,
+            [0.0, -7.0],
+            [1.0, 1.0],
+            &identity_matrix4x4_game(),
+            0,
+            FENNEL_TEXTBOX_CLIP_FLAG,
+            1.0,
+            10.0,
+        );
+
+        assert_eq!(vertices[0].position[1], -5.0);
+        assert_eq!(vertices[2].position[1], 15.0);
+        assert!((vertices[0].texture_coordinates[1] - (0.08 + FENNEL_UV_BIAS)).abs() < 1.0e-6);
+        assert!((vertices[2].texture_coordinates[1] - (0.88 + FENNEL_UV_BIAS)).abs() < 1.0e-6);
     }
 
     #[test]

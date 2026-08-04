@@ -10,12 +10,12 @@ use srd_editor::dds::{
 };
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::fennel::{
-    FennelDefaultLayoutError, FennelFittingLayoutError, FennelLayoutGlyphMetrics,
-    FennelPlainRecordError, FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
-    FennelTextureBatchStop, build_fennel_plain_record_stream,
+    FENNEL_TEXTBOX_CLIP_FLAG, FennelDefaultLayoutError, FennelFittingLayoutError,
+    FennelLayoutGlyphMetrics, FennelPlainRecordError, FennelStaticTextProperties,
+    FennelStaticUnclippedDrawInput, FennelTextureBatchStop, build_fennel_plain_record_stream,
     build_fennel_static_unclipped_vertex_batches, build_fennel_texture_batch_membership,
-    decode_fennel_game_text, layout_fennel_static_default, layout_fennel_static_fitting_lines,
-    tokenize_fennel_plain_text,
+    decode_fennel_game_text, fennel_fresh_srd_textbox_flags, layout_fennel_static_default,
+    layout_fennel_static_fitting_lines, tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
@@ -1933,6 +1933,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut text_count = 0usize;
     let mut fitting_count = 0usize;
     let mut default_layout_count = 0usize;
+    let mut initial_unclipped_text_count = 0usize;
     let mut wrapped_text_count = 0usize;
     let mut automatic_wrap_count = 0usize;
     let mut vertical_overflow_text_count = 0usize;
@@ -1974,6 +1975,11 @@ fn audits_binary_proven_static_fennel_layout_subset() {
             let properties =
                 FennelStaticTextProperties::from_text_definition(text, image.width, image.height)
                     .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            initial_unclipped_text_count += usize::from(
+                fennel_fresh_srd_textbox_flags(properties.layout.text_flags, 0)
+                    & FENNEL_TEXTBOX_CLIP_FLAG
+                    == 0,
+            );
             if !runtime_fonts.contains_key(font.name.as_slice()) {
                 let name = std::str::from_utf8(&font.name)
                     .unwrap_or_else(|error| panic!("{} font name: {error}", path.display()));
@@ -2120,7 +2126,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -2128,6 +2134,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
         }
     }
     assert!(text_count > 0);
+    assert_eq!(initial_unclipped_text_count, text_count);
     assert!(fitting_count > 0);
     assert_eq!(default_layout_count, text_count);
     assert!(wrapped_text_count > 0);

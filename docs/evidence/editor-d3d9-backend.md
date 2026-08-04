@@ -85,7 +85,7 @@ cargo run -- --srd-fennel-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_
 
 这些命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。AdvertiseLogo 动画集 draw smoke 在 reset 前后均得到 2,073,600 个 changed pixels、`white_pixels=0` 和 FNV-1a `97D30483E5DD6325`；二维贴图 smoke 得到 849,776 个一致像素、`white_pixels=0` 和 `09DF61BBE19B88A5`；RFZ/Fennel smoke 得到 40,920 个一致像素、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 `7B466FC4B4E0EC9A`。动画集证据见 [`scene-animation-sets.md`](scene-animation-sets.md)，2D shader/常量见 [`render-shape-env-2d.md`](render-shape-env-2d.md)，字体路径见 [`text-font-records.md`](text-font-records.md)。
 
-同次检查后继续加入动画集、TEXT/FONT、证据完整 draw-list、贴图 draw、Fennel draw 与完整 DDS 解码路径语料测试；当前回归为 152 个单元测试及 28 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。
+同次检查后继续加入动画集、TEXT/FONT、证据完整 draw-list、贴图 draw、Fennel draw 与完整 DDS 解码路径语料测试；当前回归为 155 个单元测试及 28 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 
