@@ -28,14 +28,15 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 恢复调查时必须从保存了 CommonBackGroundObject 指针的具体画面类继续追踪其后续成员访问，或取得原版运行时矩阵/常量捕获。禁止以 `Aspect = Width / Height`、自动 fit-to-view、强制 2D 或任意 X scale 作为游戏逻辑修复。
 
-## Fennel 行元数据与 batch 截止
+## Fennel 行元数据与最终 batch 顶点输入
 
-静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；完整 1292 条 RFZ TEXT 全部通过，9 条文本产生 16 次自动逻辑断行，19 条最终含垂直截止标记。
+静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现。完整 1292 条 RFZ TEXT 全部通过：9 条文本产生 16 次自动逻辑断行，19 条最终含垂直截止标记并在同一记录停止 batch 扫描，单条文本最多 6 个 batch。
 
 尚未闭合：
 
 - TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
-- `sub_7C90A0` 返回的 record limit 如何限制 texture batch tree 建立/遍历，尤其 marker 位于记录零时的 `-1`；
-- `sub_7C7F90` 每个 batch node 中 record 指针、normal/effect glyph 计数和 atlas texture 的建立顺序。
+- `sub_7C7F90` 传给 `sub_7C10B0` 的每 glyph 最终 origin、有效 scale、secondary color 与矩阵的静态 SrTextCast 来源；
+- record `+0x0C & 0x40000` 的第二组 effect glyph 参数与生成来源；
+- `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 
-在这些消费者闭环前，不得简单按“所有 kind >= 0”把 marker 后的未定位记录提交给 GPU，也不得自行把 `-254` 解释为普通换行。
+在这些输入闭环前，不得把 layout record 直接套用 ImageCast 的 world/color，也不得自行补 effect 或裁剪参数。

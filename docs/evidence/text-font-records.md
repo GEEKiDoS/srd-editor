@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止行为也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。当前剩余主线是内部行元数据、layout record 到 texture batch 的截止/分组、裁剪/效果分支和真实 SRD/RFZ 像素回归。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，以及 `sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。当前剩余主线是内部行元数据、每批最终原点/效果参数、裁剪分支和真实 SRD/RFZ 像素回归。
 
 ## TEXT 记录
 
@@ -223,11 +223,29 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 发生自动断行的 TEXT=9
 自动生成的逻辑断行总数=16
 最终含垂直 -254 标记的 TEXT=19
+成功建立 texture batch 的 TEXT=1292
+单条 TEXT 最大 texture batch 数=6
+因 -254 停止 batch 扫描的 TEXT=19
 fitting-only guard 成功=1270
 UTF-8/控制符/缺字/字体记录错误=0
 ```
 
 此前 fitting guard 报告的 9 条断行与 13 条直接垂直边界现已全部进入默认游戏状态机；断行后又有部分文本触发垂直截止，因此最终 `-254` 文本数为 19。没有使用通用 Unicode line breaking、自动 fit-to-view 或简单裁切替代。
+
+### layout record 到 texture batch
+
+`sub_7C0D40` 清空已有 batch node 的两个计数和 record 指针数组后，按 TextBoxObject `+0xB0` 保存的完整 record 数顺序扫描：
+
+- kind 为普通非负值时才进入 atlas 分组；`-1`、`-255` 等其他负值直接跳过；
+- kind `-254` 立即返回，后面的记录不会进入任何 batch；
+- TextBoxObject `+0x2C0` 为非负时，在 `processed + 1 >= maximum` 的当前记录之前立即返回；静态 SrTextCast 构造状态经 `sub_AE36C0 -> sub_AC5740` 明确把该值写为 `-1`，因此当前静态路径不启用该门限；
+- 以 record `+0x08` 的 atlas texture token 为 key；同 texture 的 record 指针按出现顺序追加；
+- node `+0x0C` 对每个普通 glyph 加一；record `+0x0C & 0x40000` 时 node `+0x10` 的 effect glyph 计数也加一；
+- hash 为 wrapping `texture_token + (texture_token >> 3)`。
+
+TextBoxObject 构造函数 `sub_7BEB80` 请求至少 11 个桶，prime table 首项为 `0x11`，所以初始桶数精确为 17。新 key 落入空桶时插入全局前向链表头；落入已有桶时插入该桶连续 node 组的最前端；已有 key 只追加 record，不改变 node 顺序。`sub_7C7F90` 从全局头开始沿 node `+0x00` 遍历，因此 Rust 保存的是这一原始遍历顺序，而不是 texture token 排序。
+
+`sub_7C8BE0` 的 rehash 尚未移植；Rust 在第 18 个唯一 texture token 到达当前未覆盖域时明确报错。本地完整六套 RFZ 字体最多 7 个 atlas 页，1292 条真实文本每条最多产生 6 个 batch，全部严格落在不触发 rehash 的已证明域内。批次审计还确认全部 19 个垂直截止文本都在布局写入的同一 `-254` record 下标停止。
 
 ### FontManager 固定断行字符表
 
@@ -315,13 +333,13 @@ textures      = [present, null, null]
 
 字体 DDS 当前均为一层 mip；`ceylon_image_initialize_from_stevia_request` 在 `0xE7FF5F..0xE7FF6E` 把零 mip count 至少提升到 1 并写到 image `+0x64/+0x68`，随后 `sub_E7E8B0` 将其用于 MAXMIPLEVEL。因此当前 atlas 的完整 D3D9 sampler 是 Clamp/Clamp、Linear/Linear/Point、max mip level 1、max anisotropy 1、LOD bias 0、border color 0。Rust 会解析并验证每个 Stevia texture object；页数不匹配、页间 sampler 不同或出现未证明值时直接报错。
 
-`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record 已可完整生成；当前尚需闭合 `record_limit/-254` 到 texture batch node 的实际消费、每批 origin/effect 参数和 SRD world/color 输入，之后才接入 Composition。
+`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record 和 `sub_7C0D40` texture batch membership 已可完整生成；当前尚需闭合每批 origin/effect 参数和 SRD world/color 输入，之后才接入 Composition。
 
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 
 ## 下一证据目标
 
-- `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据，以及 `record_limit/-254` 到 texture batch node 的消费；
+- `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - `sub_7C10B0` 的 `flags & 0x400` 裁剪/UV 重映射分支和 `0x40000` 第二 glyph/effect 的具体来源；

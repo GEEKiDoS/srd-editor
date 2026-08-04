@@ -24,6 +24,9 @@ pub const FENNEL_RECORD_STREAM_END: i32 = -0xFF;
 pub const FENNEL_LINE_START_CAPACITY: usize = 0x80;
 pub const FENNEL_UV_BIAS: f32 = f32::from_bits(0x3727_C5AC);
 pub const FENNEL_TRIANGLE_CORNER_INDICES: [usize; 6] = [1, 0, 2, 3, 1, 2];
+/// `sub_7BEB80` asks the hash-container prime table for at least 11 buckets;
+/// the first table entry is `0x11`, so a TextBoxObject starts with 17 buckets.
+pub const FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT: u32 = 17;
 
 /// The 45 UTF-16 values copied from `word_1940AB8` into the FontManager
 /// implementation's `+0xE0` lookup by `sub_F33C30`.
@@ -462,6 +465,125 @@ impl std::fmt::Display for FennelDefaultLayoutError {
 }
 
 impl std::error::Error for FennelDefaultLayoutError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FennelTextureBatchMembership {
+    pub texture_token: u32,
+    pub normal_glyph_count: usize,
+    pub effect_glyph_count: usize,
+    pub record_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelTextureBatchStop {
+    EndOfRecordArray,
+    LineTableOverflow { record_index: usize },
+    MaximumGlyphs { record_index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FennelTextureBatchBuild {
+    /// Global forward-list order used by `sub_7C0D40` and traversed by
+    /// `sub_7C7F90`, not sorted texture-token order.
+    pub batches: Vec<FennelTextureBatchMembership>,
+    pub processed_glyph_count: usize,
+    pub stop: FennelTextureBatchStop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelTextureBatchRehashRequired {
+    pub unique_texture_count: usize,
+}
+
+impl std::fmt::Display for FennelTextureBatchRehashRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Fennel texture batch count {} reaches the not-yet-ported hash rehash path",
+            self.unique_texture_count
+        )
+    }
+}
+
+impl std::error::Error for FennelTextureBatchRehashRequired {}
+
+/// Reproduces `sub_7C0D40` for the binary-proven no-rehash domain used by the
+/// game's RFZ fonts (the complete local fonts have at most seven atlas pages,
+/// below the initial 17-bucket threshold).
+///
+/// Negative records are skipped except `-254`, which immediately stops the
+/// scan. Nonnegative records are grouped by texture token. New hash buckets
+/// are inserted at the global forward-list head; a collision is inserted at
+/// the front of its existing contiguous bucket group. The optional maximum is
+/// TextBoxObject `+0x2C0`; static SrTextCast initialization supplies `-1`.
+pub fn build_fennel_texture_batch_membership(
+    stream: &FennelPlainRecordStream,
+    maximum_glyphs: i32,
+) -> Result<FennelTextureBatchBuild, FennelTextureBatchRehashRequired> {
+    let mut batches = Vec::<FennelTextureBatchMembership>::new();
+    let mut processed_glyph_count = 0usize;
+    for (record_index, record) in stream.records.iter().enumerate() {
+        if record.kind < 0 {
+            if record.kind == FENNEL_RECORD_LINE_TABLE_OVERFLOW {
+                return Ok(FennelTextureBatchBuild {
+                    batches,
+                    processed_glyph_count,
+                    stop: FennelTextureBatchStop::LineTableOverflow { record_index },
+                });
+            }
+            continue;
+        }
+
+        let next_glyph_count = processed_glyph_count.wrapping_add(1);
+        if maximum_glyphs >= 0 && next_glyph_count >= maximum_glyphs as usize {
+            return Ok(FennelTextureBatchBuild {
+                batches,
+                processed_glyph_count,
+                stop: FennelTextureBatchStop::MaximumGlyphs { record_index },
+            });
+        }
+
+        if let Some(batch) = batches
+            .iter_mut()
+            .find(|batch| batch.texture_token == record.texture_token)
+        {
+            batch.normal_glyph_count += 1;
+            batch.effect_glyph_count += usize::from(record.field_0c & 0x40000 != 0);
+            batch.record_indices.push(record_index);
+        } else {
+            let unique_texture_count = batches.len() + 1;
+            if unique_texture_count > FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT as usize {
+                return Err(FennelTextureBatchRehashRequired {
+                    unique_texture_count,
+                });
+            }
+            let bucket = fennel_texture_batch_bucket(record.texture_token);
+            let insertion_index = batches
+                .iter()
+                .position(|batch| fennel_texture_batch_bucket(batch.texture_token) == bucket)
+                .unwrap_or(0);
+            batches.insert(
+                insertion_index,
+                FennelTextureBatchMembership {
+                    texture_token: record.texture_token,
+                    normal_glyph_count: 1,
+                    effect_glyph_count: usize::from(record.field_0c & 0x40000 != 0),
+                    record_indices: vec![record_index],
+                },
+            );
+        }
+        processed_glyph_count = next_glyph_count;
+    }
+    Ok(FennelTextureBatchBuild {
+        batches,
+        processed_glyph_count,
+        stop: FennelTextureBatchStop::EndOfRecordArray,
+    })
+}
+
+fn fennel_texture_batch_bucket(texture_token: u32) -> u32 {
+    texture_token.wrapping_add(texture_token >> 3) % FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FennelFittingLayoutError {
@@ -1741,6 +1863,72 @@ mod tests {
         assert_eq!(stream.records[0].kind, FENNEL_RECORD_LINE_TABLE_OVERFLOW);
         assert_eq!(result.record_limit, -1);
         assert_eq!((stream.records[0].x, stream.records[0].y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn texture_batch_membership_matches_the_initial_hash_forward_list() {
+        let mut stream = one_line_stream(&[1, 2, 3, 4]);
+        for (record, texture_token) in stream.records[..4].iter_mut().zip([1u32, 2, 16, 2]) {
+            record.texture_token = texture_token;
+        }
+        stream.records[1].field_0c = 0x40000;
+
+        let build = build_fennel_texture_batch_membership(&stream, -1).unwrap();
+        assert_eq!(FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT, 17);
+        assert_eq!(build.processed_glyph_count, 4);
+        assert_eq!(build.stop, FennelTextureBatchStop::EndOfRecordArray);
+        // Token 2 opens a new bucket and is inserted at global head. Token 16
+        // hashes to the same bucket as token 1 and is inserted before that
+        // bucket's existing first node.
+        assert_eq!(
+            build
+                .batches
+                .iter()
+                .map(|batch| batch.texture_token)
+                .collect::<Vec<_>>(),
+            vec![2, 16, 1]
+        );
+        assert_eq!(build.batches[0].normal_glyph_count, 2);
+        assert_eq!(build.batches[0].effect_glyph_count, 1);
+        assert_eq!(build.batches[0].record_indices, vec![1, 3]);
+    }
+
+    #[test]
+    fn texture_batch_scan_stops_at_minus_254_and_the_strict_maximum_gate() {
+        let mut stream = one_line_stream(&[1, 2, 3]);
+        for (record, texture_token) in stream.records[..3].iter_mut().zip([1u32, 2, 3]) {
+            record.texture_token = texture_token;
+        }
+        stream.records[2].kind = FENNEL_RECORD_LINE_TABLE_OVERFLOW;
+        let build = build_fennel_texture_batch_membership(&stream, -1).unwrap();
+        assert_eq!(build.processed_glyph_count, 2);
+        assert_eq!(
+            build.stop,
+            FennelTextureBatchStop::LineTableOverflow { record_index: 2 }
+        );
+
+        stream.records[2].kind = 0;
+        let build = build_fennel_texture_batch_membership(&stream, 2).unwrap();
+        assert_eq!(build.processed_glyph_count, 1);
+        assert_eq!(
+            build.stop,
+            FennelTextureBatchStop::MaximumGlyphs { record_index: 1 }
+        );
+    }
+
+    #[test]
+    fn texture_batch_builder_rejects_the_unported_rehash_boundary() {
+        let tokens = (0..18).collect::<Vec<_>>();
+        let mut stream = one_line_stream(&tokens);
+        for (index, record) in stream.records[..tokens.len()].iter_mut().enumerate() {
+            record.texture_token = index as u32;
+        }
+        assert_eq!(
+            build_fennel_texture_batch_membership(&stream, -1).unwrap_err(),
+            FennelTextureBatchRehashRequired {
+                unique_texture_count: 18,
+            }
+        );
     }
 
     #[test]

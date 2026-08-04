@@ -11,7 +11,8 @@ use srd_editor::dds::{
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::fennel::{
     FennelDefaultLayoutError, FennelFittingLayoutError, FennelLayoutGlyphMetrics,
-    FennelPlainRecordError, FennelStaticTextProperties, build_fennel_plain_record_stream,
+    FennelPlainRecordError, FennelStaticTextProperties, FennelTextureBatchStop,
+    build_fennel_plain_record_stream, build_fennel_texture_batch_membership,
     decode_fennel_game_text, layout_fennel_static_default, layout_fennel_static_fitting_lines,
     tokenize_fennel_plain_text,
 };
@@ -1807,6 +1808,9 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut wrapped_text_count = 0usize;
     let mut automatic_wrap_count = 0usize;
     let mut vertical_overflow_text_count = 0usize;
+    let mut batch_build_count = 0usize;
+    let mut maximum_batch_count = 0usize;
+    let mut batch_overflow_stop_count = 0usize;
     let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut default_layout_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut layout_error_counts = BTreeMap::<&'static str, usize>::new();
@@ -1881,6 +1885,34 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                     wrapped_text_count += usize::from(result.first_automatic_wrap.is_some());
                     automatic_wrap_count += result.automatic_wrap_count;
                     vertical_overflow_text_count += usize::from(result.vertical_overflow.is_some());
+                    let batches = build_fennel_texture_batch_membership(&default_stream, -1)
+                        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                    batch_build_count += 1;
+                    maximum_batch_count = maximum_batch_count.max(batches.batches.len());
+                    assert_eq!(
+                        batches
+                            .batches
+                            .iter()
+                            .map(|batch| batch.normal_glyph_count)
+                            .sum::<usize>(),
+                        batches.processed_glyph_count,
+                        "{}",
+                        path.display()
+                    );
+                    match (result.vertical_overflow, batches.stop) {
+                        (
+                            Some(overflow),
+                            FennelTextureBatchStop::LineTableOverflow { record_index },
+                        ) => {
+                            assert_eq!(record_index, overflow.record_index, "{}", path.display());
+                            batch_overflow_stop_count += 1;
+                        }
+                        (None, FennelTextureBatchStop::EndOfRecordArray) => {}
+                        (layout, batch) => panic!(
+                            "{} layout/batch stop mismatch: {layout:?}/{batch:?}",
+                            path.display()
+                        ),
+                    }
                 }
                 Err(error) => {
                     let category = match error {
@@ -1927,7 +1959,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -1940,6 +1972,9 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     assert!(wrapped_text_count > 0);
     assert!(automatic_wrap_count >= wrapped_text_count);
     assert!(vertical_overflow_text_count > 0);
+    assert_eq!(batch_build_count, text_count);
+    assert!(maximum_batch_count > 0);
+    assert_eq!(batch_overflow_stop_count, vertical_overflow_text_count);
     assert!(default_layout_error_counts.is_empty());
     assert_eq!(
         text_count,
