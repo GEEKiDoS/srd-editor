@@ -116,3 +116,5 @@ Advertise 的嵌入式 `projView::SrPlayer`：
 - 宿主预览配置：目标 target 类型、viewport、target Camera、active/visibility 位和 scene-node 根矩阵。
 
 在用户选择宿主预览策略前，代码不得把 `MainScene`、`BgScene`、单位矩阵、自动正交相机或 SRD CAM 冒充为游戏唯一默认值。
+
+Chusan 自己创建的 `MainScene` / `BgScene` 已进一步闭环到 scene 属性、Camera 构造值与运行时 Aspect 更新；它们现在可以作为显式 target profile 使用。证据与仍需外部提供的 present 尺寸见 [`chusan-air-scene-profiles.md`](chusan-air-scene-profiles.md)。
