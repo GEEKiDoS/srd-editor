@@ -11,11 +11,11 @@ use srd_editor::dds::{
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::fennel::{
     FENNEL_TEXTBOX_CLIP_FLAG, FennelDefaultLayoutError, FennelFittingLayoutError,
-    FennelLayoutGlyphMetrics, FennelPlainRecordError, FennelStaticTextProperties,
-    FennelStaticUnclippedDrawInput, FennelTextureBatchStop, build_fennel_plain_record_stream,
-    build_fennel_static_unclipped_vertex_batches, build_fennel_texture_batch_membership,
-    decode_fennel_game_text, fennel_fresh_srd_textbox_flags, layout_fennel_static_default,
-    layout_fennel_static_fitting_lines, tokenize_fennel_plain_text,
+    FennelFontSlotRegistry, FennelLayoutGlyphMetrics, FennelPlainRecordError,
+    FennelStaticTextProperties, FennelStaticUnclippedDrawInput, FennelTextureBatchStop,
+    build_fennel_plain_record_stream, build_fennel_static_unclipped_vertex_batches,
+    build_fennel_texture_batch_membership, decode_fennel_game_text, fennel_fresh_srd_textbox_flags,
+    layout_fennel_static_default, layout_fennel_static_fitting_lines, tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
@@ -32,8 +32,10 @@ use srd_editor::shader_bytecode::{
     FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
 };
 use srd_editor::srd_draw::{
-    SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
+    FennelTextFontRole, SrdHostDrawContext, assign_fennel_font_resource_requests,
+    build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
+    collect_fennel_font_resource_requests,
 };
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -2151,6 +2153,82 @@ fn audits_binary_proven_static_fennel_layout_subset() {
         fitting_count
             + record_error_counts.values().sum::<usize>()
             + layout_error_counts.values().sum::<usize>()
+    );
+}
+
+#[test]
+fn audits_fennel_font_resource_request_and_slot_order() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+
+    let mut role_counts = [0usize; 4];
+    let mut first_requests = 0usize;
+    let mut cache_reuses = 0usize;
+    let mut unregistered_requests = 0usize;
+    let mut maximum_registered_slot = None::<u16>;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        let requests = collect_fennel_font_resource_requests(&project)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        for request in &requests {
+            role_counts[match request.role {
+                FennelTextFontRole::Primary => 0,
+                FennelTextFontRole::Ruby => 1,
+                FennelTextFontRole::Outline => 2,
+                FennelTextFontRole::OutlineRuby => 3,
+            }] += 1;
+            assert!(!request.name.is_empty());
+        }
+
+        let mut registry = FennelFontSlotRegistry::default();
+        for assignment in assign_fennel_font_resource_requests(&mut registry, requests) {
+            if assignment.slot.first_request {
+                first_requests += 1;
+            } else {
+                cache_reuses += 1;
+            }
+            if assignment.slot.registered {
+                maximum_registered_slot = Some(
+                    maximum_registered_slot.map_or(assignment.slot.font_slot_id, |slot| {
+                        slot.max(assignment.slot.font_slot_id)
+                    }),
+                );
+                assert_eq!(
+                    registry.resource_for_slot(assignment.slot.font_slot_id),
+                    Some(&assignment.request.name)
+                );
+            } else {
+                unregistered_requests += 1;
+            }
+        }
+    }
+
+    let (expected_roles, expected_first_requests, expected_cache_reuses) = match profile {
+        CorpusProfile::Legacy53 => ([1_237, 0, 0, 0], 139, 1_098),
+        CorpusProfile::Complete91 => ([1_292, 0, 0, 0], 172, 1_120),
+    };
+    assert_eq!(role_counts, expected_roles);
+    assert_eq!(first_requests, expected_first_requests);
+    assert_eq!(cache_reuses, expected_cache_reuses);
+    assert_eq!(unregistered_requests, 0);
+    assert_eq!(maximum_registered_slot, Some(4));
+    eprintln!(
+        "Fennel font requests primary={} ruby={} outline={} outline-ruby={}, first resources={}, cache reuses={}, unregistered={}, maximum registered slot={maximum_registered_slot:?}",
+        role_counts[0],
+        role_counts[1],
+        role_counts[2],
+        role_counts[3],
+        first_requests,
+        cache_reuses,
+        unregistered_requests,
     );
 }
 

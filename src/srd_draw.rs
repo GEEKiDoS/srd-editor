@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::attribute::CastAttributeValue;
 use crate::fennel::{
-    FennelOwnedTextureBatch, FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
-    build_fennel_plain_record_stream, build_fennel_static_unclipped_vertex_batches,
-    layout_fennel_static_default,
+    FennelFontSlotRegistry, FennelFontSlotRequest, FennelOwnedTextureBatch,
+    FennelStaticTextProperties, FennelStaticUnclippedDrawInput, build_fennel_plain_record_stream,
+    build_fennel_static_unclipped_vertex_batches, layout_fennel_static_default,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -71,6 +72,157 @@ pub struct EvidenceCompleteFennelDraw {
     pub is_2d: bool,
     pub fixed_constants: CeylonSrdFixedShaderConstants,
     pub batches: Vec<FennelOwnedTextureBatch>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelTextFontRole {
+    Primary,
+    Ruby,
+    Outline,
+    OutlineRuby,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FennelFontResourceRequest {
+    pub scene_index: usize,
+    pub layer_index: usize,
+    pub node_index: usize,
+    pub role: FennelTextFontRole,
+    pub name: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FennelFontResourceAssignment {
+    pub request: FennelFontResourceRequest,
+    pub slot: FennelFontSlotRequest,
+}
+
+/// Collects the font-resource requests issued by `sub_AAE6C0` while it walks
+/// the player's original runtime scene table.
+///
+/// The binary traverses scenes, layers, and each layer's CAST vector in their
+/// construction order. For every SrTextCast it requests the primary font
+/// first, then visits the selected CATR records in source order. Only the
+/// exact case-sensitive string keys below call the same four-slot TextCast
+/// font loader. Empty strings reach `sub_1088590` but do not issue a resource
+/// request, so they are omitted here.
+///
+/// This is not an assertion that the process-global FontManager was empty
+/// before this player loaded. Apply the returned requests to a registry that
+/// already contains any host resources whose earlier lifetime is known.
+pub fn collect_fennel_font_resource_requests(
+    project: &Project,
+) -> Result<Vec<FennelFontResourceRequest>, SrdDrawError> {
+    let mut requests = Vec::new();
+    for (scene_index, scene) in project.scenes.iter().enumerate() {
+        for (layer_index, layer) in scene.layers.iter().enumerate() {
+            for node_index in 0..layer.nodes.len() {
+                let Some(image) = layer.image_by_node.get(node_index).and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if !image.creates_text_cast() {
+                    continue;
+                }
+                let Some(text) = image.text.as_ref() else {
+                    return Err(SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] creates an SrTextCast without a TEXT definition"
+                    )));
+                };
+                let font_index = usize::try_from(text.font_index.unwrap_or(-1)).map_err(|_| {
+                    SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] has an invalid TextCast font index"
+                    ))
+                })?;
+                let font = project.fonts.get(font_index).ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] TextCast font index {font_index} is outside PROJ"
+                    ))
+                })?;
+                push_fennel_font_resource_request(
+                    &mut requests,
+                    scene_index,
+                    layer_index,
+                    node_index,
+                    FennelTextFontRole::Primary,
+                    &font.name,
+                );
+
+                let Some(attribute_list_index) = layer
+                    .cast_attribute_list_by_node
+                    .get(node_index)
+                    .and_then(|index| *index)
+                else {
+                    continue;
+                };
+                let attribute_list = layer
+                    .cast_attribute_lists
+                    .get(attribute_list_index)
+                    .ok_or_else(|| {
+                        SrdDrawError(format!(
+                            "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] CATR index {attribute_list_index} is outside the parsed list table"
+                        ))
+                    })?;
+                for attribute in &attribute_list.attributes {
+                    let Some(role) = (match attribute.name.as_slice() {
+                        b"rubyFont" => Some(FennelTextFontRole::Ruby),
+                        b"rfzOutlineFont" => Some(FennelTextFontRole::Outline),
+                        b"rfzOutlineRubyFont" => Some(FennelTextFontRole::OutlineRuby),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let CastAttributeValue::String(name) = &attribute.value else {
+                        return Err(SrdDrawError(format!(
+                            "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] CATR {:?} uses an unported non-string font-resource value",
+                            String::from_utf8_lossy(&attribute.name)
+                        )));
+                    };
+                    push_fennel_font_resource_request(
+                        &mut requests,
+                        scene_index,
+                        layer_index,
+                        node_index,
+                        role,
+                        name,
+                    );
+                }
+            }
+        }
+    }
+    Ok(requests)
+}
+
+fn push_fennel_font_resource_request(
+    requests: &mut Vec<FennelFontResourceRequest>,
+    scene_index: usize,
+    layer_index: usize,
+    node_index: usize,
+    role: FennelTextFontRole,
+    name: &[u8],
+) {
+    if !name.is_empty() {
+        requests.push(FennelFontResourceRequest {
+            scene_index,
+            layer_index,
+            node_index,
+            role,
+            name: name.to_vec(),
+        });
+    }
+}
+
+pub fn assign_fennel_font_resource_requests(
+    registry: &mut FennelFontSlotRegistry<Vec<u8>>,
+    requests: impl IntoIterator<Item = FennelFontResourceRequest>,
+) -> Vec<FennelFontResourceAssignment> {
+    requests
+        .into_iter()
+        .map(|request| {
+            let slot = registry.request(request.name.clone());
+            FennelFontResourceAssignment { request, slot }
+        })
+        .collect()
 }
 
 /// Inputs owned by the scene/target hosting an SrPlayer, rather than by the
@@ -608,5 +760,161 @@ fn compose_initial_world_color_node(
     output[index] = world;
     for &child in &children[index] {
         compose_initial_world_color_node(layer, transforms, children, child, world, output);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attribute::{CastAttribute, CastAttributeList};
+    use crate::camera::CameraDefinition;
+    use crate::image::ImageDefinition;
+    use crate::scene::{NodeRecord, Scene};
+    use crate::text::{FontDefinition, TextDefinition};
+
+    fn text_image(node_index: i32, font_index: i32) -> ImageDefinition {
+        ImageDefinition {
+            flags: 0x100,
+            width: 128.0,
+            height: 128.0,
+            custom_origin: [0.0; 2],
+            origin_mode: 0,
+            vertex_colors: [[0xff; 4]; 4],
+            cref_index: -1,
+            cref_count: 0,
+            crefs: Vec::new(),
+            field_4c: 0,
+            cre1_index: -1,
+            cre1_count: 0,
+            cre1s: Vec::new(),
+            coordinate_offsets: [[0.0; 2]; 2],
+            field_a1: 0,
+            node_index,
+            has_text_child: true,
+            text: Some(TextDefinition {
+                field_78: None,
+                font_index: Some(font_index),
+                text: Vec::new(),
+                field_36: None,
+                field_7b: None,
+                field_7c: None,
+                field_41: None,
+            }),
+        }
+    }
+
+    fn node() -> NodeRecord {
+        NodeRecord {
+            name: None,
+            type_flags: Some(1),
+            parent_csli_cell_index: None,
+            first_child_index: -1,
+            next_sibling_index: -1,
+            field_a0: None,
+        }
+    }
+
+    fn font(name: &[u8]) -> crate::text::FontDefinition {
+        FontDefinition {
+            name: name.to_vec(),
+            flags_70: None,
+            field_71: None,
+            characters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fennel_font_requests_follow_runtime_cast_then_catr_order() {
+        let attribute_list = CastAttributeList {
+            node_index: Some(0),
+            declared_count: 4,
+            attributes: vec![
+                CastAttribute {
+                    name: b"rubyFont".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::String(b"ruby.rfz".to_vec()),
+                },
+                CastAttribute {
+                    name: b"ignoredFont".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::String(b"ignored.rfz".to_vec()),
+                },
+                CastAttribute {
+                    name: b"rfzOutlineFont".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::String(b"outline.rfz".to_vec()),
+                },
+                CastAttribute {
+                    name: b"rfzOutlineRubyFont".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::String(Vec::new()),
+                },
+            ],
+        };
+        let layer = Layer {
+            name: b"layer".to_vec(),
+            flags: 0,
+            animation_count: 0,
+            animations: Vec::new(),
+            field_23: Vec::new(),
+            nodes: vec![node(), node(), node()],
+            transforms: Vec::new(),
+            image_by_node: vec![
+                Some(text_image(0, 1)),
+                Some(text_image(1, 0)),
+                Some(text_image(2, 1)),
+            ],
+            number_by_node: vec![None, None, None],
+            reference_by_node: vec![None, None, None],
+            csli_by_node: vec![None, None, None],
+            cast_attribute_lists: vec![attribute_list],
+            cast_attribute_list_by_node: vec![Some(0), None, None],
+        };
+        let project = Project {
+            name: b"project".to_vec(),
+            declared_scene_count: 1,
+            declared_font_count: 2,
+            camera: CameraDefinition::default(),
+            scenes: vec![Scene {
+                name: b"scene".to_vec(),
+                declared_layer_count: 1,
+                declared_animation_set_count: 0,
+                width: 1920.0,
+                height: 1080.0,
+                layers: vec![layer],
+                animation_sets: Vec::new(),
+            }],
+            fonts: vec![font(b"primary_a.rfz"), font(b"primary_b.rfz")],
+        };
+
+        let requests = collect_fennel_font_resource_requests(&project).unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (request.node_index, request.role, request.name.as_slice()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, FennelTextFontRole::Primary, b"primary_b.rfz".as_slice()),
+                (0, FennelTextFontRole::Ruby, b"ruby.rfz".as_slice()),
+                (0, FennelTextFontRole::Outline, b"outline.rfz".as_slice()),
+                (1, FennelTextFontRole::Primary, b"primary_a.rfz".as_slice()),
+                (2, FennelTextFontRole::Primary, b"primary_b.rfz".as_slice()),
+            ]
+        );
+
+        let mut registry = FennelFontSlotRegistry::default();
+        let assignments = assign_fennel_font_resource_requests(&mut registry, requests);
+        assert_eq!(
+            assignments
+                .iter()
+                .map(|assignment| assignment.slot.font_slot_id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 0]
+        );
+        assert_eq!(
+            assignments[4].slot.resource_handle,
+            assignments[0].slot.resource_handle
+        );
+        assert_eq!(assignments[4].slot.lease_count, 2);
     }
 }

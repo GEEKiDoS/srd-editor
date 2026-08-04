@@ -35,7 +35,7 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 尚未闭合：
 
 - TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
-- RFZ FontResource 注册到全局 Fennel font slot 的实际分配/释放顺序。`$F[n]`/`$F` 的 iterator 状态、u16 截断、恢复与 `(slot, code) -> sub_F323B0` 查找链已经闭合并通过显式 resolver 实现，但不得把 PROJ FONT 下标或文件加载顺序猜成全局 slot；
+- FontResource 的 32 槽 lowest-free 分配、同资源缓存复用、最后引用释放后的精确槽回收、满表返回未注册 slot `0x20`，以及当前玩家 `SCN -> LAYR -> NODE` 中主字体后接 `rubyFont/rfzOutlineFont/rfzOutlineRubyFont` 的 CATR 请求顺序已经闭合并实现。仍待连接的是游戏宿主在加载当前 SRD 前仍存活的进程级字体资源状态、copied reference layer 新建 TextCast 的追加请求，以及跨字体 atlas batch 路由；这些输入闭合前不得把“空 registry”声称为任意原版画面的绝对 slot 映射；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源。mode 6 已定位到非虚方法 `0xADA300..0xADA348`：启用时清 TEXT flags bit 0、写入 state `+0x130/+0x134/+0x12C` 并设 mode 6，关闭时置回 bit 0 与 mode 0；当前 IDB 中该方法只有无调用引用的 jump-island thunk `0x45335F`，不是 `off_190E210` 虚表项，因此不得假定 SRD 首帧或动画会自动触发它。调用方显式给出 runtime flags/clip size 时，normal-glyph 动态裁剪批次已经可用；自动上游连接仍禁止猜测；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 

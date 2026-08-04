@@ -11,6 +11,197 @@ use crate::text::{TextDefinition, fennel_alignment_code_from_text_flags};
 /// UTF-16 converter.
 pub const FENNEL_GAME_ENCODING_UTF8: u32 = 0;
 
+/// `sub_F32B40` is constructed with `0x20` entries by the game startup path.
+/// Each entry is twelve bytes and is considered occupied when its resource
+/// pointer at `+0x04` is non-null.
+pub const FENNEL_FONT_SLOT_COUNT: u16 = 0x20;
+
+/// One acquisition of a cached font resource.
+///
+/// The resource handle is deliberately editor-opaque. The game also returns a
+/// cache handle distinct from the global Fennel slot; consumers must use
+/// `font_slot_id` for `$F[n]` glyph lookup and the handle for lifetime release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelFontSlotRequest {
+    pub resource_handle: usize,
+    pub font_slot_id: u16,
+    pub registered: bool,
+    pub first_request: bool,
+    pub lease_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelFontSlotRelease {
+    Retained {
+        resource_handle: usize,
+        remaining_leases: u32,
+    },
+    Destroyed {
+        resource_handle: usize,
+        font_slot_id: u16,
+        was_registered: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelUnknownFontResourceHandle(pub usize);
+
+impl std::fmt::Display for FennelUnknownFontResourceHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unknown Fennel font resource handle {}", self.0)
+    }
+}
+
+impl std::error::Error for FennelUnknownFontResourceHandle {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FennelCachedFontResource<K> {
+    key: K,
+    font_slot_id: u16,
+    registered: bool,
+    lease_count: u32,
+}
+
+/// Reproduces the resource-cache and global-slot behavior closed through
+/// `sub_7B96D0`, `sub_7B7300`, `sub_7BAF00`, `sub_F33200`, `sub_7BBA60`, and
+/// `sub_F33310`.
+///
+/// A first request receives the lowest currently unoccupied slot. Repeated
+/// requests for the same caller-defined resource identity reuse the cached
+/// resource and slot. Releasing its final lease destroys the resource and
+/// clears that exact slot, making it the next lowest-free candidate.
+///
+/// The full-table edge is intentionally preserved: `sub_7BAF00` returns the
+/// slot count (`0x20`), registration rejects that out-of-range id, and the
+/// resource remains cached with slot id `0x20` but no manager registration.
+/// Absolute slot ids are process-global in the game, so callers may populate
+/// this registry with earlier host requests before applying an SRD's requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FennelFontSlotRegistry<K> {
+    resources: Vec<Option<FennelCachedFontResource<K>>>,
+    slots: [Option<usize>; FENNEL_FONT_SLOT_COUNT as usize],
+}
+
+impl<K> Default for FennelFontSlotRegistry<K> {
+    fn default() -> Self {
+        Self {
+            resources: Vec::new(),
+            slots: [None; FENNEL_FONT_SLOT_COUNT as usize],
+        }
+    }
+}
+
+impl<K: Eq> FennelFontSlotRegistry<K> {
+    pub fn request(&mut self, key: K) -> FennelFontSlotRequest {
+        if let Some((resource_index, resource)) =
+            self.resources
+                .iter_mut()
+                .enumerate()
+                .find_map(|(index, resource)| {
+                    resource
+                        .as_mut()
+                        .filter(|resource| resource.key == key)
+                        .map(|resource| (index, resource))
+                })
+        {
+            resource.lease_count = resource
+                .lease_count
+                .checked_add(1)
+                .expect("Fennel font resource lease count overflow is outside the proven domain");
+            return FennelFontSlotRequest {
+                resource_handle: resource_index + 1,
+                font_slot_id: resource.font_slot_id,
+                registered: resource.registered,
+                first_request: false,
+                lease_count: resource.lease_count,
+            };
+        }
+
+        let free_slot = self.slots.iter().position(Option::is_none);
+        let font_slot_id = free_slot
+            .and_then(|slot| u16::try_from(slot).ok())
+            .unwrap_or(FENNEL_FONT_SLOT_COUNT);
+        let registered = free_slot.is_some();
+        let resource_index = self.resources.len();
+        let resource_handle = resource_index + 1;
+        self.resources.push(Some(FennelCachedFontResource {
+            key,
+            font_slot_id,
+            registered,
+            lease_count: 1,
+        }));
+        if let Some(slot) = free_slot {
+            self.slots[slot] = Some(resource_handle);
+        }
+        FennelFontSlotRequest {
+            resource_handle,
+            font_slot_id,
+            registered,
+            first_request: true,
+            lease_count: 1,
+        }
+    }
+
+    pub fn release(
+        &mut self,
+        resource_handle: usize,
+    ) -> Result<FennelFontSlotRelease, FennelUnknownFontResourceHandle> {
+        let resource_index = resource_handle
+            .checked_sub(1)
+            .ok_or(FennelUnknownFontResourceHandle(resource_handle))?;
+        let resource = self
+            .resources
+            .get_mut(resource_index)
+            .and_then(Option::as_mut)
+            .ok_or(FennelUnknownFontResourceHandle(resource_handle))?;
+        if resource.lease_count > 1 {
+            resource.lease_count -= 1;
+            return Ok(FennelFontSlotRelease::Retained {
+                resource_handle,
+                remaining_leases: resource.lease_count,
+            });
+        }
+
+        let font_slot_id = resource.font_slot_id;
+        let was_registered = resource.registered;
+        if was_registered {
+            let slot = usize::from(font_slot_id);
+            debug_assert_eq!(self.slots[slot], Some(resource_handle));
+            self.slots[slot] = None;
+        }
+        self.resources[resource_index] = None;
+        Ok(FennelFontSlotRelease::Destroyed {
+            resource_handle,
+            font_slot_id,
+            was_registered,
+        })
+    }
+
+    pub fn resource_for_slot(&self, font_slot_id: u16) -> Option<&K> {
+        let resource_handle = *self.slots.get(usize::from(font_slot_id))?.as_ref()?;
+        self.resources
+            .get(resource_handle - 1)?
+            .as_ref()
+            .map(|resource| &resource.key)
+    }
+
+    pub fn request_for_key(&self, key: &K) -> Option<FennelFontSlotRequest> {
+        self.resources
+            .iter()
+            .enumerate()
+            .find_map(|(resource_index, resource)| {
+                let resource = resource.as_ref().filter(|resource| &resource.key == key)?;
+                Some(FennelFontSlotRequest {
+                    resource_handle: resource_index + 1,
+                    font_slot_id: resource.font_slot_id,
+                    registered: resource.registered,
+                    first_request: false,
+                    lease_count: resource.lease_count,
+                })
+            })
+    }
+}
+
 /// `sub_F32B40` stores this value at FontManager implementation offset +0x08;
 /// `sub_F321E0` returns it to the token iterator as the command prefix.
 pub const FENNEL_CONTROL_PREFIX: u16 = b'$' as u16;
@@ -2070,6 +2261,83 @@ impl FennelGlyphLayoutRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_slot_registry_reuses_cached_resources_and_lowest_freed_slot() {
+        let mut registry = FennelFontSlotRegistry::default();
+        let first = registry.request(b"font_a".to_vec());
+        let second = registry.request(b"font_b".to_vec());
+        let duplicate = registry.request(b"font_a".to_vec());
+
+        assert_eq!((first.font_slot_id, second.font_slot_id), (0, 1));
+        assert!(first.first_request && first.registered);
+        assert_eq!(duplicate.resource_handle, first.resource_handle);
+        assert_eq!(duplicate.font_slot_id, 0);
+        assert_eq!(duplicate.lease_count, 2);
+        assert_eq!(registry.resource_for_slot(0), Some(&b"font_a".to_vec()));
+
+        assert_eq!(
+            registry.release(first.resource_handle).unwrap(),
+            FennelFontSlotRelease::Retained {
+                resource_handle: first.resource_handle,
+                remaining_leases: 1,
+            }
+        );
+        assert_eq!(registry.resource_for_slot(0), Some(&b"font_a".to_vec()));
+        assert_eq!(
+            registry.release(first.resource_handle).unwrap(),
+            FennelFontSlotRelease::Destroyed {
+                resource_handle: first.resource_handle,
+                font_slot_id: 0,
+                was_registered: true,
+            }
+        );
+        assert_eq!(registry.resource_for_slot(0), None);
+
+        let replacement = registry.request(b"font_c".to_vec());
+        assert_eq!(replacement.font_slot_id, 0);
+        assert_eq!(registry.resource_for_slot(1), Some(&b"font_b".to_vec()));
+    }
+
+    #[test]
+    fn font_slot_registry_preserves_the_full_table_unregistered_resource() {
+        let mut registry = FennelFontSlotRegistry::default();
+        for index in 0..FENNEL_FONT_SLOT_COUNT {
+            let request = registry.request(format!("font_{index}").into_bytes());
+            assert_eq!(request.font_slot_id, index);
+            assert!(request.registered);
+        }
+
+        let overflow = registry.request(b"overflow".to_vec());
+        assert_eq!(overflow.font_slot_id, FENNEL_FONT_SLOT_COUNT);
+        assert!(!overflow.registered);
+        assert!(overflow.first_request);
+        assert_eq!(
+            registry.request(b"overflow".to_vec()),
+            FennelFontSlotRequest {
+                first_request: false,
+                lease_count: 2,
+                ..overflow
+            }
+        );
+        assert_eq!(registry.resource_for_slot(FENNEL_FONT_SLOT_COUNT), None);
+
+        assert_eq!(
+            registry.release(overflow.resource_handle).unwrap(),
+            FennelFontSlotRelease::Retained {
+                resource_handle: overflow.resource_handle,
+                remaining_leases: 1,
+            }
+        );
+        assert_eq!(
+            registry.release(overflow.resource_handle).unwrap(),
+            FennelFontSlotRelease::Destroyed {
+                resource_handle: overflow.resource_handle,
+                font_slot_id: FENNEL_FONT_SLOT_COUNT,
+                was_registered: false,
+            }
+        );
+    }
 
     fn input() -> FennelGlyphPlacementInput {
         FennelGlyphPlacementInput {

@@ -187,6 +187,26 @@ FontManager 构造路径 `0x7B719C..0x7B71A4` 依次压入 `0x20` 和 `0`，调�
 
 font 分支 `0xF3BE62..0xF3BEB6` 的状态链也已闭合。`sub_F3BB80` 从 TextBoxObject `+0x04` 初始化当前/保存 slot 到 iterator `+0x814/+0x850`；普通 token 输出把 `+0x814` 放到 token `+0x04`，`sub_7C90A0` 随后以 `(slot, code)` 调 `sub_F323B0`。成功查找还会把 slot 写回 runtime glyph `+0x04`。Rust 的 `build_fennel_plain_record_stream_with_font_slots` 现要求调用方显式提供同样的 `(u16 slot, u16 code)` resolver；不会把 PROJ FONT 下标或文件名顺序当成全局 slot。现有单字体包装器只提供 slot 0，并对切换到其他 slot 的查找明确失败。
 
+### FontResource 缓存、全局 slot 与请求顺序
+
+FontManager 实现由 `sub_F32B40` 以 `0x20` 个槽构造。实现 `+0x2C..+0x34` 是 12 字节槽记录向量：首 WORD 保存槽号，`+0x04/+0x08` 分别保存已解析的字体接口和 backing object。`sub_F324D0` 只以 `+0x04 != 0` 判定占用；`sub_F323B0(slot, code)` 先做槽范围检查，再经该槽接口查询 glyph，并只在成功时把槽号写到 runtime glyph `+0x04`。
+
+资源构造器 `sub_7B7300` 在 loader 成功建立 backing object 后调用 `sub_7BAF00`。后者从 0 开始逐槽调用 `sub_F324D0`，返回第一个空槽，因此分配规则是严格的 lowest-free，而不是 PROJ FONT 下标、FONT `0x71` 或文件名排序。随后 `sub_F33200` 注册该明确槽；析构器 `sub_7B7CC0` 先以对象 `+0x6C` 的槽号调用 `sub_F33310`，后者释放该槽所有 item 并把 `+0x04/+0x08` 清零，所以最后资源销毁后同一槽可立即由下一次 lowest-free 请求复用。
+
+上游缓存也已闭合。`sub_7B96D0` 先通过 `sub_7BB0C0/sub_7BB210` 查找已存在的同一资源；命中时只增加现有缓存项引用计数，不重新构造 FontResource，也不分配新槽。`sub_7BBA60` 在最后引用释放时删除缓存项；FontResource 构造写入的虚表 `off_18E7CC8` 首项为 `0x4190FB -> sub_7B8370 -> sub_7B7CC0`，所以共享对象销毁明确进入上述 `sub_7B7CC0 -> sub_F33310` 注销链，并非仅凭 RAII 结构推断。满 32 槽时 `sub_7BAF00` 精确返回 `0x20`；`sub_F33200` 因越界返回失败，但构造器忽略返回值，所以该资源仍以 slot id `0x20` 进入缓存、却不占用 FontManager 槽。Rust 的 `FennelFontSlotRegistry` 保留了缓存复用、lowest-free、最终释放复用和这个满表边缘行为。
+
+当前玩家自身的请求顺序来自 `sub_AAE6C0`，不是 PROJ FONT 表。函数从 `srd_player_get_runtime_scene_table` 取得 `SrPlayer::Impl+0x294`，按运行时 scene、其 layer 向量、layer 的 CAST 向量从头遍历；`srd_build_runtime_layer` 又按解析 NODE 顺序建立 CAST，因此这条顺序等价于原始 `SCN -> LAYR -> NODE` 顺序。每个虚类型 2 的 SrTextCast 先以主字体调用四槽 loader 的 local slot 0，随后按当前 NODE 最后挂接的 CATR 记录原顺序处理：
+
+| CATR 名 | TextCast local slot | 资源请求 |
+| --- | ---: | --- |
+| `rubyFont` | 1 | 非空字符串调用同一资源缓存 |
+| `rfzOutlineFont` | 2 | 非空字符串调用同一资源缓存 |
+| `rfzOutlineRubyFont` | 3 | 非空字符串调用同一资源缓存 |
+
+Rust 的 `collect_fennel_font_resource_requests` 复现这套区分大小写的顺序，且不按扩展名过滤：旧字体资源同样会占用全局槽，不能只统计 `.rfz`。`assign_fennel_font_resource_requests` 接受调用方提供的现有 registry，因此宿主可先加入更早加载的进程级字体资源。这里仍不声称某个原版游戏画面加载当前 SRD 时全局槽表为空；绝对 slot id 取决于同一进程中更早仍存活的字体资源，这是宿主生命周期输入，不在单个 SRD 文件内。
+
+对完整 91 文件语料逐文件从空 registry 审计得到 1292 次主字体请求、172 次首次资源构造和 1120 次缓存复用；没有出现上述三个 CATR 字体键，也没有满表请求，单文件最高注册槽为 4。旧 53 文件集合对应 1237/139/1098，最高槽同样为 4。这个统计只验证单个玩家请求序列和缓存关系，不把逐文件空 registry 当作原版整进程宿主状态。
+
 `sub_7C90A0` 的 record stream 边界也已复现：普通 glyph 每个一条 116 字节记录；显式换行写 kind `-1`，超过 128 项 line-start 表时写 `-254`；iterator 结束后再写一个 kind `-1` 和最终 kind `-255`。缺字时游戏会尝试名为 `fennel_npc` 的 EmbeddedSprite；该 fallback 尚未闭环，因此 Rust 当前明确报缺字，不伪造替代 glyph。
 
 ### 默认静态排版输入、完整 mode-zero 路径与 fitting guard
