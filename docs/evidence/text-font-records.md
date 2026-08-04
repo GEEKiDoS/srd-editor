@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal glyph 的 origin/effective-scale/2D CPU matrix 链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。当前剩余主线是内部行元数据、SrTextCast 的真实 world/color composition 接入、效果/裁剪分支和像素回归。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal glyph 的 origin/effective-scale/2D CPU matrix 链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是内部行元数据与效果/裁剪分支。
 
 ## TEXT 记录
 
@@ -347,7 +347,20 @@ textures      = [present, null, null]
 
 字体 DDS 当前均为一层 mip；`ceylon_image_initialize_from_stevia_request` 在 `0xE7FF5F..0xE7FF6E` 把零 mip count 至少提升到 1 并写到 image `+0x64/+0x68`，随后 `sub_E7E8B0` 将其用于 MAXMIPLEVEL。因此当前 atlas 的完整 D3D9 sampler 是 Clamp/Clamp、Linear/Linear/Point、max mip level 1、max anisotropy 1、LOD bias 0、border color 0。Rust 会解析并验证每个 Stevia texture object；页数不匹配、页间 sampler 不同或出现未证明值时直接报错。
 
-`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record、`sub_7C0D40` texture batch membership 和 normal-glyph CPU vertices 已可完整生成；当前尚需把真实 SrTextCast world/color 输入接到现有 Composition，并闭合 effect/crop 后做像素回归。
+`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record、`sub_7C0D40` texture batch membership、normal-glyph CPU vertices 和初始 SrTextCast world/color 均已连接到 Composition。
+
+### ShapeEnv material cull 与像素闭环
+
+Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `ceylon_apply_draw_packet_state` 不会强制 `CULL_NONE`，而是保留 ShapeEnv material 同步出的基础 cull。该基础值的完整来源为：
+
+1. `ceylon_create_shape_environment` (`0x670680`) 创建 `PrimitiveDummyShape`，并以 `sub_E87890` 新建 `ceylon::resource::State` 后交给其 `sea::Material`；
+2. State 内的两个 52 字节 `StateParam` 均由 `sub_E859B0` 构造，packed `+0x08` 的低三位为 `0`；
+3. Material override mask 初始为零，`sea_material_sync_render_commands` (`0x659810`) 因而从该默认 StateParam 提取低三位到 material command `+0x54`；
+4. `sub_E93530` 把它写入全局 RenderState `+0x60`；内部值 `0` 经原版表映射为 `D3DCULL_CW`。
+
+此前直接用全局 RenderState reset 默认值 `1`（`D3DCULL_CCW`）会把 Fennel 的右上→左上→左下三角形全部剔除，导致顶点、alpha 和 viewport 均正常但 Composition 没有任何 changed pixel。这个失败只用于定位，最终实现使用上述二进制闭环得到的 `D3DCULL_CW`，没有保留诊断性的 `CULL_NONE`。
+
+真实语料初始帧审计得到 550 个可见 2D Fennel draw、32694 个顶点。`CHU_UI_Advertise_00_v10.srd` 的 smoke 为 1 draw、834 vertices，使用两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
 
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 
@@ -357,4 +370,3 @@ textures      = [present, null, null]
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - `sub_7C10B0` 的 `flags & 0x400` 裁剪/UV 重映射分支和 `0x40000` 第二 glyph/effect 的具体来源；
-- 外部字体 glyph quad 进入 D3D9Ex composition 的真实 SRD/RFZ 端到端回归。

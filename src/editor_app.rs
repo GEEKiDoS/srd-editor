@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::error::Error;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -12,20 +14,23 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
+use crate::d3d9_fennel::{EvidenceCompleteFennelBatch, FennelDx9Renderer};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
-use crate::d3d9_texture::{SrdD3d9TextureSet, audit_dds_device_uploads};
+use crate::d3d9_texture::{RuhunaD3d9AtlasSet, SrdD3d9TextureSet, audit_dds_device_uploads};
 use crate::editor_workspace::{
     EditorWorkspace, PreviewHostSettings, PreviewScissorSelection, PreviewTargetSelection,
     apply_editor_style,
 };
 use crate::game_host::{CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_MAIN_SCENE};
 use crate::imgui_dx9::ImguiDx9Renderer;
+use crate::ruhuna::{RuhunaFont, RuhunaRuntimeFont};
 use crate::shader_bytecode::{
     FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use crate::srd_draw::{
-    EvidenceCompleteSrdDraw, SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
-    build_evidence_complete_initial_image_draws,
+    EvidenceCompleteFennelDraw, EvidenceCompleteSrdDraw, SrdHostDrawContext,
+    build_evidence_complete_animation_set_image_draws,
+    build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
 };
 use crate::transform::Affine3x4;
 
@@ -40,11 +45,15 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let srd_texture_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-texture-smoke");
+    let srd_fennel_smoke = arguments
+        .iter()
+        .any(|argument| argument == "--srd-fennel-smoke");
     let dds_device_audit = arguments
         .iter()
         .any(|argument| argument == "--dds-device-audit");
     let smoke_test = srd_draw_smoke
         || srd_texture_smoke
+        || srd_fennel_smoke
         || dds_device_audit
         || arguments
             .iter()
@@ -59,6 +68,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         smoke_test,
         srd_draw_smoke,
         srd_texture_smoke,
+        srd_fennel_smoke,
         dds_device_audit,
         advertise_logo_host,
         document_path,
@@ -76,6 +86,7 @@ struct EditorApplication {
     smoke_test: bool,
     srd_draw_smoke: bool,
     srd_texture_smoke: bool,
+    srd_fennel_smoke: bool,
     dds_device_audit: bool,
     advertise_logo_host: Option<AdvertiseLogoHostArgument>,
     document_path: Option<PathBuf>,
@@ -94,6 +105,7 @@ struct AdvertiseLogoHostArgument {
 struct EditorSmokeOptions {
     srd_draw: bool,
     srd_texture: bool,
+    srd_fennel: bool,
     dds_device_audit: bool,
     advertise_logo_host: Option<AdvertiseLogoHostArgument>,
 }
@@ -107,10 +119,14 @@ struct EditorWindow {
     srd_renderer: Option<SrdDx9Renderer>,
     srd_textures: Option<SrdD3d9TextureSet>,
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
+    fennel_renderer: Option<FennelDx9Renderer>,
+    fennel_atlases: BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    fennel_draws: Vec<EvidenceCompleteFennelDraw>,
     composition_texture_id: Option<TextureId>,
     applied_preview_host: Option<PreviewHostSettings>,
     verify_srd_pixels: bool,
     verify_textured_pixels: bool,
+    verify_fennel_pixels: bool,
     verify_hidpi: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
@@ -122,6 +138,7 @@ impl EditorApplication {
         smoke_test: bool,
         srd_draw_smoke: bool,
         srd_texture_smoke: bool,
+        srd_fennel_smoke: bool,
         dds_device_audit: bool,
         advertise_logo_host: Option<AdvertiseLogoHostArgument>,
         document_path: Option<PathBuf>,
@@ -132,6 +149,7 @@ impl EditorApplication {
             smoke_test,
             srd_draw_smoke,
             srd_texture_smoke,
+            srd_fennel_smoke,
             dds_device_audit,
             advertise_logo_host,
             document_path,
@@ -150,6 +168,7 @@ impl EditorWindow {
         let EditorSmokeOptions {
             srd_draw: srd_draw_smoke,
             srd_texture: srd_texture_smoke,
+            srd_fennel: srd_fennel_smoke,
             dds_device_audit,
             advertise_logo_host,
         } = smoke;
@@ -260,7 +279,7 @@ impl EditorWindow {
             }
             None
         };
-        let (mut srd_renderer, mut srd_draws, composition_size) = match draw_result {
+        let (mut srd_renderer, mut srd_draws, mut composition_size) = match draw_result {
             Some((Ok(draws), size)) if !draws.is_empty() => {
                 let renderer = SrdDx9Renderer::new(d3d9.device())
                     .map_err(|error| format!("failed to create the SRD D3D9 renderer: {error}"))?;
@@ -321,6 +340,83 @@ impl EditorWindow {
                 .map_err(|error| format!("failed to load SRD textures: {error}"))?,
             )
         };
+        let (fennel_renderer, fennel_atlases, fennel_draws) = if srd_fennel_smoke {
+            let document = workspace
+                .document()
+                .ok_or_else(|| "--srd-fennel-smoke requires an SRD document".to_string())?;
+            let scene = document
+                .project
+                .scenes
+                .first()
+                .ok_or_else(|| "Fennel smoke SRD has no scene".to_string())?;
+            let size = checked_scene_composition_size(scene.width, scene.height)?;
+            let game_data_root = find_game_data_root(&document.path).ok_or_else(|| {
+                format!(
+                    "could not locate the game data root above {}",
+                    document.path.display()
+                )
+            })?;
+            let (runtime_fonts, atlases) =
+                load_fennel_resources(d3d9.device(), &game_data_root, &document.project.fonts)?;
+            let host =
+                diagnostic_project_camera_smoke_host(&document.project, scene.width.max(1.0), size);
+            let draws = build_evidence_complete_initial_fennel_draws(
+                &document.project,
+                0,
+                host,
+                &runtime_fonts,
+                false,
+            )
+            .map_err(|error| format!("failed to build evidence-complete Fennel draws: {error}"))?;
+            if draws.is_empty() {
+                return Err("the selected SRD did not produce a 2D RFZ Fennel draw".into());
+            }
+            let total_vertices = draws
+                .iter()
+                .flat_map(|draw| &draw.batches)
+                .map(|batch| batch.vertices.len())
+                .sum::<usize>();
+            let mut min_position = [f32::INFINITY; 3];
+            let mut max_position = [f32::NEG_INFINITY; 3];
+            let mut nonzero_primary_alpha = 0usize;
+            let mut texture_tokens = Vec::new();
+            for batch in draws.iter().flat_map(|draw| &draw.batches) {
+                texture_tokens.push(batch.texture_token);
+                for vertex in &batch.vertices {
+                    for axis in 0..3 {
+                        min_position[axis] = min_position[axis].min(vertex.position[axis]);
+                        max_position[axis] = max_position[axis].max(vertex.position[axis]);
+                    }
+                    nonzero_primary_alpha += usize::from(vertex.primary_color_bgra[3] != 0);
+                }
+            }
+            eprintln!(
+                "Fennel smoke draws={} vertices={} fonts={} bbox={:?}..{:?} nonzero_primary_alpha={} texture_tokens={:?}",
+                draws.len(),
+                total_vertices,
+                atlases.len(),
+                min_position,
+                max_position,
+                nonzero_primary_alpha,
+                texture_tokens,
+            );
+            if srd_renderer.is_none() {
+                srd_renderer = Some(SrdDx9Renderer::new(d3d9.device()).map_err(|error| {
+                    format!("failed to create the Composition target renderer: {error}")
+                })?);
+            }
+            composition_size = Some(size);
+            (
+                Some(
+                    FennelDx9Renderer::new(d3d9.device())
+                        .map_err(|error| format!("failed to create Fennel renderer: {error}"))?,
+                ),
+                atlases,
+                draws,
+            )
+        } else {
+            (None, BTreeMap::new(), Vec::new())
+        };
         let composition_texture_id =
             if let (Some(renderer), Some(size)) = (srd_renderer.as_mut(), composition_size) {
                 renderer
@@ -346,10 +442,14 @@ impl EditorWindow {
             srd_renderer,
             srd_textures,
             srd_draws,
+            fennel_renderer,
+            fennel_atlases,
+            fennel_draws,
             composition_texture_id,
             applied_preview_host: None,
             verify_srd_pixels: srd_draw_smoke,
             verify_textured_pixels: srd_texture_smoke,
+            verify_fennel_pixels: srd_fennel_smoke,
             verify_hidpi: smoke_test,
             workspace,
             dpi_factor,
@@ -385,6 +485,12 @@ impl EditorWindow {
                 if let Some(textures) = &mut self.srd_textures {
                     textures.invalidate_device_objects();
                 }
+                if let Some(renderer) = &mut self.fennel_renderer {
+                    renderer.invalidate_device_objects();
+                }
+                for atlas in self.fennel_atlases.values_mut() {
+                    atlas.invalidate_device_objects();
+                }
                 self.d3d9.reset().map_err(|error| error.to_string())?;
                 self.imgui_renderer
                     .create_device_objects(&mut self.imgui)
@@ -410,6 +516,16 @@ impl EditorWindow {
                         .create_device_objects(self.d3d9.device())
                         .map_err(|error| error.to_string())?;
                 }
+                if let Some(renderer) = &mut self.fennel_renderer {
+                    renderer
+                        .create_device_objects()
+                        .map_err(|error| error.to_string())?;
+                }
+                for atlas in self.fennel_atlases.values_mut() {
+                    atlas
+                        .create_device_objects(self.d3d9.device())
+                        .map_err(|error| error.to_string())?;
+                }
             }
             D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
             D3d9ExDeviceStatus::Minimized => return Ok(D3d9ExFrameStatus::Minimized),
@@ -421,7 +537,7 @@ impl EditorWindow {
         self.platform
             .prepare_frame(self.imgui.io_mut(), &self.window)
             .map_err(|error| error.to_string())?;
-        if !self.verify_srd_pixels && !self.verify_textured_pixels {
+        if !self.verify_srd_pixels && !self.verify_textured_pixels && !self.verify_fennel_pixels {
             self.sync_preview_host();
         }
         if self.verify_hidpi {
@@ -435,12 +551,15 @@ impl EditorWindow {
         self.d3d9
             .clear_and_begin_scene(CLEAR_COLOR_ARGB)
             .map_err(|error| error.to_string())?;
-        let composition_external = if self.verify_srd_pixels || self.verify_textured_pixels {
-            SrdDx9ExternalContext::smoke_without_scissor()
-        } else {
-            SrdDx9ExternalContext::without_scissor()
-        };
-        if let Some(renderer) = &mut self.srd_renderer {
+        let composition_external =
+            if self.verify_srd_pixels || self.verify_textured_pixels || self.verify_fennel_pixels {
+                SrdDx9ExternalContext::smoke_without_scissor()
+            } else {
+                SrdDx9ExternalContext::without_scissor()
+            };
+        if !self.srd_draws.is_empty()
+            && let Some(renderer) = &mut self.srd_renderer
+        {
             renderer
                 .render_to_composition(
                     &self.srd_draws,
@@ -449,6 +568,23 @@ impl EditorWindow {
                     CLEAR_COLOR_ARGB,
                 )
                 .map_err(|error| format!("SRD composition draw failed: {error}"))?;
+        }
+        if self.verify_fennel_pixels {
+            let target = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "Fennel smoke lost the Composition target".to_string())?;
+            let renderer = self
+                .fennel_renderer
+                .as_mut()
+                .ok_or_else(|| "Fennel smoke lost the font renderer".to_string())?;
+            let draws = &self.fennel_draws;
+            let atlases = &self.fennel_atlases;
+            target
+                .render_custom_to_composition(CLEAR_COLOR_ARGB, || {
+                    render_fennel_draws(renderer, draws, atlases, composition_external)
+                })
+                .map_err(|error| format!("Fennel composition draw failed: {error}"))?;
         }
         if self.verify_srd_pixels
             && let Some(renderer) = &mut self.srd_renderer
@@ -535,6 +671,35 @@ impl EditorWindow {
             );
             self.d3d9.begin_scene().map_err(|error| error.to_string())?;
         }
+        if self.verify_fennel_pixels {
+            self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let readback = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "Fennel smoke lost the Composition target".to_string())?
+                .read_composition_bgra()
+                .map_err(|error| format!("Fennel composition readback failed: {error}"))?;
+            let diagnostic = analyze_composition_readback(
+                readback.width,
+                readback.height,
+                &readback.bgra,
+                [0x26, 0x22, 0x20],
+            )?;
+            if diagnostic.changed_pixels == 0 {
+                return Err("Fennel draw did not change any Composition pixel".into());
+            }
+            eprintln!(
+                "Fennel composition pixels={} white_pixels={} bbox=({}, {})..({}, {}) fnv1a64={:016X}",
+                diagnostic.changed_pixels,
+                diagnostic.white_pixels,
+                diagnostic.min_x,
+                diagnostic.min_y,
+                diagnostic.max_x,
+                diagnostic.max_y,
+                diagnostic.fnv1a64,
+            );
+            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+        }
         let render_result = self
             .imgui_renderer
             .render(draw_data)
@@ -585,6 +750,9 @@ impl EditorWindow {
         self.srd_renderer = None;
         self.srd_textures = None;
         self.srd_draws.clear();
+        self.fennel_renderer = None;
+        self.fennel_atlases.clear();
+        self.fennel_draws.clear();
     }
 
     fn rebuild_preview_resources(&mut self, settings: PreviewHostSettings) -> Result<(), String> {
@@ -806,6 +974,95 @@ fn find_game_data_root(path: &std::path::Path) -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
+fn load_fennel_resources(
+    device: &windows::Win32::Graphics::Direct3D9::IDirect3DDevice9,
+    game_data_root: &std::path::Path,
+    fonts: &[crate::text::FontDefinition],
+) -> Result<
+    (
+        BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+        BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    ),
+    String,
+> {
+    let mut runtime_fonts = BTreeMap::new();
+    let mut atlases = BTreeMap::new();
+    for font in fonts {
+        if runtime_fonts.contains_key(font.name.as_slice())
+            || !font
+                .name
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+                .ends_with(b".rfz")
+        {
+            continue;
+        }
+        let name = std::str::from_utf8(&font.name)
+            .map_err(|error| format!("RFZ font name is not UTF-8: {error}"))?;
+        let path = game_data_root.join("A000/font").join(name);
+        let parsed = RuhunaFont::from_rfz(
+            &fs::read(&path)
+                .map_err(|error| format!("failed to read {}: {error}", path.display()))?,
+        )
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+        let runtime = parsed
+            .build_runtime_font(1, |page| u32::from(page) + 1)
+            .map_err(|error| format!("failed to build runtime {}: {error}", path.display()))?;
+        let atlas = RuhunaD3d9AtlasSet::from_font(device, &parsed)
+            .map_err(|error| format!("failed to upload {}: {error}", path.display()))?;
+        runtime_fonts.insert(font.name.clone(), runtime);
+        atlases.insert(font.name.clone(), atlas);
+    }
+    Ok((runtime_fonts, atlases))
+}
+
+fn render_fennel_draws(
+    renderer: &mut FennelDx9Renderer,
+    draws: &[EvidenceCompleteFennelDraw],
+    atlases: &BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    external: SrdDx9ExternalContext,
+) -> windows::core::Result<()> {
+    for draw in draws {
+        let atlas = atlases.get(draw.font_name.as_slice()).ok_or_else(|| {
+            windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                format!(
+                    "Fennel atlas {:?} is not loaded",
+                    String::from_utf8_lossy(&draw.font_name)
+                ),
+            )
+        })?;
+        let batches = draw
+            .batches
+            .iter()
+            .map(|batch| {
+                let page_index = batch
+                    .texture_token
+                    .checked_sub(1)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            format!(
+                                "Fennel smoke texture token {:#010x} is not the page+1 token assigned by its loader",
+                                batch.texture_token
+                            ),
+                        )
+                    })?;
+                Ok(EvidenceCompleteFennelBatch {
+                    page_index,
+                    is_2d: draw.is_2d,
+                    fixed_constants: draw.fixed_constants,
+                    vertices: &batch.vertices,
+                })
+            })
+            .collect::<windows::core::Result<Vec<_>>>()?;
+        renderer.render(&batches, external, atlas)?;
+    }
+    Ok(())
+}
+
 fn configure_imgui_fonts(imgui: &mut Context, dpi_factor: f64) {
     let dpi_factor = dpi_factor.max(0.5) as f32;
     let fonts = imgui.fonts();
@@ -934,6 +1191,7 @@ impl ApplicationHandler for EditorApplication {
                             EditorSmokeOptions {
                                 srd_draw: self.srd_draw_smoke,
                                 srd_texture: self.srd_texture_smoke,
+                                srd_fennel: self.srd_fennel_smoke,
                                 dds_device_audit: self.dds_device_audit,
                                 advertise_logo_host: self.advertise_logo_host,
                             },

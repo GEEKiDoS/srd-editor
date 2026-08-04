@@ -33,7 +33,7 @@ use srd_editor::shader_bytecode::{
 };
 use srd_editor::srd_draw::{
     SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
-    build_evidence_complete_initial_image_draws,
+    build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
 };
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -451,6 +451,133 @@ fn builds_evidence_complete_single_texture_draws() {
         .unwrap();
     assert_eq!([first_mip.width, first_mip.height], [720, 408]);
     assert!(alpha_max > 0, "fixture texture must contain visible texels");
+}
+
+#[test]
+fn skips_real_initial_2d_fennel_text_with_the_binary_zero_color_gate() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document = EditorDocument::load(
+        root.join("surfboard/common/commonDialog/CHU_UI_Common_dialog_01_v10.srd"),
+    )
+    .unwrap();
+    let mut runtime_fonts = BTreeMap::new();
+    for font in &document.project.fonts {
+        if !font
+            .name
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .ends_with(b".rfz")
+        {
+            continue;
+        }
+        let name = std::str::from_utf8(&font.name).unwrap();
+        let parsed =
+            RuhunaFont::from_rfz(&fs::read(root.join("A000/font").join(name)).unwrap()).unwrap();
+        runtime_fonts.insert(
+            font.name.clone(),
+            parsed
+                .build_runtime_font(1, |page| u32::from(page) + 1)
+                .unwrap(),
+        );
+    }
+
+    let mut draw_count = 0usize;
+    let mut vertex_count = 0usize;
+    for scene_index in 0..document.project.scenes.len() {
+        let draws = build_evidence_complete_initial_fennel_draws(
+            &document.project,
+            scene_index,
+            identity_host_context(),
+            &runtime_fonts,
+            false,
+        )
+        .unwrap();
+        draw_count += draws.len();
+        vertex_count += draws
+            .iter()
+            .flat_map(|draw| &draw.batches)
+            .map(|batch| batch.vertices.len())
+            .sum::<usize>();
+        assert!(draws.iter().all(|draw| draw.is_2d));
+        assert!(draws.iter().all(|draw| !draw.batches.is_empty()));
+    }
+    assert_eq!(draw_count, 0);
+    assert_eq!(vertex_count, 0);
+}
+
+#[test]
+fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let Some(game_data_root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let mut runtime_fonts = BTreeMap::new();
+    let mut draw_count = 0usize;
+    let mut vertex_count = 0usize;
+    let mut samples = Vec::new();
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project = Project::from_file(&file).unwrap();
+        for font in &project.fonts {
+            if runtime_fonts.contains_key(font.name.as_slice())
+                || !font
+                    .name
+                    .iter()
+                    .map(u8::to_ascii_lowercase)
+                    .collect::<Vec<_>>()
+                    .ends_with(b".rfz")
+            {
+                continue;
+            }
+            let name = std::str::from_utf8(&font.name).unwrap();
+            let parsed = RuhunaFont::from_rfz(
+                &fs::read(game_data_root.join("A000/font").join(name)).unwrap(),
+            )
+            .unwrap();
+            runtime_fonts.insert(
+                font.name.clone(),
+                parsed
+                    .build_runtime_font(1, |page| u32::from(page) + 1)
+                    .unwrap(),
+            );
+        }
+        for scene_index in 0..project.scenes.len() {
+            let draws = build_evidence_complete_initial_fennel_draws(
+                &project,
+                scene_index,
+                identity_host_context(),
+                &runtime_fonts,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            if !draws.is_empty() && samples.len() < 10 {
+                samples.push(format!("{} scene={scene_index}", path.display()));
+            }
+            draw_count += draws.len();
+            vertex_count += draws
+                .iter()
+                .flat_map(|draw| &draw.batches)
+                .map(|batch| batch.vertices.len())
+                .sum::<usize>();
+        }
+    }
+    eprintln!(
+        "initial visible 2D Fennel draws={draw_count}, vertices={vertex_count}, samples={samples:?}"
+    );
+    assert!(draw_count > 0);
+    assert!(vertex_count > 0);
 }
 
 #[test]

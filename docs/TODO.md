@@ -28,15 +28,14 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 恢复调查时必须从保存了 CommonBackGroundObject 指针的具体画面类继续追踪其后续成员访问，或取得原版运行时矩阵/常量捕获。禁止以 `Aspect = Width / Height`、自动 fit-to-view、强制 2D 或任意 X scale 作为游戏逻辑修复。
 
-## Fennel 行元数据与最终 batch 顶点输入
+## Fennel 行元数据与剩余 effect/crop 输入
 
-静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` 静态 normal glyph 的 bearing origin、effective scale、2D matrix 顺序和无裁剪顶点同样已实现。完整 1292 条 RFZ TEXT 全部通过，单条最多 6 个 batch/1620 个 normal 顶点。
+静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` 静态 normal glyph 的 bearing origin、effective scale、2D matrix 顺序和无裁剪顶点同样已实现。SrTextCast 初始 world/color、零颜色门控和 ShapeEnv material 的 CW cull 已接入 D3D9Ex Composition。完整 1292 条 RFZ TEXT 全部通过，单条最多 6 个 batch/1620 个 normal 顶点；真实语料有 550 个初始可见 2D draw，Advertise 像素回归为 40920 个 changed pixels。
 
 尚未闭合：
 
 - TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
-- TextBox `+0x2EC` 与 `+0x32C` 的真实 SrTextCast world/color 值接入当前 Composition draw context，并完成 SRD/RFZ 像素回归；
 - record `+0x0C & 0x40000` 的第二组 effect glyph 参数与生成来源；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 
-在这些输入闭环前，不得把 layout record 直接套用 ImageCast 的 world/color，也不得自行补 effect 或裁剪参数。
+在这些输入闭环前，不得自行补 effect、裁剪参数或 rehash 行为。

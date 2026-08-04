@@ -1,6 +1,15 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::image::{ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource};
+use crate::fennel::{
+    FennelOwnedTextureBatch, FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
+    build_fennel_plain_record_stream, build_fennel_static_unclipped_vertex_batches,
+    layout_fennel_static_default,
+};
+use crate::image::{
+    ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
+    premultiply_additive_color_game,
+};
 use crate::projection::{
     Matrix4x4, identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
 };
@@ -12,6 +21,7 @@ use crate::render::{
     apply_srd_special_depth_packet_fields, ceylon_d3d9_blend_preset,
     select_srd_image_render_preset,
 };
+use crate::ruhuna::RuhunaRuntimeFont;
 use crate::scene::{Layer, Project};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
@@ -50,6 +60,17 @@ pub struct EvidenceCompleteSrdDraw {
 pub struct EvidenceSrdTextureBinding {
     pub texture_index: usize,
     pub sampler: TextureSamplerState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceCompleteFennelDraw {
+    pub scene_index: usize,
+    pub layer_index: usize,
+    pub node_index: usize,
+    pub font_name: Vec<u8>,
+    pub is_2d: bool,
+    pub fixed_constants: CeylonSrdFixedShaderConstants,
+    pub batches: Vec<FennelOwnedTextureBatch>,
 }
 
 /// Inputs owned by the scene/target hosting an SrPlayer, rather than by the
@@ -117,6 +138,190 @@ pub fn build_evidence_complete_animation_set_image_draws(
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the runtime")))?;
     build_evidence_complete_image_draws(project, textures, scene_index, host, Some(runtime_layers))
+}
+
+/// Builds the initial, 2D RFZ TextCast subset whose normal-glyph layout,
+/// texture batching, vertex generation, world transform and color inputs are
+/// all closed. 3D TextCast, effect/crop records and legacy `.sbfont` stay out
+/// of this evidence-complete path.
+pub fn build_evidence_complete_initial_fennel_draws(
+    project: &Project,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+    force_color_update: bool,
+) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
+    if host.target_render_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target render size must be non-zero, got {}x{}",
+            host.target_render_size[0], host.target_render_size[1]
+        )));
+    }
+    if host.target_screen_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target screen size must be non-zero, got {}x{}",
+            host.target_screen_size[0], host.target_screen_size[1]
+        )));
+    }
+    let scene = project
+        .scenes
+        .get(scene_index)
+        .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
+    let identity = identity_matrix4x4_game();
+    let mut draws = Vec::new();
+
+    for (layer_index, layer) in scene.layers.iter().enumerate() {
+        let layer_enabled = layer.flags & 0x100 != 0;
+        if !layer_enabled || !layer.is_2d() || reject_special_matrix_branches(layer).is_err() {
+            continue;
+        }
+        let transforms = layer
+            .transforms
+            .iter()
+            .copied()
+            .map(|transform| transform.spatial())
+            .collect::<Vec<_>>();
+        let world_matrices = layer
+            .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+        let world_colors = compose_initial_world_colors(layer, &transforms, layer_enabled)?;
+
+        for node_index in 0..layer.nodes.len() {
+            let Some(image) = layer.image_by_node[node_index]
+                .as_ref()
+                .filter(|image| image.creates_text_cast())
+            else {
+                continue;
+            };
+            let Some(text) = image.text.as_ref() else {
+                continue;
+            };
+            let world_color = world_colors[node_index];
+            if !world_color.visible {
+                continue;
+            }
+            let font_index = usize::try_from(text.font_index.unwrap_or(-1)).map_err(|_| {
+                SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] has an invalid RFZ font index"
+                ))
+            })?;
+            let font = project.fonts.get(font_index).ok_or_else(|| {
+                SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] RFZ font index {font_index} is outside PROJ"
+                ))
+            })?;
+            if !font
+                .name
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+                .ends_with(b".rfz")
+            {
+                continue;
+            }
+            let runtime_font = runtime_fonts.get(font.name.as_slice()).ok_or_else(|| {
+                SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] runtime RFZ {:?} is not loaded",
+                    String::from_utf8_lossy(&font.name)
+                ))
+            })?;
+            let image_state = image.initial_runtime_state();
+            let properties = FennelStaticTextProperties::from_text_definition(
+                text,
+                image_state.geometry.size[0],
+                image_state.geometry.size[1],
+            )
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            let source_colors = image_state
+                .coordinate_state(ImageReferenceChannel::Cref)
+                .vertex_colors;
+            let primary_rgba = [0usize, 2, 1, 3].map(|source_index| {
+                multiply_color_game(source_colors[source_index], world_color.multiply)
+            });
+            let secondary_rgba = premultiply_additive_color_game(world_color.additive);
+            if !force_color_update
+                && !secondary_rgba[..3].iter().any(|component| *component != 0)
+                && !primary_rgba.iter().any(|color| color[3] != 0)
+            {
+                // `sub_AC5740` skips the entire TextBox update/draw block when
+                // its external +0x11C bit 0x100 is clear and all effective
+                // primary alpha / secondary RGB channels are zero.
+                continue;
+            }
+            let primary_colors = primary_rgba.map(pack_fennel_record_color);
+            let secondary_color = pack_fennel_record_color(secondary_rgba);
+            let mut stream = build_fennel_plain_record_stream(
+                &text.text,
+                runtime_font,
+                properties.glyph_placement(0, 0, primary_colors),
+                2048,
+                |code, _| u32::from(code),
+            )
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            let layout = layout_fennel_static_default(&mut stream, properties.layout, |token| {
+                let code = u16::try_from(token).ok()?;
+                runtime_font.glyph(code).map(Into::into)
+            })
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            let vertex_build = build_fennel_static_unclipped_vertex_batches(
+                &stream,
+                -1,
+                FennelStaticUnclippedDrawInput {
+                    is_2d: true,
+                    textbox_position: [
+                        -image_state.geometry.origin[0],
+                        -image_state.geometry.origin[1],
+                        0.0,
+                    ],
+                    textbox_scale: [properties.layout.scale_x, properties.layout.scale_y],
+                    textbox_vertical_offset: layout.textbox_vertical_offset,
+                    textbox_transform: affine_to_matrix4x4(world_matrices[node_index]),
+                    secondary_color,
+                },
+                |token| {
+                    let code = u16::try_from(token).ok()?;
+                    runtime_font.glyph(code).copied()
+                },
+            )
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            if vertex_build.processed_glyph_count == 0 {
+                continue;
+            }
+            let mut fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+                host.target_projection_view,
+                host.target_screen_size,
+            );
+            fixed_constants.vertex_c0_c3_world = identity;
+            fixed_constants.vertex_c4_c7 = identity;
+            draws.push(EvidenceCompleteFennelDraw {
+                scene_index,
+                layer_index,
+                node_index,
+                font_name: font.name.clone(),
+                is_2d: true,
+                fixed_constants,
+                batches: vertex_build.batches,
+            });
+        }
+    }
+    Ok(draws)
+}
+
+fn affine_to_matrix4x4(matrix: Affine3x4) -> Matrix4x4 {
+    Matrix4x4 {
+        rows: [
+            matrix.rows[0],
+            matrix.rows[1],
+            matrix.rows[2],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+}
+
+fn pack_fennel_record_color([red, green, blue, alpha]: [u8; 4]) -> u32 {
+    // `sub_AC5740 -> sub_F25DA0` stores record colors as AARRGGBB, whose
+    // little-endian bytes are B,G,R,A.
+    u32::from_le_bytes([blue, green, red, alpha])
 }
 
 fn build_evidence_complete_image_draws(

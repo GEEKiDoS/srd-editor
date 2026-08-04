@@ -20,10 +20,13 @@ use windows::core::{Error, HRESULT, Result};
 
 use crate::d3d9_srd::SrdDx9ExternalContext;
 use crate::d3d9_texture::RuhunaD3d9AtlasSet;
-use crate::fennel::{FennelRenderVertex, fennel_default_draw_packet, fennel_default_shader_key};
+use crate::fennel::{
+    FennelRenderVertex, fennel_default_draw_packet, fennel_default_raster_state,
+    fennel_default_shader_key,
+};
 use crate::render::{
-    CeylonDepthState, CeylonRasterState, CeylonSrdFixedShaderConstants,
-    FENNEL_D3D9_VERTEX_DECLARATION, ceylon_d3d9_blend_preset,
+    CeylonDepthState, CeylonSrdFixedShaderConstants, FENNEL_D3D9_VERTEX_DECLARATION,
+    ceylon_d3d9_blend_preset,
 };
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::{EmbeddedSimpleShaderPair, embedded_simple_shader_pair};
@@ -161,8 +164,7 @@ impl FennelDx9Renderer {
 
         let packet = fennel_default_draw_packet(batch.is_2d);
         let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
-        let mut raster = CeylonRasterState::default();
-        raster.apply_draw_packet(packet);
+        let raster = fennel_default_raster_state(batch.is_2d);
         let depth = CeylonDepthState::from_draw_flags(packet.draw_flags_00);
         let cull = raster
             .cull_mode()

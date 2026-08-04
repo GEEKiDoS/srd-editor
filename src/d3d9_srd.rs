@@ -200,6 +200,27 @@ impl SrdDx9Renderer {
         self.render(draws, external, textures)
     }
 
+    /// Binds and clears the existing Composition target while another
+    /// evidence-complete renderer submits to the same D3D9 device. The guard
+    /// restores the caller's render target and viewport after the closure.
+    pub fn render_custom_to_composition<F>(&self, clear_argb: u32, draw: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        let target = self
+            .composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
+        let surface = target.surface.clone();
+        let size = target.size;
+        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
+        unsafe {
+            self.device
+                .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
+        }
+        draw()
+    }
+
     pub fn render(
         &mut self,
         draws: &[EvidenceCompleteSrdDraw],

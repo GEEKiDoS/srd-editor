@@ -1,5 +1,7 @@
 use crate::projection::{Matrix4x4, identity_matrix4x4_game, mul_matrix4x4_game};
-use crate::render::{CeylonDrawPacketPresetState, CeylonShaderKey, CeylonShaderKeyInput};
+use crate::render::{
+    CeylonDrawPacketPresetState, CeylonRasterState, CeylonShaderKey, CeylonShaderKeyInput,
+};
 use crate::ruhuna::{RuhunaRuntimeFont, RuhunaRuntimeGlyphRecord};
 use crate::text::{TextDefinition, fennel_alignment_code_from_text_flags};
 
@@ -71,6 +73,21 @@ pub const fn fennel_default_draw_packet(is_2d: bool) -> CeylonDrawPacketPresetSt
         flags_58: 0xff,
         flags_60: FENNEL_DEFAULT_FLAGS_60 | ((is_2d as u32) << 7),
     }
+}
+
+/// Reproduces the raster state that reaches a Fennel ShapeEnv draw before D3D9
+/// submission. The packet keeps the material-provided cull mode because bit
+/// `0x0080_0000` is set. The ShapeEnv material owns a freshly constructed
+/// `ceylon::resource::State`; its default `StateParam+0x08` low three bits are
+/// zero (`sub_E859B0`), and `sea_material_sync_render_commands` transfers those
+/// bits through `sub_E93530` to RenderState `+0x60`, i.e. internal cull zero.
+pub fn fennel_default_raster_state(is_2d: bool) -> CeylonRasterState {
+    let mut raster = CeylonRasterState {
+        cull_mode_internal: 0,
+        ..CeylonRasterState::default()
+    };
+    raster.apply_draw_packet(fennel_default_draw_packet(is_2d));
+    raster
 }
 
 /// Reproduces the ShapeEnv key formed by a normal one-atlas Fennel batch.
@@ -1681,6 +1698,19 @@ mod tests {
             assert!(bits.contains(36));
             assert!(!bits.contains(37));
             assert_eq!(bits.contains(2), expects_2d);
+        }
+    }
+
+    #[test]
+    fn default_shape_environment_material_preserves_clockwise_culling() {
+        for is_2d in [false, true] {
+            let raster = fennel_default_raster_state(is_2d);
+            assert_eq!(
+                raster.cull_mode(),
+                Some(crate::render::D3d9CullMode::Clockwise)
+            );
+            assert_eq!(raster.fill_mode(), crate::render::D3d9FillMode::Solid);
+            assert_eq!(raster.color_write_mask, 0x0f);
         }
     }
 
