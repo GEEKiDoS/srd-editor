@@ -27,7 +27,7 @@
 - RGBA 字体图集到 `A8R8G8B8` 的 BGRA 字节转换；
 - 半像素偏移的正交投影；
 - state block 与 world/view/projection 的保存、恢复；
-- texture ID 注册表，为后续 Composition 中的 D3D9 render target/texture 显示保留接入口。
+- texture ID 注册表，现已用于 Composition 的 D3D9 render-target texture 显示。
 
 这一后端只负责编辑器 UI。它的 fixed-function 状态不能代替 SRD 的游戏 shader 与 draw packet 状态。
 
@@ -65,7 +65,9 @@
 - 右侧 `Properties`；
 - 下方 `Layers & Timeline`，固定的层/状态列和可横向滚动的时间轴位于同一张 table，因此共享垂直滚动和行选择。
 
-命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。首个无贴图 SRD draw 已能提交实际 D3D9Ex backbuffer，但中央 Composition 尚未连接独立 SRD render target，界面仍明确显示 pending，不把后台 smoke 画面冒充成完成的预览器。
+命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。首个无贴图 SRD draw 现在提交到与 SCN 尺寸一致的 D3D9 render-target texture，并由中央 Composition 通过 ImGui texture ID 显示；不满足证据完整边界的场景会明确显示没有可用 GPU draw，不输出近似画面。
+
+Composition texture 使用当前 D3D9Ex backbuffer 的实际格式创建，属于编辑器集成选择，不被表述为 SRD 文件格式语义。面板以 ImGui 逻辑坐标计算保持宽高比的居中显示矩形，renderer 再使用 `display_framebuffer_scale` 把顶点和 scissor 转为物理像素。因此跨显示器 DPI 变化只改变 UI 栅格化与显示尺寸，不改变固定 SCN 像素纹理、CAM 或 `FirstCalcMatrix`。
 
 ## 本机验证
 
@@ -86,7 +88,6 @@ cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_Syste
 本页证明的是可运行编辑器窗口、D3D9Ex device、HiDPI ImGui draw、ResetEx 生命周期，以及首个无贴图 fixture 的实际 format 14 shader draw 和像素回读。它尚不证明完整 SRD 像素渲染完成。仍需在独立证据闭环后接入：
 
 - DDS 解码/上传与 stage 0/1 资源绑定；
-- Composition 离屏 render target 与 ImGui 图像显示；
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
 - scene、reference cast 和动画状态到实际 draw ordering。

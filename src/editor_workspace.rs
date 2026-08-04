@@ -2,7 +2,9 @@ use std::ffi::CStr;
 use std::path::PathBuf;
 use std::ptr;
 
-use imgui::{StyleColor, TableColumnFlags, TableColumnSetup, TableFlags, Ui, sys};
+use imgui::{
+    Image, StyleColor, TableColumnFlags, TableColumnSetup, TableFlags, TextureId, Ui, sys,
+};
 
 use crate::animation::{KeyData, Track};
 use crate::editor_document::{EditorDocument, display_srd_name};
@@ -23,6 +25,7 @@ pub struct EditorWorkspace {
     selected_scene: usize,
     selected_layer: usize,
     selected_node: Option<usize>,
+    composition_texture: Option<(TextureId, [u32; 2])>,
 }
 
 impl EditorWorkspace {
@@ -43,6 +46,7 @@ impl EditorWorkspace {
             selected_scene: 0,
             selected_layer: 0,
             selected_node: None,
+            composition_texture: None,
         }
     }
 
@@ -74,6 +78,10 @@ impl EditorWorkspace {
 
     pub fn document(&self) -> Option<&EditorDocument> {
         self.document.as_ref()
+    }
+
+    pub fn set_composition_texture(&mut self, texture: Option<(TextureId, [u32; 2])>) {
+        self.composition_texture = texture;
     }
 
     fn draw_menu(&mut self, ui: &Ui) {
@@ -181,17 +189,32 @@ impl EditorWorkspace {
             )
             .filled(true)
             .build();
-        let center = [origin[0] + size[0] * 0.5, origin[1] + size[1] * 0.5];
-        draw_list.add_text(
-            [center[0] - 54.0, center[1] - 8.0],
-            [0.58, 0.60, 0.64, 1.0],
-            if self.document.is_some() {
-                "SRD viewport pending GPU scene connection"
-            } else {
-                "No SRD loaded"
-            },
-        );
-        ui.invisible_button("composition-canvas", size);
+        if let Some((texture, [texture_width, texture_height])) = self.composition_texture {
+            let scale = (size[0] / texture_width as f32)
+                .min(size[1] / texture_height as f32)
+                .max(0.0);
+            let image_size = [texture_width as f32 * scale, texture_height as f32 * scale];
+            let image_origin = [
+                origin[0] + (size[0] - image_size[0]) * 0.5,
+                origin[1] + (size[1] - image_size[1]) * 0.5,
+            ];
+            ui.set_cursor_screen_pos(image_origin);
+            Image::new(texture, image_size).build(ui);
+            ui.set_cursor_screen_pos(origin);
+            ui.invisible_button("composition-canvas", size);
+        } else {
+            let center = [origin[0] + size[0] * 0.5, origin[1] + size[1] * 0.5];
+            draw_list.add_text(
+                [center[0] - 54.0, center[1] - 8.0],
+                [0.58, 0.60, 0.64, 1.0],
+                if self.document.is_some() {
+                    "No evidence-complete GPU draw for this scene"
+                } else {
+                    "No SRD loaded"
+                },
+            );
+            ui.invisible_button("composition-canvas", size);
+        }
     }
 
     fn draw_properties(&self, ui: &Ui) {

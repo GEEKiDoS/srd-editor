@@ -61,4 +61,6 @@ material scissor 在二进制中是外部 context，而不是 SRD 属性，所�
 
 `--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`，提交 identity-host draw，`EndScene` 后用 `GetRenderTargetData` 复制到 SYSTEMMEM surface，并在 fixture 内部采样点验证 B/G/R 为零。随后它进入 ImGui draw 和 `PresentEx`，再强制 `ResetEx`、释放并重建 SRD/ImGui DEFAULT-pool 资源，第二帧重复同一像素断言。该验证已经通过；它证明真实像素被 shader draw 改写，而不只证明 D3D9 API 返回成功。
 
-当前 Composition 仍未连接离屏 render target。后续 fit-to-view 会作为 ImGui 显示层变换实现，不会回写或替代 `FirstCalcMatrix`。
+Composition 现已创建与 SCN 尺寸一致、格式取自实际 backbuffer 的 DEFAULT-pool render-target texture，并把它注册到 ImGui texture table。面板按可用逻辑尺寸保持宽高比居中显示；HiDPI framebuffer scale 只作用于 ImGui 最终顶点与 scissor。`ResetEx` 前会先从 texture table 移除 COM 引用并释放 target，reset 后重建和重新注册。
+
+smoke 在 `EndScene` 后同时回读 Composition texture 和主 backbuffer 的 fixture 内部像素，两者均验证为黑色；随后强制 reset 的第二帧重复通过。这里的 aspect-fit 是编辑器显示层变换，不会回写或替代 `FirstCalcMatrix`。

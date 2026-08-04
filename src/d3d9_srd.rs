@@ -4,16 +4,17 @@ use std::ptr;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D9::{
-    D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE,
-    D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE,
-    D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE,
-    D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE,
-    D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSBT_ALL, D3DUSAGE_DYNAMIC,
-    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, IDirect3DDevice9, IDirect3DPixelShader9,
-    IDirect3DStateBlock9, IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9,
-    IDirect3DVertexShader9,
+    D3DCLEAR_TARGET, D3DLOCK_DISCARD, D3DLOCKED_RECT, D3DPOOL_DEFAULT, D3DPOOL_SYSTEMMEM,
+    D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP,
+    D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE, D3DRS_CULLMODE, D3DRS_DESTBLEND,
+    D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_SEPARATEALPHABLENDENABLE,
+    D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE, D3DRS_ZENABLE, D3DRS_ZFUNC,
+    D3DRS_ZWRITEENABLE, D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET, D3DUSAGE_WRITEONLY,
+    D3DVERTEXELEMENT9, D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9,
+    IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9,
+    IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
 };
-use windows::core::{Error, HRESULT, Result};
+use windows::core::{Error, HRESULT, Interface, Result};
 
 use crate::render::CeylonRenderScissorState;
 use crate::render::{SRD_D3D9_VERTEX_DECLARATION, SrdRenderVertex};
@@ -57,6 +58,14 @@ pub struct SrdDx9Renderer {
     vertex_shader: Option<IDirect3DVertexShader9>,
     pixel_shader: Option<IDirect3DPixelShader9>,
     vertex_buffer: Option<IDirect3DVertexBuffer9>,
+    composition_size: Option<[u32; 2]>,
+    composition_target: Option<CompositionTarget>,
+}
+
+struct CompositionTarget {
+    texture: IDirect3DTexture9,
+    surface: IDirect3DSurface9,
+    size: [u32; 2],
 }
 
 impl SrdDx9Renderer {
@@ -67,12 +76,15 @@ impl SrdDx9Renderer {
             vertex_shader: None,
             pixel_shader: None,
             vertex_buffer: None,
+            composition_size: None,
+            composition_target: None,
         };
         renderer.create_device_objects()?;
         Ok(renderer)
     }
 
     pub fn invalidate_device_objects(&mut self) {
+        self.composition_target = None;
         self.vertex_buffer = None;
         self.pixel_shader = None;
         self.vertex_shader = None;
@@ -101,7 +113,57 @@ impl SrdDx9Renderer {
             self.pixel_shader = Some(self.device.CreatePixelShader(pair.pixel_shader.as_ptr())?);
         }
         self.vertex_buffer = Some(create_vertex_buffer(&self.device)?);
+        if let Some([width, height]) = self.composition_size {
+            self.composition_target = Some(create_composition_target(&self.device, width, height)?);
+        }
         Ok(())
+    }
+
+    pub fn configure_composition_target(&mut self, width: u32, height: u32) -> Result<()> {
+        let size = [width.max(1), height.max(1)];
+        self.composition_size = Some(size);
+        self.composition_target = Some(create_composition_target(&self.device, size[0], size[1])?);
+        Ok(())
+    }
+
+    pub fn composition_size(&self) -> Option<[u32; 2]> {
+        self.composition_target.as_ref().map(|target| target.size)
+    }
+
+    pub fn composition_texture(&self) -> Result<IDirect3DBaseTexture9> {
+        self.composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?
+            .texture
+            .cast()
+    }
+
+    pub fn read_composition_pixel(&self, x: u32, y: u32) -> Result<[u8; 4]> {
+        let target = self
+            .composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
+        read_render_target_pixel(&self.device, &target.surface, x, y)
+    }
+
+    pub fn render_to_composition(
+        &mut self,
+        draws: &[EvidenceCompleteSrdDraw],
+        external: SrdDx9ExternalContext,
+        clear_argb: u32,
+    ) -> Result<()> {
+        let target = self
+            .composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
+        let surface = target.surface.clone();
+        let size = target.size;
+        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
+        unsafe {
+            self.device
+                .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
+        }
+        self.render(draws, external)
     }
 
     pub fn render(
@@ -293,6 +355,85 @@ fn create_vertex_buffer(device: &IDirect3DDevice9) -> Result<IDirect3DVertexBuff
     buffer.ok_or_else(|| Error::new(E_FAIL, "CreateVertexBuffer returned null for SRD format 14"))
 }
 
+fn create_composition_target(
+    device: &IDirect3DDevice9,
+    width: u32,
+    height: u32,
+) -> Result<CompositionTarget> {
+    let backbuffer = unsafe { device.GetRenderTarget(0)? };
+    let mut description = Default::default();
+    unsafe { backbuffer.GetDesc(&mut description)? };
+    let mut texture = None;
+    unsafe {
+        device.CreateTexture(
+            width,
+            height,
+            1,
+            D3DUSAGE_RENDERTARGET as u32,
+            description.Format,
+            D3DPOOL_DEFAULT,
+            &mut texture,
+            ptr::null_mut(),
+        )?;
+    }
+    let texture = texture
+        .ok_or_else(|| Error::new(E_FAIL, "CreateTexture returned null for SRD composition"))?;
+    let surface = unsafe { texture.GetSurfaceLevel(0)? };
+    Ok(CompositionTarget {
+        texture,
+        surface,
+        size: [width, height],
+    })
+}
+
+fn read_render_target_pixel(
+    device: &IDirect3DDevice9,
+    render_target: &IDirect3DSurface9,
+    x: u32,
+    y: u32,
+) -> Result<[u8; 4]> {
+    let mut description = Default::default();
+    unsafe { render_target.GetDesc(&mut description)? };
+    if x >= description.Width || y >= description.Height {
+        return Err(Error::new(
+            E_INVALIDARG,
+            format!(
+                "composition pixel ({x}, {y}) is outside {}x{}",
+                description.Width, description.Height
+            ),
+        ));
+    }
+    let mut staging = None;
+    unsafe {
+        device.CreateOffscreenPlainSurface(
+            description.Width,
+            description.Height,
+            description.Format,
+            D3DPOOL_SYSTEMMEM,
+            &mut staging,
+            ptr::null_mut(),
+        )?;
+    }
+    let staging = staging.ok_or_else(|| {
+        Error::new(
+            E_FAIL,
+            "CreateOffscreenPlainSurface returned null for composition readback",
+        )
+    })?;
+    unsafe { device.GetRenderTargetData(render_target, &staging)? };
+    let rectangle = RECT {
+        left: x as i32,
+        top: y as i32,
+        right: x as i32 + 1,
+        bottom: y as i32 + 1,
+    };
+    let mut locked = D3DLOCKED_RECT::default();
+    unsafe { staging.LockRect(&mut locked, &rectangle, 0)? };
+    let pixel = unsafe { *(locked.pBits.cast::<[u8; 4]>()) };
+    unsafe { staging.UnlockRect()? };
+    Ok(pixel)
+}
+
 fn upload_vertices(buffer: &IDirect3DVertexBuffer9, vertices: &[SrdRenderVertex; 4]) -> Result<()> {
     debug_assert_eq!(mem::size_of::<SrdRenderVertex>(), SrdRenderVertex::STRIDE);
     let mut destination: *mut c_void = ptr::null_mut();
@@ -339,6 +480,56 @@ impl Drop for StateBlockGuard {
     fn drop(&mut self) {
         if !self.restored {
             let _ = unsafe { self.block.Apply() };
+        }
+    }
+}
+
+struct RenderTargetGuard {
+    device: IDirect3DDevice9,
+    render_target: IDirect3DSurface9,
+    depth_stencil: Option<IDirect3DSurface9>,
+    viewport: D3DVIEWPORT9,
+}
+
+impl RenderTargetGuard {
+    fn bind(
+        device: &IDirect3DDevice9,
+        surface: &IDirect3DSurface9,
+        size: [u32; 2],
+    ) -> Result<Self> {
+        let render_target = unsafe { device.GetRenderTarget(0)? };
+        let depth_stencil = unsafe { device.GetDepthStencilSurface().ok() };
+        let mut viewport = D3DVIEWPORT9::default();
+        unsafe {
+            device.GetViewport(&mut viewport)?;
+            device.SetRenderTarget(0, surface)?;
+            device.SetDepthStencilSurface(None)?;
+            device.SetViewport(&D3DVIEWPORT9 {
+                X: 0,
+                Y: 0,
+                Width: size[0],
+                Height: size[1],
+                MinZ: 0.0,
+                MaxZ: 1.0,
+            })?;
+        }
+        Ok(Self {
+            device: device.clone(),
+            render_target,
+            depth_stencil,
+            viewport,
+        })
+    }
+}
+
+impl Drop for RenderTargetGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.device.SetRenderTarget(0, &self.render_target);
+            let _ = self
+                .device
+                .SetDepthStencilSurface(self.depth_stencil.as_ref());
+            let _ = self.device.SetViewport(&self.viewport);
         }
     }
 }

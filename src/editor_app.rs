@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use imgui::{ConfigFlags, Context, FontConfig, FontSource};
+use imgui::{ConfigFlags, Context, FontConfig, FontSource, TextureId};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -60,6 +60,7 @@ struct EditorWindow {
     imgui_renderer: ImguiDx9Renderer,
     srd_renderer: Option<SrdDx9Renderer>,
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
+    composition_texture_id: Option<TextureId>,
     verify_srd_pixels: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
@@ -101,30 +102,53 @@ impl EditorWindow {
             .ok_or_else(|| "embedded first-fixture shader pair is missing".to_string())?;
         d3d9.validate_shader_pair(&shader_pair)
             .map_err(|error| format!("D3D9 failed to create embedded SRD shaders: {error}"))?;
-        let imgui_renderer =
+        let mut imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
-        let workspace = EditorWorkspace::new(build_default_layout, document_path);
-        let (srd_renderer, srd_draws) = if srd_draw_smoke {
-            let document = workspace.document().ok_or_else(|| {
-                "--srd-draw-smoke requires a successfully loaded SRD path".to_string()
-            })?;
-            let draws = build_evidence_complete_initial_image_draws(
-                &document.project,
-                &document.textures,
-                0,
-                Affine3x4::IDENTITY,
-                1920.0,
-            )
-            .map_err(|error| format!("failed to build evidence-complete SRD draws: {error}"))?;
-            if draws.is_empty() {
+        let mut workspace = EditorWorkspace::new(build_default_layout, document_path);
+        let draw_result = workspace.document().and_then(|document| {
+            let scene = document.project.scenes.first()?;
+            Some((
+                build_evidence_complete_initial_image_draws(
+                    &document.project,
+                    &document.textures,
+                    0,
+                    Affine3x4::IDENTITY,
+                    scene.width.max(1.0),
+                ),
+                [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
+            ))
+        });
+        let (mut srd_renderer, srd_draws, composition_size) = match draw_result {
+            Some((Ok(draws), size)) if !draws.is_empty() => {
+                let renderer = SrdDx9Renderer::new(d3d9.device())
+                    .map_err(|error| format!("failed to create the SRD D3D9 renderer: {error}"))?;
+                (Some(renderer), draws, Some(size))
+            }
+            Some((Err(error), _)) if srd_draw_smoke => {
+                return Err(format!(
+                    "failed to build evidence-complete SRD draws: {error}"
+                ));
+            }
+            _ if srd_draw_smoke => {
                 return Err("the selected SRD did not produce an evidence-complete draw".into());
             }
-            let renderer = SrdDx9Renderer::new(d3d9.device())
-                .map_err(|error| format!("failed to create the SRD D3D9 renderer: {error}"))?;
-            (Some(renderer), draws)
-        } else {
-            (None, Vec::new())
+            _ => (None, Vec::new(), None),
         };
+        let composition_texture_id =
+            if let (Some(renderer), Some(size)) = (srd_renderer.as_mut(), composition_size) {
+                renderer
+                    .configure_composition_target(size[0], size[1])
+                    .map_err(|error| format!("failed to create SRD composition target: {error}"))?;
+                let texture_id = imgui_renderer.textures_mut().insert(
+                    renderer
+                        .composition_texture()
+                        .map_err(|error| error.to_string())?,
+                );
+                workspace.set_composition_texture(Some((texture_id, size)));
+                Some(texture_id)
+            } else {
+                None
+            };
 
         Ok(Self {
             window,
@@ -134,6 +158,7 @@ impl EditorWindow {
             imgui_renderer,
             srd_renderer,
             srd_draws,
+            composition_texture_id,
             verify_srd_pixels: srd_draw_smoke,
             workspace,
             dpi_factor,
@@ -157,6 +182,10 @@ impl EditorWindow {
         match self.d3d9.status().map_err(|error| error.to_string())? {
             D3d9ExDeviceStatus::Ready => {}
             D3d9ExDeviceStatus::NeedsReset => {
+                if let Some(texture_id) = self.composition_texture_id.take() {
+                    self.imgui_renderer.textures_mut().remove(texture_id);
+                    self.workspace.set_composition_texture(None);
+                }
                 self.imgui_renderer
                     .invalidate_device_objects(&mut self.imgui);
                 if let Some(renderer) = &mut self.srd_renderer {
@@ -170,6 +199,17 @@ impl EditorWindow {
                     renderer
                         .create_device_objects()
                         .map_err(|error| error.to_string())?;
+                    let size = renderer.composition_size().ok_or_else(|| {
+                        "SRD composition target was not recreated after ResetEx".to_string()
+                    })?;
+                    let texture_id = self.imgui_renderer.textures_mut().insert(
+                        renderer
+                            .composition_texture()
+                            .map_err(|error| error.to_string())?,
+                    );
+                    self.workspace
+                        .set_composition_texture(Some((texture_id, size)));
+                    self.composition_texture_id = Some(texture_id);
                 }
             }
             D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
@@ -192,6 +232,17 @@ impl EditorWindow {
             .map_err(|error| error.to_string())?;
         if let Some(renderer) = &mut self.srd_renderer {
             renderer
+                .render_to_composition(
+                    &self.srd_draws,
+                    SrdDx9ExternalContext::smoke_without_scissor(),
+                    CLEAR_COLOR_ARGB,
+                )
+                .map_err(|error| format!("SRD composition draw failed: {error}"))?;
+        }
+        if self.verify_srd_pixels
+            && let Some(renderer) = &mut self.srd_renderer
+        {
+            renderer
                 .render(
                     &self.srd_draws,
                     SrdDx9ExternalContext::smoke_without_scissor(),
@@ -200,6 +251,21 @@ impl EditorWindow {
         }
         if self.verify_srd_pixels {
             self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let renderer = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "SRD draw smoke lost the composition renderer".to_string())?;
+            let composition_size = renderer
+                .composition_size()
+                .ok_or_else(|| "SRD draw smoke lost the composition target".to_string())?;
+            let composition_pixel = renderer
+                .read_composition_pixel(composition_size[0] / 2 + 1, composition_size[1] / 4)
+                .map_err(|error| format!("SRD composition readback failed: {error}"))?;
+            if composition_pixel[..3] != [0, 0, 0] {
+                return Err(format!(
+                    "SRD composition expected a black identity-host sample pixel, got raw BGRA/XRGB {composition_pixel:02X?}"
+                ));
+            }
             let size = self.window.inner_size();
             let pixel = self
                 .d3d9
