@@ -10,6 +10,7 @@ pub mod dds;
 pub mod editor_app;
 pub mod editor_document;
 pub mod editor_workspace;
+pub mod fennel;
 pub mod game_host;
 pub mod image;
 pub mod imgui_dx9;

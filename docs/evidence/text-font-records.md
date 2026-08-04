@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，以及 Ruhuna Database/Glyph 到游戏 128 字节运行时 glyph 的转换均已闭环。该 glyph 对象如何进一步接入 SrTextCast 的 FONT/TEX/CROP 运行时表仍在继续追踪，当前渲染器不会用系统字体代替。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，以及 RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流均已闭环。二进制证明 RFZ glyph 不会先被改写成 FONT 两个 i16；当前继续复现 `TextBoxObject` 的排版和最终 glyph draw。
 
 ## TEXT 记录
 
@@ -109,12 +109,41 @@ AdvertiseLogo 实际解析得到 2 个 FONT、多个英文/日文 TEXT；例如 
 - `sub_AD9160` 为每个 12 字节行记录调用虚表 `+0xC4`；SrTextCast 在该槽进入 `sub_AD9490`。
 - `sub_AD9490` 使用 TEXT flags `0x04/0x08` 选择水平居中或右对齐，逐 code 再查 FONT/TEX/CROP，生成与当前 SrImage 路径相同的四顶点和两个相同 UV 通道。映射不存在时走明确的 16x16 fallback quad，而不是系统字体。
 
-`sub_7CB9B0` 已证明 RFZ Database/Glyph 到 128 字节运行时 glyph 的全部 box、bearing、advance、旋转和带一像素边框 UV 算法，细节见 [`ruhuna-font-archives.md`](ruhuna-font-archives.md)。这不是字段名推导，而是加载 AVTS 后实际执行的转换函数。
+这里的 FONT/TEX/CROP 路径不是 RFZ 的前置转换结果。`sub_AD9160` 在进入上述逐字路径前先调用 `sub_46C4BD -> sub_AC5740`：
 
-外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。尚需证明上述 runtime glyph 对象到 FONT 两个 i16、动态 540 字节 TEX 和 16 字节 CROP 表的最终桥接与生命周期；在该链闭环前，Rust 不会把 runtime glyph 直接冒充 SrTextCast 的最终表结构。
+1. `sub_AC5740` 从 TextCast 状态读取字体资源名和 FONT 下标；
+2. `sub_AC6440` 在 `SrRenderer +0x26C` 的字体资源树中按名字查找，并从该名字对应的 `shared_ptr<font::TextBox>` 数组按 FONT 下标取对象；
+3. `sub_7BC820` 通过全局 `font::FontManager` 和 TextBox `+0x80` 的注册下标取得 `font::TextBoxObject`；
+4. `sub_AC5740` 把 SrTextCast 的矩阵、颜色、对齐、裁剪和字符串状态写给 TextBoxObject；成功时返回 `1`；
+5. `sub_AD9160` 对该返回值取反，只有 TextBox 路径返回 `0` 时才执行 `sub_AD8780/sub_AD8480/sub_AD9490` 的 FONT/TEX/CROP fallback。
+
+加载端与此完全对应。`srd_player_impl_load_project` 对每个 PROJ FONT 调用 `sub_AC4A80`。该函数为普通字体名建立并注册 `font::TextBox`，保存到同一个 `SrRenderer +0x26C` 资源树；但字体名包含 `.sbfont` 时明确跳过建立 TextBox。因此 `.sbfont` 必然进入旧式路径，而 RFZ 在 TextBox 可用时直接走 Fennel/Ruhuna；外部资源加载失败也会回退到旧式路径。二进制中不需要、也没有证据支持一个 RFZ runtime glyph 到 FONT/TEX/CROP 的写表桥。
+
+`sub_7CB9B0` 已证明 RFZ Database/Glyph 到 128 字节 runtime glyph 的全部 box、bearing、advance、旋转和带一像素边框 UV 算法，细节见 [`ruhuna-font-archives.md`](ruhuna-font-archives.md)。`sub_F323B0` 再按 font slot 调用具体 FontResource 虚表 `+0x08` 取得该记录，并把 slot ID 写入 glyph `+0x04`。
+
+`font::TextBoxObject::setTextByWideString` (`sub_7C90A0`) 随后把每个正常 glyph 转换为 116 字节布局记录，已证明的直接写入为：
+
+| 布局偏移 | 来源 |
+| ---: | --- |
+| `+0x00` | 正常 glyph 为 `0`；runtime width 为零时为 `-2` |
+| `+0x04` | runtime glyph 指针/不透明 token |
+| `+0x08` | runtime glyph `+0x18` 的 atlas texture handle |
+| `+0x0C` | token iterator 输出字段 |
+| `+0x10/+0x14` | token iterator 的整数位置转 f32 |
+| `+0x18/+0x1C` | 正常 glyph 为 runtime width/height 加两侧 `+0x24` 字段；零宽 glyph 使用 iterator 基准加 advance/line height |
+| `+0x20` | token iterator 基准值转 f32 |
+| `+0x24..+0x30` | 清零 |
+| `+0x34..+0x40` | 当前四个 packed colors |
+| `+0x44/+0x48` | `1.0/1.0` |
+| `+0x4C..+0x68` | runtime glyph 四组 UV 原样复制 |
+
+Rust 的 `FennelGlyphLayoutRecord` 固定为精确 116 字节，并已实现上述逐字段转换；仍未命名的 iterator 字段保留偏移名，不用猜测语义。
+
+外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 
 ## 下一证据目标
 
-- 128 字节 runtime glyph 到 FONT lookup、动态 TEX/CROP 表的桥接与生命周期；
-- TEXT 缩放、字符间距、行距和 packed color 状态的完整 setter 来源；
-- 外部字体 glyph quad 进入当前已闭环 SrImage/D3D9 packet 的端到端语料回归。
+- `sub_7C1F90/sub_7C4070/sub_7C5A20` 三个 116 字节记录排版器的对齐、换行、裁剪和方向分支；
+- Fennel token iterator 的字符串编码、控制 token 和位置输出；
+- `sub_7C10B0` 的 116 字节 glyph item 到 28 字节六顶点输出，以及 atlas texture 的最终提交状态；
+- 外部字体 glyph quad 进入 D3D9Ex composition 的真实 SRD/RFZ 端到端回归。

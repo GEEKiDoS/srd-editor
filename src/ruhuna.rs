@@ -78,7 +78,7 @@ pub struct RuhunaGlyph {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RuhunaRuntimeGlyphRecord {
     pub owner_token: u32,
-    pub field_04: u16,
+    pub font_slot_id: u16,
     pub code: u16,
     pub field_08: u32,
     pub point_x: u16,
@@ -115,7 +115,7 @@ impl Default for RuhunaRuntimeGlyphRecord {
     fn default() -> Self {
         Self {
             owner_token: 0,
-            field_04: 0,
+            font_slot_id: 0,
             code: 0,
             field_08: 0,
             point_x: 0,
@@ -178,6 +178,23 @@ impl RuhunaRuntimeFont {
         self.glyphs
             .get(glyph_index)
             .filter(|glyph| glyph.code == code)
+    }
+
+    /// Reproduces the successful tail of `sub_F323B0`: call the resource's
+    /// checked getter, then store the global Fennel font slot ID at glyph
+    /// offset `+0x04` before returning the same runtime record.
+    pub fn glyph_for_font_slot(
+        &mut self,
+        font_slot_id: u16,
+        code: u16,
+    ) -> Option<&mut RuhunaRuntimeGlyphRecord> {
+        let glyph_index = usize::from(self.dense_glyph_index(code)?);
+        let glyph = self
+            .glyphs
+            .get_mut(glyph_index)
+            .filter(|glyph| glyph.code == code)?;
+        glyph.font_slot_id = font_slot_id;
+        Some(glyph)
     }
 }
 
@@ -832,6 +849,10 @@ mod tests {
     #[test]
     fn runtime_glyph_record_matches_binary_offsets() {
         assert_eq!(std::mem::size_of::<RuhunaRuntimeGlyphRecord>(), 128);
+        assert_eq!(
+            std::mem::offset_of!(RuhunaRuntimeGlyphRecord, font_slot_id),
+            4
+        );
         assert_eq!(std::mem::offset_of!(RuhunaRuntimeGlyphRecord, code), 6);
         assert_eq!(
             std::mem::offset_of!(RuhunaRuntimeGlyphRecord, texture_token),
@@ -932,5 +953,31 @@ mod tests {
         assert_eq!(font.glyph(0x43).map(|glyph| glyph.code), Some(0x43));
         assert!(font.glyph(0x40).is_none());
         assert!(font.glyph(0x44).is_none());
+    }
+
+    #[test]
+    fn global_font_slot_getter_writes_slot_id_only_on_success() {
+        let mut font = RuhunaRuntimeFont {
+            minimum_code: 0x41,
+            maximum_code: 0x43,
+            dense_glyph_indices: vec![0, 0, 1],
+            glyph_pages: vec![Some(0), Some(0)],
+            glyphs: vec![
+                RuhunaRuntimeGlyphRecord {
+                    code: 0x41,
+                    ..Default::default()
+                },
+                RuhunaRuntimeGlyphRecord {
+                    code: 0x43,
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let glyph = font.glyph_for_font_slot(7, 0x43).unwrap();
+        assert_eq!(glyph.code, 0x43);
+        assert_eq!(glyph.font_slot_id, 7);
+        assert!(font.glyph_for_font_slot(9, 0x42).is_none());
+        assert_eq!(font.glyph(0x41).unwrap().font_slot_id, 0);
     }
 }

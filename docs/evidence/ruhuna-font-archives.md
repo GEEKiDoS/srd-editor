@@ -89,6 +89,7 @@ Important proven fields are:
 
 | Offset | Runtime value |
 | ---: | --- |
+| `+0x04` | font slot ID；`sub_F323B0` 在资源查找成功后写入 |
 | `+0x06` | glyph code |
 | `+0x0C/+0x0E` | Database point twice |
 | `+0x10/+0x14` | `box_x1/box_y1` promoted to u32 |
@@ -112,3 +113,11 @@ For the rotated branch, width and height are swapped, bearing becomes `(max_desc
 The final assembly at `0x7CBE48..0x7CBE61` proves a subtle common adjustment: bit zero is doubled into `+0x50`, doubled again, then added to bearing Y. Thus `flags & 1` adds four, not two. When the page handle is zero, geometry and UVs are first cleared, after which this common four-pixel adjustment still applies.
 
 Rust now exposes this conversion as a host-independent runtime font. Its exact game-layout record uses opaque `u32` tokens for the x86 pointer slots, so the editor does not truncate or reinterpret D3D objects on an x64 host. Unit tests lock all offsets and both orientation branches; the six real archives additionally validate dense lookup entries, page selection, and last-page reciprocal height.
+
+## TextBox consumption of runtime glyphs
+
+`sub_F323B0` is the global Fennel font-slot getter. It bounds-checks the u16 font slot, calls that slot's FontResource virtual `+0x08` with the requested u16 code, and writes the slot ID to runtime glyph `+0x04` before returning it.
+
+`font::TextBoxObject::setTextByWideString` (`sub_7C90A0`) consumes that same 128-byte record directly. Its normal-glyph block copies texture handle `+0x18` and UV pairs `+0x5C..+0x7B`, derives glyph width/height from `+0x30/+0x34` plus twice `+0x24`, and uses `+0x38/+0x3C` for the zero-width special case. The result is a fixed 116-byte per-glyph layout item. This direct consumption, together with the `SrTextCast` pre-draw TextBox check, disproves the previously suspected intermediate conversion to SRD FONT/TEX/CROP tables.
+
+Rust now represents that second binary structure as `FennelGlyphLayoutRecord`. Its pointer-bearing fields are again opaque u32 tokens, and tests lock the 116-byte size, important offsets, normal-glyph conversion, and the zero-width `kind=-2` branch.
