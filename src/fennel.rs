@@ -22,6 +22,8 @@ const FENNEL_EFFECT_COMMAND_UPPER: u16 = b'S' as u16;
 const FENNEL_EFFECT_COMMAND_LOWER: u16 = b's' as u16;
 const FENNEL_COLOR_COMMAND_UPPER: u16 = b'C' as u16;
 const FENNEL_COLOR_COMMAND_LOWER: u16 = b'c' as u16;
+const FENNEL_FONT_COMMAND_UPPER: u16 = b'F' as u16;
+const FENNEL_FONT_COMMAND_LOWER: u16 = b'f' as u16;
 
 pub const FENNEL_RECORD_LINE_END: i32 = -1;
 pub const FENNEL_RECORD_ZERO_WIDTH_GLYPH: i32 = -2;
@@ -234,6 +236,8 @@ pub enum FennelPlainToken {
     ToggleEffect,
     SetColors([u32; 4]),
     ResetColors,
+    SetFontSlot(u16),
+    ResetFontSlot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,9 +273,10 @@ impl std::error::Error for UnsupportedFennelControl {}
 /// to iterator/output offsets +0x20/+0x24. `$s`/`$S` toggles iterator state
 /// `+0x820` bit `0x40000`, which the normal-glyph output copy places at token
 /// `+0x10`. `$C` restores the iterator's saved colors, while bracketed `$C`
-/// parses the binary's colon-separated hexadecimal color state. Other
-/// commands are rejected until their parameter grammar and state writes are
-/// closed from the binary.
+/// parses the binary's colon-separated hexadecimal color state. `$F[n]`
+/// selects a decimal font slot and `$F` restores the saved initial slot.
+/// Other commands are rejected until their parameter grammar and state writes
+/// are closed from the binary.
 pub fn tokenize_fennel_plain_text(
     units: &[u16],
 ) -> Result<Vec<FennelPlainToken>, UnsupportedFennelControl> {
@@ -332,6 +337,23 @@ pub fn tokenize_fennel_plain_text(
                             index = end_index;
                         } else {
                             tokens.push(FennelPlainToken::ResetColors);
+                            index += 1;
+                        }
+                    }
+                    FENNEL_FONT_COMMAND_UPPER | FENNEL_FONT_COMMAND_LOWER => {
+                        if units.get(index + 2) == Some(&(b'[' as u16)) {
+                            let Some((font_slot, end_index)) =
+                                parse_fennel_font_slot_control(units, index)
+                            else {
+                                return Err(UnsupportedFennelControl {
+                                    unit_index: index,
+                                    command: Some(command),
+                                });
+                            };
+                            tokens.push(FennelPlainToken::SetFontSlot(font_slot));
+                            index = end_index;
+                        } else {
+                            tokens.push(FennelPlainToken::ResetFontSlot);
                             index += 1;
                         }
                     }
@@ -445,6 +467,33 @@ fn parse_fennel_hex(units: &[u16]) -> Option<u32> {
             _ => return None,
         };
         value = value.checked_mul(16)?.checked_add(digit)?;
+    }
+    Some(value)
+}
+
+fn parse_fennel_font_slot_control(units: &[u16], prefix_index: usize) -> Option<(u16, usize)> {
+    let value_start = prefix_index.checked_add(3)?;
+    let close_offset = units[value_start..]
+        .iter()
+        .position(|unit| *unit == b']' as u16)?;
+    let close_index = value_start + close_offset;
+    let value = parse_fennel_unsigned_decimal(&units[value_start..close_index])?;
+    // `0xF3BE90..0xF3BE9C` parses to u32, then stores AX at iterator +0x814.
+    Some((value as u16, close_index))
+}
+
+fn parse_fennel_unsigned_decimal(units: &[u16]) -> Option<u32> {
+    if units.is_empty() {
+        return None;
+    }
+    let mut value = 0u32;
+    for &unit in units {
+        if !(b'0' as u16..=b'9' as u16).contains(&unit) {
+            return None;
+        }
+        value = value
+            .checked_mul(10)?
+            .checked_add(u32::from(unit - b'0' as u16))?;
     }
     Some(value)
 }
@@ -1541,7 +1590,7 @@ fn fennel_cvttss2si_as_f32(value: f32) -> f32 {
 pub enum FennelPlainRecordError {
     Decode(FennelTextDecodeError),
     Control(UnsupportedFennelControl),
-    MissingGlyph { code: u16 },
+    MissingGlyph { font_slot_id: u16, code: u16 },
     RecordCapacity { capacity: usize, required: usize },
 }
 
@@ -1550,8 +1599,11 @@ impl std::fmt::Display for FennelPlainRecordError {
         match self {
             Self::Decode(error) => error.fmt(formatter),
             Self::Control(error) => error.fmt(formatter),
-            Self::MissingGlyph { code } => {
-                write!(formatter, "Ruhuna font has no glyph for U+{code:04X}")
+            Self::MissingGlyph { font_slot_id, code } => {
+                write!(
+                    formatter,
+                    "Fennel font slot {font_slot_id} has no glyph for U+{code:04X}"
+                )
             }
             Self::RecordCapacity { capacity, required } => write!(
                 formatter,
@@ -1562,6 +1614,15 @@ impl std::fmt::Display for FennelPlainRecordError {
 }
 
 impl std::error::Error for FennelPlainRecordError {}
+
+/// Host-independent result of the global Fennel font-slot lookup
+/// `sub_F323B0`. The x86 runtime pointer remains an opaque caller-provided
+/// token, while the 128-byte glyph record is copied for deterministic layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelResolvedGlyph {
+    pub glyph_token: u32,
+    pub glyph: RuhunaRuntimeGlyphRecord,
+}
 
 /// Builds the pre-layout record stream produced by the proven plain-token
 /// subset of `sub_7C90A0`.
@@ -1579,6 +1640,42 @@ pub fn build_fennel_plain_record_stream<F>(
 where
     F: FnMut(u16, &RuhunaRuntimeGlyphRecord) -> u32,
 {
+    build_fennel_plain_record_stream_with_font_slots(
+        bytes,
+        0,
+        placement,
+        record_capacity,
+        |font_slot_id, code| {
+            if font_slot_id != 0 {
+                return None;
+            }
+            let glyph = *font.glyph(code)?;
+            Some(FennelResolvedGlyph {
+                glyph_token: glyph_token(code, &glyph),
+                glyph,
+            })
+        },
+    )
+}
+
+/// Builds the same record stream while reproducing the iterator's explicit
+/// font-slot state. `$F[n]` selects `n as u16`; bare `$F` restores
+/// `initial_font_slot_id`. Each glyph is resolved with the exact `(slot, code)`
+/// pair consumed by `sub_F323B0`.
+///
+/// Slot registration order belongs to the resource loader, so this function
+/// requires the caller to provide that mapping explicitly instead of treating
+/// a PROJ FONT index or filename order as a global Fennel slot.
+pub fn build_fennel_plain_record_stream_with_font_slots<F>(
+    bytes: &[u8],
+    initial_font_slot_id: u16,
+    placement: FennelGlyphPlacementInput,
+    record_capacity: usize,
+    mut resolve_glyph: F,
+) -> Result<FennelPlainRecordStream, FennelPlainRecordError>
+where
+    F: FnMut(u16, u16) -> Option<FennelResolvedGlyph>,
+{
     let units = decode_fennel_game_text(bytes).map_err(FennelPlainRecordError::Decode)?;
     let tokens = tokenize_fennel_plain_text(&units).map_err(FennelPlainRecordError::Control)?;
     let required = tokens
@@ -1590,6 +1687,8 @@ where
                     | FennelPlainToken::ToggleEffect
                     | FennelPlainToken::SetColors(_)
                     | FennelPlainToken::ResetColors
+                    | FennelPlainToken::SetFontSlot(_)
+                    | FennelPlainToken::ResetFontSlot
             )
         })
         .count()
@@ -1606,16 +1705,23 @@ where
     let mut line_start_indices = vec![0];
     let mut glyph_count = 0usize;
     let mut current_placement = placement;
+    let mut current_font_slot_id = initial_font_slot_id;
     for token in tokens {
         match token {
             FennelPlainToken::Glyph(code) => {
-                let glyph = font
-                    .glyph(code)
-                    .ok_or(FennelPlainRecordError::MissingGlyph { code })?;
+                let mut resolved = resolve_glyph(current_font_slot_id, code).ok_or(
+                    FennelPlainRecordError::MissingGlyph {
+                        font_slot_id: current_font_slot_id,
+                        code,
+                    },
+                )?;
+                // Successful `sub_F323B0` writes the selected slot to runtime
+                // glyph `+0x04` before returning the same record.
+                resolved.glyph.font_slot_id = current_font_slot_id;
                 let mut glyph_placement = current_placement;
-                glyph_placement.glyph_token = glyph_token(code, glyph);
+                glyph_placement.glyph_token = resolved.glyph_token;
                 records.push(FennelGlyphLayoutRecord::from_runtime_glyph(
-                    glyph,
+                    &resolved.glyph,
                     glyph_placement,
                 ));
                 glyph_count += 1;
@@ -1646,6 +1752,12 @@ where
             }
             FennelPlainToken::ResetColors => {
                 current_placement.colors = placement.colors;
+            }
+            FennelPlainToken::SetFontSlot(font_slot_id) => {
+                current_font_slot_id = font_slot_id;
+            }
+            FennelPlainToken::ResetFontSlot => {
+                current_font_slot_id = initial_font_slot_id;
             }
         }
     }
@@ -3117,6 +3229,50 @@ mod tests {
     }
 
     #[test]
+    fn font_control_resolves_each_glyph_with_the_current_u16_slot() {
+        let units = "A$F[65543]B$FC".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(
+            tokenize_fennel_plain_text(&units).unwrap(),
+            vec![
+                FennelPlainToken::Glyph(b'A' as u16),
+                FennelPlainToken::SetFontSlot(7),
+                FennelPlainToken::Glyph(b'B' as u16),
+                FennelPlainToken::ResetFontSlot,
+                FennelPlainToken::Glyph(b'C' as u16),
+            ]
+        );
+
+        let mut lookups = Vec::new();
+        let stream = build_fennel_plain_record_stream_with_font_slots(
+            b"A$F[65543]B$FC",
+            2,
+            input(),
+            5,
+            |font_slot_id, code| {
+                lookups.push((font_slot_id, code));
+                matches!((font_slot_id, code), (2, 0x41 | 0x43) | (7, 0x42)).then_some(
+                    FennelResolvedGlyph {
+                        glyph_token: (u32::from(font_slot_id) << 16) | u32::from(code),
+                        glyph: RuhunaRuntimeGlyphRecord {
+                            code,
+                            texture_token: u32::from(font_slot_id),
+                            ..Default::default()
+                        },
+                    },
+                )
+            },
+        )
+        .unwrap();
+
+        assert_eq!(lookups, vec![(2, 0x41), (7, 0x42), (2, 0x43)]);
+        assert_eq!(stream.glyph_count, 3);
+        assert_eq!(stream.records[0].glyph_token, 0x0002_0041);
+        assert_eq!(stream.records[1].glyph_token, 0x0007_0042);
+        assert_eq!(stream.records[2].glyph_token, 0x0002_0043);
+        assert_eq!(stream.records[1].texture_token, 7);
+    }
+
+    #[test]
     fn builds_plain_record_stream_with_binary_markers() {
         let font = RuhunaRuntimeFont {
             minimum_code: b'A' as u16,
@@ -3180,7 +3336,10 @@ mod tests {
         };
         assert_eq!(
             build_fennel_plain_record_stream(b"B", &font, input(), 3, |_, _| 1).unwrap_err(),
-            FennelPlainRecordError::MissingGlyph { code: b'B' as u16 }
+            FennelPlainRecordError::MissingGlyph {
+                font_slot_id: 0,
+                code: b'B' as u16,
+            }
         );
         assert_eq!(
             build_fennel_plain_record_stream(b"A", &font, input(), 2, |_, _| 1).unwrap_err(),
