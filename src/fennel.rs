@@ -1,4 +1,4 @@
-use crate::projection::Matrix4x4;
+use crate::projection::{Matrix4x4, identity_matrix4x4_game, mul_matrix4x4_game};
 use crate::render::{CeylonDrawPacketPresetState, CeylonShaderKey, CeylonShaderKeyInput};
 use crate::ruhuna::{RuhunaRuntimeFont, RuhunaRuntimeGlyphRecord};
 use crate::text::{TextDefinition, fennel_alignment_code_from_text_flags};
@@ -394,6 +394,10 @@ pub struct FennelFittingLayoutResult {
     pub effective_scale_x: f32,
     pub effective_scale_y: f32,
     pub total_height: f32,
+    /// TextBoxObject `+0x108`. The layout records do not contain this
+    /// center/bottom-alignment displacement; `sub_7C7F90` adds it to the
+    /// TextBox translation immediately before drawing.
+    pub textbox_vertical_offset: f32,
     pub line_count: usize,
 }
 
@@ -415,6 +419,9 @@ pub struct FennelDefaultLayoutResult {
     pub effective_scale_x: f32,
     pub effective_scale_y: f32,
     pub total_height: f32,
+    /// TextBoxObject `+0x108`, kept separate from record `y` exactly as in
+    /// `sub_7C1F90` and consumed by `sub_7C7F90` during batch drawing.
+    pub textbox_vertical_offset: f32,
     pub positioned_line_count: usize,
     pub automatic_wrap_count: usize,
     pub first_automatic_wrap: Option<FennelAutomaticWrap>,
@@ -583,6 +590,177 @@ pub fn build_fennel_texture_batch_membership(
 
 fn fennel_texture_batch_bucket(texture_token: u32) -> u32 {
     texture_token.wrapping_add(texture_token >> 3) % FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelStaticUnclippedDrawInput {
+    pub is_2d: bool,
+    /// TextBoxObject `+0xB8/+0xBC/+0xC0`. `sub_AC6F50` supplies
+    /// `(-SrImage.origin_x, -SrImage.origin_y, 0)` for the static SrTextCast
+    /// path.
+    pub textbox_position: [f32; 3],
+    /// TextBoxObject `+0xC4/+0xC8`, sourced from TEXT property `0x36`.
+    pub textbox_scale: [f32; 2],
+    /// TextBoxObject `+0x108`, returned separately by the layout routine.
+    pub textbox_vertical_offset: f32,
+    /// TextBoxObject `+0x2EC`, written by `sub_AC5740`.
+    pub textbox_transform: Matrix4x4,
+    /// TextBoxObject `+0x32C`, after the SrTextCast color chain.
+    pub secondary_color: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelOwnedTextureBatch {
+    pub texture_token: u32,
+    pub vertices: Vec<FennelRenderVertex>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelStaticUnclippedBatchBuild {
+    pub batches: Vec<FennelOwnedTextureBatch>,
+    pub processed_glyph_count: usize,
+    pub stop: FennelTextureBatchStop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelStaticUnclippedBatchError {
+    TextureBatchRehashRequired(FennelTextureBatchRehashRequired),
+    MissingRuntimeGlyph {
+        record_index: usize,
+        glyph_token: u32,
+    },
+    TextureTokenMismatch {
+        record_index: usize,
+        record_texture_token: u32,
+        glyph_texture_token: u32,
+    },
+    EffectGlyphUnsupported {
+        record_index: usize,
+    },
+}
+
+impl std::fmt::Display for FennelStaticUnclippedBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TextureBatchRehashRequired(error) => error.fmt(formatter),
+            Self::MissingRuntimeGlyph {
+                record_index,
+                glyph_token,
+            } => write!(
+                formatter,
+                "Fennel record {record_index} has no runtime glyph for token {glyph_token:#010x}"
+            ),
+            Self::TextureTokenMismatch {
+                record_index,
+                record_texture_token,
+                glyph_texture_token,
+            } => write!(
+                formatter,
+                "Fennel record {record_index} texture token {record_texture_token:#010x} does not match runtime glyph token {glyph_texture_token:#010x}"
+            ),
+            Self::EffectGlyphUnsupported { record_index } => write!(
+                formatter,
+                "Fennel record {record_index} enters the not-yet-ported 0x40000 effect glyph path"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FennelStaticUnclippedBatchError {}
+
+impl From<FennelTextureBatchRehashRequired> for FennelStaticUnclippedBatchError {
+    fn from(error: FennelTextureBatchRehashRequired) -> Self {
+        Self::TextureBatchRehashRequired(error)
+    }
+}
+
+/// Reproduces the evidence-complete normal-glyph portion of `sub_7C7F90` for
+/// the static mode-zero SrTextCast path, then calls the already-ported
+/// unclipped `sub_7C10B0` vertex builder in exact texture-batch order.
+///
+/// Static construction proves correction mode byte `+0x98 == 0`, transform
+/// adjustment byte `+0x10C == 0`, draw offset `(0, 0)`, and unclipped flags
+/// `3` or `7`. The `0x40000` second/effect glyph path remains rejected until
+/// its separate record mutation and color/depth inputs are closed.
+pub fn build_fennel_static_unclipped_vertex_batches<F>(
+    stream: &FennelPlainRecordStream,
+    maximum_glyphs: i32,
+    input: FennelStaticUnclippedDrawInput,
+    mut runtime_glyph: F,
+) -> Result<FennelStaticUnclippedBatchBuild, FennelStaticUnclippedBatchError>
+where
+    F: FnMut(u32) -> Option<RuhunaRuntimeGlyphRecord>,
+{
+    let membership = build_fennel_texture_batch_membership(stream, maximum_glyphs)?;
+    let mut translation = identity_matrix4x4_game();
+    translation.rows[0][3] = input.textbox_position[0];
+    translation.rows[1][3] = input.textbox_position[1] + input.textbox_vertical_offset;
+    translation.rows[2][3] = input.textbox_position[2];
+    let cpu_transform = if input.is_2d {
+        mul_matrix4x4_game(&input.textbox_transform, &translation)
+    } else {
+        // The 3D branch submits TextBoxObject +0x2EC to the renderer and gives
+        // `sub_7C10B0` only the local translation matrix.
+        translation
+    };
+
+    let mut batches = Vec::with_capacity(membership.batches.len());
+    for batch in &membership.batches {
+        let mut vertices = Vec::with_capacity(batch.normal_glyph_count * 6);
+        for &record_index in &batch.record_indices {
+            let record = &stream.records[record_index];
+            if record.field_0c & 0x40000 != 0 {
+                return Err(FennelStaticUnclippedBatchError::EffectGlyphUnsupported {
+                    record_index,
+                });
+            }
+            let glyph = runtime_glyph(record.glyph_token).ok_or(
+                FennelStaticUnclippedBatchError::MissingRuntimeGlyph {
+                    record_index,
+                    glyph_token: record.glyph_token,
+                },
+            )?;
+            if glyph.texture_token != record.texture_token {
+                return Err(FennelStaticUnclippedBatchError::TextureTokenMismatch {
+                    record_index,
+                    record_texture_token: record.texture_token,
+                    glyph_texture_token: glyph.texture_token,
+                });
+            }
+
+            let effective_scale = [
+                record.scale_x * input.textbox_scale[0],
+                record.scale_y * input.textbox_scale[1],
+            ];
+            let enabled = glyph.enabled as i32;
+            let correction_y = glyph
+                .bearing_y
+                .wrapping_sub(glyph.flag_mode as i32)
+                .wrapping_sub(glyph.line_height as i32)
+                .wrapping_add(3);
+            let origin = [
+                record.x + (glyph.bearing_x.wrapping_sub(enabled) as f32) * effective_scale[0],
+                record.y + (correction_y.wrapping_sub(enabled) as f32) * effective_scale[1],
+            ];
+            vertices.extend_from_slice(&build_fennel_unclipped_vertices(
+                record,
+                origin,
+                effective_scale,
+                &cpu_transform,
+                input.secondary_color,
+            ));
+        }
+        batches.push(FennelOwnedTextureBatch {
+            texture_token: batch.texture_token,
+            vertices,
+        });
+    }
+
+    Ok(FennelStaticUnclippedBatchBuild {
+        batches,
+        processed_glyph_count: membership.processed_glyph_count,
+        stop: membership.stop,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,7 +1008,11 @@ where
             let record = &mut stream.records[record_index];
             let metric = metrics[record_index].expect("metrics were populated during validation");
             record.x += line.x_offset + advance;
-            record.y += line.y_bottom + vertical_offset;
+            // `sub_7C1F90` writes only the per-line bottom into record +0x14.
+            // Its center/bottom displacement lives separately at
+            // TextBoxObject +0x108 and is added to the draw translation by
+            // `sub_7C7F90`.
+            record.y += line.y_bottom;
             record.scale_x *= prepared.scale_x_multiplier;
             advance += fennel_advance(record, metric, prepared.effective_scale_x);
         }
@@ -854,6 +1036,7 @@ where
         effective_scale_x: prepared.effective_scale_x,
         effective_scale_y: prepared.effective_scale_y,
         total_height: current_y,
+        textbox_vertical_offset: vertical_offset,
         positioned_line_count: measured_lines.len(),
         automatic_wrap_count,
         first_automatic_wrap,
@@ -1011,6 +1194,7 @@ where
         effective_scale_x: result.effective_scale_x,
         effective_scale_y: result.effective_scale_y,
         total_height: result.total_height,
+        textbox_vertical_offset: result.textbox_vertical_offset,
         line_count: result.positioned_line_count,
     })
 }
@@ -1227,11 +1411,15 @@ pub struct FennelRenderVertex {
 pub fn build_fennel_unclipped_vertices(
     record: &FennelGlyphLayoutRecord,
     origin: [f32; 2],
+    effective_scale: [f32; 2],
     transform: &Matrix4x4,
     secondary_color: u32,
 ) -> [FennelRenderVertex; 6] {
-    let far_x = record.width * record.scale_x + origin[0] - record.field_2c;
-    let far_y = record.height * record.scale_y + origin[1] - record.field_30;
+    // `sub_7C10B0` receives this pair through its separate `a7` argument.
+    // `sub_7C7F90` computes it as record +0x44/+0x48 multiplied by
+    // TextBoxObject +0xC4/+0xC8; it does not rewrite the copied record.
+    let far_x = record.width * effective_scale[0] + origin[0] - record.field_2c;
+    let far_y = record.height * effective_scale[1] + origin[1] - record.field_30;
     let near_x = record.field_24 + origin[0];
     let near_y = record.field_28 + origin[1];
     let positions = [
@@ -1558,9 +1746,11 @@ mod tests {
         assert_eq!(result.total_height, 12.0);
         assert_eq!(result.line_count, 1);
         // Final visual extent is 10 advance + (2 bearing + 7 width) = 19.
-        // cvttss2si((100 - 19) / 2) is 40; vertical center is 14.
-        assert_eq!((stream.records[0].x, stream.records[0].y), (40.0, 26.0));
-        assert_eq!((stream.records[1].x, stream.records[1].y), (50.0, 26.0));
+        // cvttss2si((100 - 19) / 2) is 40. The vertical center displacement
+        // is stored at TextBoxObject +0x108, not folded into record +0x14.
+        assert_eq!(result.textbox_vertical_offset, 14.0);
+        assert_eq!((stream.records[0].x, stream.records[0].y), (40.0, 12.0));
+        assert_eq!((stream.records[1].x, stream.records[1].y), (50.0, 12.0));
     }
 
     #[test]
@@ -1932,6 +2122,108 @@ mod tests {
     }
 
     #[test]
+    fn static_unclipped_batches_apply_the_binary_glyph_origin_and_2d_matrix_order() {
+        let mut stream = one_line_stream(&[99]);
+        stream.records[0] = FennelGlyphLayoutRecord {
+            glyph_token: 99,
+            texture_token: 7,
+            x: 10.0,
+            y: 20.0,
+            width: 4.0,
+            height: 6.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            colors: [0xFFFF_FFFF; 4],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 0.0],
+            uv2: [0.0, 1.0],
+            uv3: [1.0, 1.0],
+            ..Default::default()
+        };
+        let glyph = RuhunaRuntimeGlyphRecord {
+            code: 99,
+            texture_token: 7,
+            enabled: 1,
+            bearing_x: 2,
+            bearing_y: 10,
+            line_height: 12,
+            flag_mode: 2,
+            ..Default::default()
+        };
+        let mut textbox_transform = identity_matrix4x4_game();
+        textbox_transform.rows[0][0] = 2.0;
+        textbox_transform.rows[1][1] = 4.0;
+        textbox_transform.rows[0][3] = 7.0;
+        textbox_transform.rows[1][3] = 11.0;
+        let build = build_fennel_static_unclipped_vertex_batches(
+            &stream,
+            -1,
+            FennelStaticUnclippedDrawInput {
+                is_2d: true,
+                textbox_position: [100.0, 200.0, 0.0],
+                textbox_scale: [2.0, 3.0],
+                textbox_vertical_offset: 14.0,
+                textbox_transform,
+                secondary_color: 0,
+            },
+            |token| (token == 99).then_some(glyph),
+        )
+        .unwrap();
+
+        assert_eq!(build.processed_glyph_count, 1);
+        assert_eq!(build.stop, FennelTextureBatchStop::EndOfRecordArray);
+        assert_eq!(build.batches.len(), 1);
+        assert_eq!(build.batches[0].texture_token, 7);
+        // correction=(bearing_x, bearing_y-flag_mode-line_height+3)=(2,-1),
+        // then both axes subtract enabled=1. Local origin is therefore
+        // (12,14). The 2D CPU matrix is TextBoxTransform * local translation:
+        // x'=2*x+207 and y'=4*y+867 for this fixture.
+        assert_eq!(
+            build.batches[0]
+                .vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>(),
+            vec![
+                [247.0, 923.0, 0.0],
+                [231.0, 923.0, 0.0],
+                [231.0, 995.0, 0.0],
+                [247.0, 995.0, 0.0],
+                [247.0, 923.0, 0.0],
+                [231.0, 995.0, 0.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn static_unclipped_batches_reject_the_unclosed_effect_path() {
+        let mut stream = one_line_stream(&[1]);
+        stream.records[0].texture_token = 7;
+        stream.records[0].field_0c = 0x40000;
+        let glyph = RuhunaRuntimeGlyphRecord {
+            texture_token: 7,
+            ..Default::default()
+        };
+        assert_eq!(
+            build_fennel_static_unclipped_vertex_batches(
+                &stream,
+                -1,
+                FennelStaticUnclippedDrawInput {
+                    is_2d: true,
+                    textbox_position: [0.0; 3],
+                    textbox_scale: [1.0; 2],
+                    textbox_vertical_offset: 0.0,
+                    textbox_transform: identity_matrix4x4_game(),
+                    secondary_color: 0,
+                },
+                |_| Some(glyph),
+            )
+            .unwrap_err(),
+            FennelStaticUnclippedBatchError::EffectGlyphUnsupported { record_index: 0 }
+        );
+    }
+
+    #[test]
     fn builds_unclipped_six_vertex_glyph_triangles() {
         let record = FennelGlyphLayoutRecord {
             width: 4.0,
@@ -1952,6 +2244,7 @@ mod tests {
         let vertices = build_fennel_unclipped_vertices(
             &record,
             [10.0, 20.0],
+            [2.0, 3.0],
             &crate::projection::identity_matrix4x4_game(),
             0xA4A3_A2A1,
         );

@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，以及 `sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。当前剩余主线是内部行元数据、每批最终原点/效果参数、裁剪分支和真实 SRD/RFZ 像素回归。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal glyph 的 origin/effective-scale/2D CPU matrix 链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。当前剩余主线是内部行元数据、SrTextCast 的真实 world/color composition 接入、效果/裁剪分支和像素回归。
 
 ## TEXT 记录
 
@@ -212,6 +212,7 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 - 首 glyph 自身越宽且没有可回退断点时，游戏会产生不推进 record 指针的空逻辑行；后续由垂直边界终止，而不是强制把 glyph 塞入一行；
 - 垂直检查使用 `abs(current_y) + line_height > box_height`，不包含当前行即将插入的行距；命中后把该逻辑行首记录 kind 改为 `-254` 并停止定位；
 - 中/下对齐的测量 pass 若先命中垂直边界，会不写纵向 offset，随后定位出来的前缀因此保持顶对齐；
+- 中/下对齐量写入 TextBoxObject `+0x108`，不会折进 layout record `+0x14`；`sub_7C7F90` 随后把它加到 TextBox 的 Y 平移。Rust 因此把 `textbox_vertical_offset` 与 record `y` 分开保存；
 - `sub_7C90A0` 尾部扫描所有记录：没有 `-254` 时返回 glyph count；有标记时返回最后一个标记的记录下标，标记位于下标零时返回 `-1`。Rust 的 `record_limit` 保留这一结果。
 
 `layout_fennel_static_fitting_lines` 仍作为原子 guard 保留：它在完整默认布局结果需要自动断行或垂直截止时返回明确错误且不修改输入，便于调用方只接受完整可见矩形；实际游戏路径由 `layout_fennel_static_default` 复现。
@@ -226,6 +227,8 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 成功建立 texture batch 的 TEXT=1292
 单条 TEXT 最大 texture batch 数=6
 因 -254 停止 batch 扫描的 TEXT=19
+成功建立 normal-glyph vertex batch 的 TEXT=1292
+单条 TEXT 最大 normal-glyph 顶点数=1620
 fitting-only guard 成功=1270
 UTF-8/控制符/缺字/字体记录错误=0
 ```
@@ -264,10 +267,21 @@ Rust 已按原始偏移名保存为 `FENNEL_FONT_MANAGER_SET_E0/E4`，并精确�
 - 四角索引表 `dword_18E8084` 的实值为 `[1, 0, 2, 3, 1, 2]`，即直接生成两个 triangle-list 三角形；
 - 每个 UV 分量提交前加 `f32::from_bits(0x3727C5AC)`，即约 `0.00001`；
 - primary color 取记录 `+0x34` 起对应角的 packed color，secondary color 取 TextBoxObject `+0x32C`；两个颜色都经过 `sub_F25B40 -> sub_5FF4A0`，在顶点内存中写为 BGRA byte 顺序；
-- 局部四角由记录 `width/height`、`scale_x/scale_y`、`+0x24..+0x30` 和调用方 x/y 组成；随后按函数中的 4x4 row dot product 做 perspective divide；
+- 局部四角由记录 `width/height`、独立调用参数 effective scale、`+0x24..+0x30` 和调用方 x/y 组成；随后按函数中的 4x4 row dot product 做 perspective divide。effective scale 不是重写后的 record 字段，而是 `sub_7C7F90` 计算的 `record.+0x44/+0x48 × TextBox.+0xC4/+0xC8`；
 - `RuhunaD3d9AtlasSet` 已复用现有无 D3DX DDS 上传器，可把 RFZ/AVTS 中按 page 排序的 DDS 建为可 device-reset 重建的 D3D9 纹理。
 
 `flags & 0x400 != 0` 的裁剪与 UV 重映射分支还未并入 Rust；因此当前顶点生成器名称和接口明确限定为 `unclipped`。
+
+静态 mode-zero SrTextCast 的 normal-glyph 调用输入也已闭合：
+
+- `sub_AE3580` 把 text state `+0x100` 的 correction mode、effect enable 和 effect offsets 清零；`sub_AC6F50 -> sub_F2C160` 因此把 TextBox byte `+0x98` 写为 0；
+- FontObject 构造函数 `sub_F2BB60` 把 TextBox byte `+0x10C` 清零，静态初始化链不调用唯一的 `sub_F2C9C0` setter；
+- 默认 flags 为 `3/7`，所以 `sub_7C04F0` 传给 `sub_7C7F90` 的 draw offset 精确为 `(0,0)`，并且不进入 `flags & 0x400` 裁剪；
+- correction mode 0 的 glyph 修正为 `x=bearing_x`、`y=bearing_y-flag_mode-line_height+3`，最终两轴再减 glyph `enabled` 并乘 effective scale；
+- TextBox position 由 `sub_AC6F50` 写为 `(-SrImage.origin_x,-SrImage.origin_y,0)`，Y 再加布局返回的 `+0x108`；
+- 2D 分支通过 `sub_604010` 计算 `TextBox.+0x2EC * local_translation` 后交给 `sub_7C10B0`；3D 分支给 CPU 顶点生成器的只有 local translation，`+0x2EC` 另交 renderer 状态。
+
+Rust 的 `build_fennel_static_unclipped_vertex_batches` 按已证明的 texture 前向链顺序执行上述 normal-glyph 路径，并校验 record/runtime glyph texture token 一致。完整 1292 条 RFZ TEXT 均成功建立批次，单条最多 1620 个顶点；当前语料构造输入未进入 effect。任何 record `+0x0C & 0x40000` 仍明确报错，不生成半套第二 glyph。
 
 ### teaFontRenderer batch 与 format 13
 
@@ -333,7 +347,7 @@ textures      = [present, null, null]
 
 字体 DDS 当前均为一层 mip；`ceylon_image_initialize_from_stevia_request` 在 `0xE7FF5F..0xE7FF6E` 把零 mip count 至少提升到 1 并写到 image `+0x64/+0x68`，随后 `sub_E7E8B0` 将其用于 MAXMIPLEVEL。因此当前 atlas 的完整 D3D9 sampler 是 Clamp/Clamp、Linear/Linear/Point、max mip level 1、max anisotropy 1、LOD bias 0、border color 0。Rust 会解析并验证每个 Stevia texture object；页数不匹配、页间 sampler 不同或出现未证明值时直接报错。
 
-`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record 和 `sub_7C0D40` texture batch membership 已可完整生成；当前尚需闭合每批 origin/effect 参数和 SRD world/color 输入，之后才接入 Composition。
+`FennelDx9Renderer` 已实现可 ResetEx 失效/重建的 format 13 declaration、精确 shader 对、按需增长的动态 DEFAULT-pool vertex buffer、上述完整 stage-0 sampler、preset 3 的 blend/raster/depth 状态，以及 `D3DPT_TRIANGLELIST(vertices / 3)` 提交。默认静态 layout record、`sub_7C0D40` texture batch membership 和 normal-glyph CPU vertices 已可完整生成；当前尚需把真实 SrTextCast world/color 输入接到现有 Composition，并闭合 effect/crop 后做像素回归。
 
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 

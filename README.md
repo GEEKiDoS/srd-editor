@@ -24,7 +24,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - `SCN -> ANMS -> SANM` 场景动画集：逐 LAYR enable gate、命名 ANIM、初始 frame 与 runtime duration；正常 Composition 只提交显式选择的动画集，不再同时绘制互斥页面。
 - CIMG/TEXT 与 PROJ FONT/CHAR 记录解析、TEXT 到同一项目 FONT 下标解析，以及 SrTextCast 的实际构造/字符串初始化。完整语料的字体来自 `A000/font/*.rfz`；BinaryLZW `YS` v2、YABX schema/CRC/对象 ID、`RHFONTDB` Database/Glyph/TextureResource 和 AVTS 目录均已按游戏读取逻辑实现。六套字体的全部 glyph 引用与内嵌 DDS 页已闭环；不会用系统字体伪装游戏字形。
 - 字体 AVTS 不重写贴图解码：目录中的 `.svo` 是 Stevia YABX 元数据，其余条目是完整 DDS。当前六套字体共 15 个 A4R4G4B4 atlas 页，尺寸、末页高度、mip、数据长度与 Ruhuna Database 全部交叉验证，并直接复用现有 DDS 解析/库解码/D3D9 上传路径。
-- RFZ/Fennel 已实现游戏 UTF-8 与当前完整语料所需控制 token、128 字节 runtime glyph 到 116 字节 layout record、默认静态 `sub_7C1F90` 的 auto-fit/自动断行/固定字符表/空格候选/对齐/垂直 `-254` 截止、`sub_7C0D40` 的记录过滤与 17 桶 atlas batch 前向链顺序、28 字节 format 13 glyph vertices、原始 shader/DrawPacket/sampler 和 D3D9 triangle-list renderer。完整 1292 条 RFZ TEXT 已全部通过默认布局及 batch 审计：9 条文本产生 16 次逻辑断行，19 条在同一 `-254` 处停止批次扫描，单条文本最多 6 个 atlas batch；没有用系统字体、通用 Unicode 断行或启发式布局替代。
+- RFZ/Fennel 已实现游戏 UTF-8 与当前完整语料所需控制 token、128 字节 runtime glyph 到 116 字节 layout record、默认静态 `sub_7C1F90` 的 auto-fit/自动断行/固定字符表/空格候选/对齐/垂直 `-254` 截止、`sub_7C0D40` 的记录过滤与 17 桶 atlas batch 前向链顺序、`sub_7C7F90` normal glyph 的 bearing origin/effective scale/2D matrix、28 字节 format 13 glyph vertices、原始 shader/DrawPacket/sampler 和 D3D9 triangle-list renderer。完整 1292 条 RFZ TEXT 已全部通过默认布局、batch 及 normal-vertex 审计：9 条文本产生 16 次逻辑断行，19 条在同一 `-254` 处停止批次扫描，单条文本最多 6 个 atlas batch/1620 个顶点；没有用系统字体、通用 Unicode 断行或启发式布局替代。
 - 游戏标量轨道的时间区间、端点、线性、保持和三次曲线求值。
 - LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
 - `SRFF -> SRCK -> PROJ -> SCN  -> LAYR` 项目场景表，以及 CRFD 在同文件 SCN/LAYR 表中的首次完整名称解析。
@@ -59,7 +59,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - Chusan `AdvertiseLogoObject` 的具体宿主已闭环：嵌入式 SrPlayer 位于 Impl `+0x68`，common init 写入 `DrawTargetSceneOnly=true`、`2DLayer=100` 并保持空 `TargetScene`；其 GraphNode 父节点始终为 null，故实际 `FirstCalcMatrix` 是构造 identity。Rust profile 与编辑器 Properties 已能把该矩阵同显式 `MainScene`/`BgScene`、present size、screen source size 和外部 scissor 输入组合，仍不会猜测当帧 active target。
 - AdvertiseLogo 的实际六阶段 SrCtrl identity 表已解码到 SRD 的 ANMS 下标；`AS_warning_in`、`AS_movie_in` 等页面现在按 SANM gate 和命名动画生成 draw。原先全白输出已由 D3D9Ex 回读定位并修复：页面 smoke 的 2,073,600 个 changed pixels 中 `white_pixels=0`，ResetEx 前后哈希一致。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、Fennel 每批最终原点/effect、裁剪与端到端 composition 接入、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、Fennel effect/裁剪、真实 SrTextCast world/color 到端到端 composition 的接入、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 
