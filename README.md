@@ -30,6 +30,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - SrSliceCast active 单元的局部四顶点、2D/3D Y 轴分支、36 字节游戏顶点顺序、CSLI CREF 选择、flags flip/order 与两个相同最终 UV 通道。
 - TEXL/TEX/CROP 的 540 字节记录、外部 DDS 基础路径、纹理尺寸、16 字节归一化矩形表，以及 CREF 到实际矩形的解析。
 - SRD 路径到 `air::TextureResource` 的资源工厂链、DDS header/格式/mip/cube/palette surface 布局、D3D9 原生创建、游戏中的 D3DX9_43 回退分支和二维 SYSTEMMEM staging/`UpdateSurface` 参数；旧 97 文件、完整 `surfboard` 的 360 个 DDS，以及整个游戏 `data` 的 14,694 个 DDS 均已全量回归。全游戏语料只有 A8R8G8B8/DXT1/DXT5，7,204 个文件会走原游戏 D3DX 回退；编辑器自身不链接或调用 D3DX。
+- 编辑器 DDS 后端已实装：7,490 个游戏原生兼容文件保持原 A8R8G8B8/DXT1/DXT5 surface 布局，经 SYSTEMMEM staging 和 `UpdateSurface` 上传；7,204 个 NPOT DXT fallback 由 `image_dds 0.7.2` 的纯 Rust BC1/BC3 decoder 转为 RGBA8，再转换为 D3D9 A8R8G8B8 字节布局上传。14,694 个文件、14,722 个 mip 已全部由真实 D3D9Ex HAL device 创建并上传成功。
 - TEX `0x62` 到 Wrap/Clamp、Linear/Point 双包装对象及最终 D3D9 sampler state 的完整绑定链。
 - CAST `CATL/CATR` 通用属性列表、`ExtParamData` 12 字节运行时结构、blend preset 覆盖和继承式层级键。
 - SrSliceCast 两个 packed vertex color 的解析零默认、双线性 CSLI 插值、逐通道乘法和饱和加法组合器；未证明的 CAST tint 保持为显式输入。
@@ -51,7 +52,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、层、NODE、变换、纹理和首个动画的实际关键帧会进入这些面板。
 - Composition 已接入与 SCN 尺寸一致的 D3D9 DEFAULT-pool render-target texture，并通过 ImGui texture ID 在面板中按宽高比居中缩放显示。纹理保持场景像素尺寸，面板布局使用逻辑单位，最终 ImGui 顶点/scissor 再按 framebuffer scale 转到 HiDPI 物理像素；显示缩放不修改 SRD 矩阵或 `FirstCalcMatrix`。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、投影屏幕矩阵中另一个 backend context 的组合语义、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request、SRD GPU texture draw submission、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择和 sampler 设备接入。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器将使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、投影屏幕矩阵中另一个 backend context 的组合语义、CNUM 历史 glyph 动画、TEXT、完整语料未出现的 DDS 内部格式转换/cube request、SRD texture 到 draw stage 0/1 的最终绑定、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择和 sampler 设备接入。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 
@@ -69,6 +70,12 @@ cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_
 
 ```powershell
 cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
+```
+
+执行整个目录的真实 D3D9Ex DDS 创建/上传审计：
+
+```powershell
+cargo run --release -- --dds-device-audit "D:\sdhd\assets\data"
 ```
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

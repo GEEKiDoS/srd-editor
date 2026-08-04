@@ -242,6 +242,15 @@ pub struct D3d9SystemMemoryUpload {
     pub destination_point: [u32; 2],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedDdsRgba8Level {
+    pub mip_index: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Canonical RGBA byte order produced by the independent decoder.
+    pub rgba: Vec<u8>,
+}
+
 impl DdsDescriptor {
     pub fn parse(bytes: &[u8]) -> Result<Self, DdsError> {
         if bytes.len() < DDS_HEADER_SIZE {
@@ -508,6 +517,77 @@ impl DdsDescriptor {
             }));
         }
         Ok(uploads)
+    }
+
+    /// Decodes the complete 2D mip chain through the independent `image_dds`
+    /// library. This is an editor compatibility path for files whose exact
+    /// game branch uses D3DX; it is not evidence for Surfride semantics.
+    pub fn decode_rgba8_levels_with_library(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Vec<DecodedDdsRgba8Level>, DdsError> {
+        self.validate_data_len(bytes)?;
+        if self.is_cube || self.cube_face_count != 1 {
+            return Err(DdsError(
+                "the independent decoder path currently accepts only 2D DDS".into(),
+            ));
+        }
+        let image_format = match self.format {
+            GameTextureFormat::A8_R8_G8_B8 => image_dds::ImageFormat::Bgra8Unorm,
+            GameTextureFormat::DXT1 => image_dds::ImageFormat::BC1RgbaUnorm,
+            GameTextureFormat::DXT5 => image_dds::ImageFormat::BC3RgbaUnorm,
+            format => {
+                return Err(DdsError(format!(
+                    "independent DDS decoder has no proven mapping for game format {}",
+                    format.0
+                )));
+            }
+        };
+        let payload_start = self
+            .levels
+            .first()
+            .ok_or_else(|| DdsError("DDS has no surface levels".into()))?
+            .data_range()?
+            .start;
+        let payload_end = self.required_data_len()?;
+        let surface = image_dds::Surface {
+            width: self.width,
+            height: self.height,
+            depth: 1,
+            layers: 1,
+            mipmaps: self.mip_count,
+            image_format,
+            data: &bytes[payload_start..payload_end],
+        };
+        let mut levels = Vec::with_capacity(self.mip_count as usize);
+        for mip_index in 0..self.mip_count {
+            let decoded = surface
+                .decode_layers_mipmaps_rgba8(0..1, mip_index..mip_index + 1)
+                .map_err(|error| {
+                    DdsError(format!(
+                        "image_dds failed to decode mip {mip_index}: {error}"
+                    ))
+                })?;
+            let expected_len = decoded
+                .width
+                .checked_mul(decoded.height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .ok_or_else(|| DdsError("decoded RGBA mip length overflows usize".into()))?;
+            if decoded.data.len() != expected_len {
+                return Err(DdsError(format!(
+                    "image_dds mip {mip_index} returned {} bytes, expected {expected_len}",
+                    decoded.data.len()
+                )));
+            }
+            levels.push(DecodedDdsRgba8Level {
+                mip_index,
+                width: decoded.width,
+                height: decoded.height,
+                rgba: decoded.data,
+            });
+        }
+        Ok(levels)
     }
 
     fn direct_creation_format(&self) -> GameTextureFormat {

@@ -44,7 +44,7 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 - 暂不产出没有已注册 VS/PS bytecode 的 shader key；
 - CNUM、CSLI 与引用层递归尚未进入这个首个 draw list。
 
-因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。当前 97 个单元测试和 19 个本地/完整游戏语料测试均通过；其中本页 fixture 测试断言 draw 数量、节点、shader key、四顶点、两组顶点色、color-write 和深度状态。
+因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。当前 97 个单元测试和 20 个本地/完整游戏语料测试均通过；其中本页 fixture 测试断言 draw 数量、节点、shader key、四顶点、两组顶点色、color-write 和深度状态。
 
 ## 实际 D3D9Ex 提交与像素验证
 

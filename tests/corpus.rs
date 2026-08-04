@@ -229,6 +229,61 @@ fn parses_complete_game_dds_corpus_with_binary_resource_rules() {
 }
 
 #[test]
+fn validates_editor_upload_and_decode_paths_for_complete_game_dds() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_dds_files(&root, &mut files);
+    files.sort();
+    let mut direct_file_count = 0usize;
+    let mut update_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut decoded_file_count = 0usize;
+    let mut decoded_level_count = 0usize;
+    for path in &files {
+        let bytes = fs::read(path).unwrap();
+        let descriptor = DdsDescriptor::parse(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        match descriptor.creation_plan(DdsLoadPolicy::default()) {
+            D3d9TextureCreation::Direct2d { .. } => {
+                direct_file_count += 1;
+                let uploads = descriptor
+                    .direct_2d_upload_plan()
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                for upload in uploads {
+                    match upload {
+                        D3d9Direct2dUpload::UpdateSurface(_) => update_count += 1,
+                        D3d9Direct2dUpload::CompressedLevelBelowFourSkipped { .. } => {
+                            skipped_count += 1
+                        }
+                    }
+                }
+            }
+            D3d9TextureCreation::D3dx2d { .. } => {
+                decoded_file_count += 1;
+                let levels = descriptor
+                    .decode_rgba8_levels_with_library(&bytes)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                assert_eq!(levels.len(), descriptor.mip_count as usize);
+                assert_eq!(levels[0].width, descriptor.width);
+                assert_eq!(levels[0].height, descriptor.height);
+                decoded_level_count += levels.len();
+            }
+            plan => panic!("{}: unexpected plan {plan:?}", path.display()),
+        }
+    }
+    eprintln!(
+        "editor DDS paths files={} direct={direct_file_count} updates={update_count} skipped={skipped_count} decoded={decoded_file_count} decoded_levels={decoded_level_count}",
+        files.len()
+    );
+    assert_eq!(files.len(), 14_694);
+    assert_eq!(direct_file_count, 7_490);
+    assert_eq!(decoded_file_count, 7_204);
+}
+
+#[test]
 fn parses_local_dds_corpus_with_the_binary_resource_rules() {
     let root = corpus_root();
     if !root.exists() {

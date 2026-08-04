@@ -81,13 +81,13 @@ cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_Syste
 
 三条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。后两条命令还在帧生成前实际解析指定 SRD 并构建文档面板；第三条另外提交 format 14 SRD draw，并在 reset 前后各完成一次 SYSTEMMEM 像素回读断言。
 
-同次检查后继续加入首个证据完整 draw-list 语料测试；当前完整回归为 97 个单元测试及 19 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
+同次检查后继续加入首个证据完整 draw-list 与完整 DDS 解码路径语料测试；当前完整回归为 97 个单元测试及 20 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 
 本页证明的是可运行编辑器窗口、D3D9Ex device、HiDPI ImGui draw、ResetEx 生命周期，以及首个无贴图 fixture 的实际 format 14 shader draw 和像素回读。它尚不证明完整 SRD 像素渲染完成。仍需在独立证据闭环后接入：
 
-- DDS 解码/上传与 stage 0/1 资源绑定；
+- 已上传 DDS texture 到 stage 0/1 的资源绑定；
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
 - scene、reference cast 和动画状态到实际 draw ordering。

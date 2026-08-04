@@ -13,6 +13,7 @@ use winit::window::{Window, WindowId};
 
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
+use crate::d3d9_texture::audit_dds_device_uploads;
 use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair};
@@ -26,7 +27,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let srd_draw_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-draw-smoke");
+    let dds_device_audit = arguments
+        .iter()
+        .any(|argument| argument == "--dds-device-audit");
     let smoke_test = srd_draw_smoke
+        || dds_device_audit
         || arguments
             .iter()
             .any(|argument| argument == "--d3d9ex-smoke" || argument == "--d3d9-smoke");
@@ -36,7 +41,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from);
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut application = EditorApplication::new(smoke_test, srd_draw_smoke, document_path);
+    let mut application =
+        EditorApplication::new(smoke_test, srd_draw_smoke, dds_device_audit, document_path);
     event_loop.run_app(&mut application)?;
     if let Some(error) = application.fatal_error {
         return Err(io::Error::other(error).into());
@@ -49,6 +55,7 @@ struct EditorApplication {
     fatal_error: Option<String>,
     smoke_test: bool,
     srd_draw_smoke: bool,
+    dds_device_audit: bool,
     document_path: Option<PathBuf>,
 }
 
@@ -68,12 +75,18 @@ struct EditorWindow {
 }
 
 impl EditorApplication {
-    fn new(smoke_test: bool, srd_draw_smoke: bool, document_path: Option<PathBuf>) -> Self {
+    fn new(
+        smoke_test: bool,
+        srd_draw_smoke: bool,
+        dds_device_audit: bool,
+        document_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             window: None,
             fatal_error: None,
             smoke_test,
             srd_draw_smoke,
+            dds_device_audit,
             document_path,
         }
     }
@@ -85,6 +98,7 @@ impl EditorWindow {
         d3d9: D3d9ExDevice,
         smoke_test: bool,
         srd_draw_smoke: bool,
+        dds_device_audit: bool,
         document_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let mut imgui = Context::create();
@@ -102,9 +116,24 @@ impl EditorWindow {
             .ok_or_else(|| "embedded first-fixture shader pair is missing".to_string())?;
         d3d9.validate_shader_pair(&shader_pair)
             .map_err(|error| format!("D3D9 failed to create embedded SRD shaders: {error}"))?;
+        if dds_device_audit {
+            let root = document_path.as_ref().ok_or_else(|| {
+                "--dds-device-audit requires a DDS file or directory path".to_string()
+            })?;
+            let audit = audit_dds_device_uploads(d3d9.device(), root)
+                .map_err(|error| format!("D3D9 DDS device audit failed: {error}"))?;
+            eprintln!(
+                "D3D9 DDS device audit files={} game_native={} independent_decode={} mip_levels={}",
+                audit.file_count,
+                audit.game_native_count,
+                audit.independent_decode_count,
+                audit.mip_level_count,
+            );
+        }
         let mut imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
-        let mut workspace = EditorWorkspace::new(build_default_layout, document_path);
+        let workspace_path = (!dds_device_audit).then_some(document_path).flatten();
+        let mut workspace = EditorWorkspace::new(build_default_layout, workspace_path);
         let draw_result = workspace.document().and_then(|document| {
             let scene = document.project.scenes.first()?;
             Some((
@@ -333,6 +362,7 @@ impl ApplicationHandler for EditorApplication {
                             d3d9,
                             self.smoke_test,
                             self.srd_draw_smoke,
+                            self.dds_device_audit,
                             self.document_path.clone(),
                         )
                     })

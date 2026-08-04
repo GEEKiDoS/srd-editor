@@ -138,10 +138,24 @@ Rust 的 `DdsDescriptor`、格式映射和 `D3d9TextureCreation` 计划均由单
 - 7,490 个满足游戏原生 `CreateTexture` 分支；
 - 7,204 个会落入原游戏的 D3DX 二维兼容分支。
 
-因此独立解码库的最低完整游戏覆盖目标现在可以由数据精确限定为 A8R8G8B8、DXT1、DXT5、二维纹理和最多八层 mip；其中 7,204 个游戏回退样本必须在编辑器中由该库处理，不能以 D3DX 替代。库的具体选择仍需用这 14,694 个文件做实际解码与像素尺寸回归后确定。
+因此独立解码库的最低完整游戏覆盖目标由数据精确限定为 A8R8G8B8、DXT1、DXT5、二维纹理和最多八层 mip；其中 7,204 个游戏回退样本必须在编辑器中由该库处理，不能以 D3DX 替代。
+
+## 编辑器独立解码与真实 D3D9Ex 上传
+
+编辑器选择 `image_dds 0.7.2`，关闭其默认的 `ddsfile`、`image`、encode 和 strum 功能，仅使用无 D3DX 的 surface decoder；依赖的 BC1/BC3 解码实现来自同仓库的纯 Rust `bcdec_rs 0.2.0`。该库是编辑器兼容层，不构成 Surfride 字段或运行时语义证据。
+
+上传路径严格按已经证明的游戏分支边界拆分：
+
+- 7,490 个原生兼容文件保持 DDS 的 A8R8G8B8/DXT1/DXT5 格式和 mip 数据，经一层 SYSTEMMEM texture、逐行复制、目标 DEFAULT-pool texture 与 `UpdateSurface` 上传；
+- 7,204 个原游戏 D3DX 分支均为 NPOT DXT。它们不能套用游戏原生 helper 的 `height >> 2` 行数：例如 `CHU_UI_Stage_00000.dds` 为 960×450 DXT1，文件实际包含 `ceil(450/4)=113` 个 block row，而原生 helper 只会计算 112。编辑器因此用独立库按完整 BC block 几何解码为 RGBA8，再逐像素转为 D3D9 A8R8G8B8 的 BGRA 内存顺序并走同样的 SYSTEMMEM/`UpdateSurface` 设备上传。
+
+两级全量验证均已通过：
+
+- 纯 CPU release 语料测试解码全部 7,204 个 fallback，并验证 14,694 个文件的 7,490/7,204 分支分布；
+- `--dds-device-audit D:\sdhd\assets\data` 在本机 ARM64 Windows 的真实 D3D9Ex HAL device 上逐个创建和上传全部 14,694 个 texture、共 14,722 个 mip，结果为 `game_native=7490`、`independent_decode=7204`，零失败。
 
 ## 证据边界
 
 已经闭环：资源对象类型、完整文件读取、DDS header 字段、格式/mip/cube/palette surface 布局、D3D9 与 D3DX9_43 分支条件及创建参数，以及无需格式转换的二维 DDS 经 SYSTEMMEM staging texture 和 `UpdateSurface` 上传的全部参数。
 
-仍需闭环：内部格式 `3/32/33` 的像素转换（完整本地 DDS 语料未出现这些格式）、SRD DDS cube request 与 `+0xD1` 的实际关系、失败和设备丢失时的资源生命周期、独立解码库的实测选型，以及最终 shader 对两个 UV 通道和多纹理槽的消费。
+仍需闭环：内部格式 `3/32/33` 的像素转换（完整本地 DDS 语料未出现这些格式）、SRD DDS cube request 与 `+0xD1` 的实际关系、实际 SRD texture owner 在 ResetEx 前后的批量生命周期，以及最终 shader 对两个 UV 通道和多纹理槽的消费。
