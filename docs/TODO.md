@@ -28,13 +28,14 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 恢复调查时必须从保存了 CommonBackGroundObject 指针的具体画面类继续追踪其后续成员访问，或取得原版运行时矩阵/常量捕获。禁止以 `Aspect = Width / Height`、自动 fit-to-view、强制 2D 或任意 X scale 作为游戏逻辑修复。
 
-## Fennel 自动断行与垂直边界
+## Fennel 行元数据与 batch 截止
 
-完整 `surfboard` 的 1292 条 RFZ TEXT 已有 1270 条落在证据完整的静态 fitting 子集。剩余样本边界为：
+静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；完整 1292 条 RFZ TEXT 全部通过，9 条文本产生 16 次自动逻辑断行，19 条最终含垂直截止标记。
 
-```text
-自动断行/禁则：9
-垂直边界：13
-```
+尚未闭合：
 
-已证明 FontManager `+0xE0/+0xE4` 分别由固定 45/14 项 UTF-16 表初始化，`sub_F38DB0/sub_F38D20` 执行精确 membership 查询；但 `sub_7C1F90` 中断点回退、空格候选、两类集合与当前/前一 glyph 的组合、`-254` 标记和第二次纵向对齐 pass 尚未完整移植。恢复调查时以这 22 条真实样本逐条回归，不得用通用文本库的自动换行、Unicode Line Breaking Algorithm 或简单裁切替代。
+- TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
+- `sub_7C90A0` 返回的 record limit 如何限制 texture batch tree 建立/遍历，尤其 marker 位于记录零时的 `-1`；
+- `sub_7C7F90` 每个 batch node 中 record 指针、normal/effect glyph 计数和 atlas texture 的建立顺序。
+
+在这些消费者闭环前，不得简单按“所有 kind >= 0”把 marker 后的未定位记录提交给 GPU，也不得自行把 `-254` 解释为普通换行。

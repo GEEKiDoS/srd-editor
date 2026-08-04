@@ -10,9 +10,10 @@ use srd_editor::dds::{
 };
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::fennel::{
-    FennelFittingLayoutError, FennelLayoutGlyphMetrics, FennelPlainRecordError,
-    FennelStaticTextProperties, build_fennel_plain_record_stream, decode_fennel_game_text,
-    layout_fennel_static_fitting_lines, tokenize_fennel_plain_text,
+    FennelDefaultLayoutError, FennelFittingLayoutError, FennelLayoutGlyphMetrics,
+    FennelPlainRecordError, FennelStaticTextProperties, build_fennel_plain_record_stream,
+    decode_fennel_game_text, layout_fennel_static_default, layout_fennel_static_fitting_lines,
+    tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
@@ -1802,7 +1803,12 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut runtime_fonts = BTreeMap::new();
     let mut text_count = 0usize;
     let mut fitting_count = 0usize;
+    let mut default_layout_count = 0usize;
+    let mut wrapped_text_count = 0usize;
+    let mut automatic_wrap_count = 0usize;
+    let mut vertical_overflow_text_count = 0usize;
     let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
+    let mut default_layout_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut layout_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut layout_error_samples = BTreeMap::<&'static str, Vec<String>>::new();
     for path in files {
@@ -1865,6 +1871,29 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                     continue;
                 }
             };
+            let mut default_stream = stream.clone();
+            match layout_fennel_static_default(&mut default_stream, properties.layout, |token| {
+                let code = u16::try_from(token).ok()?;
+                runtime.glyph(code).map(FennelLayoutGlyphMetrics::from)
+            }) {
+                Ok(result) => {
+                    default_layout_count += 1;
+                    wrapped_text_count += usize::from(result.first_automatic_wrap.is_some());
+                    automatic_wrap_count += result.automatic_wrap_count;
+                    vertical_overflow_text_count += usize::from(result.vertical_overflow.is_some());
+                }
+                Err(error) => {
+                    let category = match error {
+                        FennelDefaultLayoutError::InvalidLineTable => "line-table",
+                        FennelDefaultLayoutError::UnsupportedRecordKind { .. } => "record-kind",
+                        FennelDefaultLayoutError::MissingGlyphMetrics { .. } => "glyph-metrics",
+                        FennelDefaultLayoutError::NonProgressingZeroHeightWrap { .. } => {
+                            "zero-height-wrap"
+                        }
+                    };
+                    *default_layout_error_counts.entry(category).or_default() += 1;
+                }
+            }
             match layout_fennel_static_fitting_lines(&mut stream, properties.layout, |token| {
                 let code = u16::try_from(token).ok()?;
                 runtime.glyph(code).map(FennelLayoutGlyphMetrics::from)
@@ -1898,7 +1927,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, fitting subset={fitting_count}, record errors={record_error_counts:?}, layout branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -1907,6 +1936,11 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
     assert!(text_count > 0);
     assert!(fitting_count > 0);
+    assert_eq!(default_layout_count, text_count);
+    assert!(wrapped_text_count > 0);
+    assert!(automatic_wrap_count >= wrapped_text_count);
+    assert!(vertical_overflow_text_count > 0);
+    assert!(default_layout_error_counts.is_empty());
     assert_eq!(
         text_count,
         fitting_count

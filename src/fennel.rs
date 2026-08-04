@@ -394,6 +394,75 @@ pub struct FennelFittingLayoutResult {
     pub line_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelAutomaticWrap {
+    pub explicit_line_index: usize,
+    pub record_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelVerticalOverflow {
+    pub explicit_line_index: usize,
+    pub positioned_line_count: usize,
+    pub record_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelDefaultLayoutResult {
+    pub effective_scale_x: f32,
+    pub effective_scale_y: f32,
+    pub total_height: f32,
+    pub positioned_line_count: usize,
+    pub automatic_wrap_count: usize,
+    pub first_automatic_wrap: Option<FennelAutomaticWrap>,
+    pub vertical_overflow: Option<FennelVerticalOverflow>,
+    /// Exact value returned by the tail of `sub_7C90A0`: glyph count when no
+    /// `-254` record exists, otherwise the last marker's record index, with a
+    /// marker at index zero represented as `-1`.
+    pub record_limit: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelDefaultLayoutError {
+    InvalidLineTable,
+    UnsupportedRecordKind {
+        record_index: usize,
+        kind: i32,
+    },
+    MissingGlyphMetrics {
+        record_index: usize,
+        glyph_token: u32,
+    },
+    NonProgressingZeroHeightWrap {
+        record_index: usize,
+    },
+}
+
+impl std::fmt::Display for FennelDefaultLayoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLineTable => formatter.write_str("invalid Fennel line-start table"),
+            Self::UnsupportedRecordKind { record_index, kind } => write!(
+                formatter,
+                "unsupported Fennel record kind {kind} at record {record_index}"
+            ),
+            Self::MissingGlyphMetrics {
+                record_index,
+                glyph_token,
+            } => write!(
+                formatter,
+                "no Fennel glyph metrics for token {glyph_token:#010x} at record {record_index}"
+            ),
+            Self::NonProgressingZeroHeightWrap { record_index } => write!(
+                formatter,
+                "Fennel wrap at record {record_index} neither advances the record pointer nor the vertical position"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FennelDefaultLayoutError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FennelFittingLayoutError {
     InvalidLineTable,
@@ -454,6 +523,338 @@ struct FennelMeasuredLine {
     y_bottom: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FennelPreparedStaticLayout {
+    effective_scale_x: f32,
+    effective_scale_y: f32,
+    scale_x_multiplier: f32,
+    initial_fallback_line_height: f32,
+}
+
+/// Reproduces the record-positioning and marker effects of the static
+/// mode-zero `sub_7C1F90` path, including its automatic wrap, two fixed
+/// FontManager membership tables, space candidate, and vertical-overflow
+/// behavior. The TextBoxObject's separate internal line-metadata vectors are
+/// not represented by this record-stream API yet.
+///
+/// Static SrTextCast initialization reaches this routine with TextBoxObject
+/// flags exactly `3` or `7`. Both enable automatic wrapping and the space
+/// candidate; flags `7` additionally run the proven first-explicit-line
+/// horizontal auto-fit pass. If a logical line exceeds the vertical box, the
+/// game changes that line's first record kind to `-254` and stops positioning.
+pub fn layout_fennel_static_default<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    mut glyph_metrics: F,
+) -> Result<FennelDefaultLayoutResult, FennelDefaultLayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    let (line_ranges, metrics, stream_end_index) =
+        prepare_fennel_line_ranges(stream, &mut glyph_metrics)?;
+    let prepared =
+        prepare_fennel_static_scales(stream, input, &line_ranges, &metrics, stream_end_index);
+    let horizontal_alignment = fennel_alignment_code_from_text_flags(input.text_flags) % 3;
+    let mut measured_lines = Vec::with_capacity(line_ranges.len());
+    let mut current_y = 0.0f32;
+    let mut previous_line_height = prepared.initial_fallback_line_height;
+    let mut automatic_wrap_count = 0usize;
+    let mut first_automatic_wrap = None;
+    let mut vertical_overflow = None;
+
+    'explicit_lines: for (explicit_line_index, &(explicit_start, explicit_end)) in
+        line_ranges.iter().enumerate()
+    {
+        let mut segment_start = explicit_start;
+        loop {
+            let mut scan = segment_start;
+            let mut advance = 0.0f32;
+            let mut visual_extent = 0.0f32;
+            let mut accepted_set_e4_overflow = false;
+            let mut space_candidate = None;
+            let mut automatic_break = None;
+
+            while scan < explicit_end {
+                let record = &stream.records[scan];
+                let metric = metrics[scan].expect("metrics were populated during validation");
+                let glyph_visual_end =
+                    fennel_visual_width(metric) * prepared.effective_scale_x + advance;
+                let advance_increment = fennel_advance(record, metric, prepared.effective_scale_x);
+                if glyph_visual_end <= input.box_width {
+                    if metric.code == 0x20 {
+                        // `sub_7C1F90` saves the pointer after the space, but
+                        // uses the visual extent from before it for alignment.
+                        space_candidate = Some((scan + 1, visual_extent));
+                    }
+                    visual_extent = glyph_visual_end;
+                    advance += advance_increment;
+                    scan += 1;
+                    continue;
+                }
+
+                if fennel_font_manager_set_e4_contains(metric.code) && !accepted_set_e4_overflow {
+                    visual_extent = glyph_visual_end;
+                    advance += advance_increment;
+                    accepted_set_e4_overflow = true;
+                    scan += 1;
+                    continue;
+                }
+
+                let mut break_index = scan;
+                let mut break_visual_extent = visual_extent;
+                if scan > segment_start {
+                    let previous_index = scan - 1;
+                    let previous_metric =
+                        metrics[previous_index].expect("previous metrics were populated");
+                    if fennel_font_manager_set_e0_contains(previous_metric.code) {
+                        break_index = previous_index;
+                        break_visual_extent -=
+                            fennel_visual_width(previous_metric) * prepared.effective_scale_x;
+                    }
+                }
+                if let Some((candidate_index, candidate_visual_extent)) =
+                    space_candidate.filter(|(candidate_index, _)| *candidate_index > segment_start)
+                {
+                    break_index = candidate_index;
+                    break_visual_extent = candidate_visual_extent;
+                }
+                automatic_break = Some((scan, break_index, break_visual_extent));
+                break;
+            }
+
+            let (segment_end, segment_visual_extent, is_automatic_wrap) = match automatic_break {
+                Some((overflow_record, break_index, break_visual_extent)) => {
+                    first_automatic_wrap.get_or_insert(FennelAutomaticWrap {
+                        explicit_line_index,
+                        record_index: overflow_record,
+                    });
+                    (break_index, break_visual_extent, true)
+                }
+                None => (explicit_end, visual_extent, false),
+            };
+
+            let mut line_height = 0.0f32;
+            for record_index in segment_start..segment_end {
+                let metric =
+                    metrics[record_index].expect("metrics were populated during validation");
+                let glyph_height = (metric.em_pixels_y as f32) * prepared.effective_scale_y;
+                if glyph_height > line_height {
+                    line_height = glyph_height;
+                }
+            }
+            if line_height == 0.0 {
+                line_height = previous_line_height;
+            }
+            previous_line_height = line_height;
+
+            if current_y.abs() + line_height > input.box_height {
+                vertical_overflow = Some(FennelVerticalOverflow {
+                    explicit_line_index,
+                    positioned_line_count: measured_lines.len(),
+                    record_index: segment_start,
+                });
+                break 'explicit_lines;
+            }
+            let x_offset = match horizontal_alignment {
+                0 => 0.0,
+                1 => fennel_cvttss2si_as_f32((input.box_width - segment_visual_extent) * 0.5),
+                2 => input.box_width - segment_visual_extent,
+                _ => unreachable!(),
+            };
+            let line_advance = if measured_lines.is_empty() {
+                line_height
+            } else {
+                line_height + input.line_spacing as f32
+            };
+            measured_lines.push(FennelMeasuredLine {
+                start: segment_start,
+                end: segment_end,
+                x_offset,
+                y_bottom: current_y + line_advance,
+            });
+            current_y += line_advance;
+
+            if !is_automatic_wrap {
+                break;
+            }
+            automatic_wrap_count += 1;
+            if segment_end == segment_start && line_advance == 0.0 {
+                return Err(FennelDefaultLayoutError::NonProgressingZeroHeightWrap {
+                    record_index: segment_start,
+                });
+            }
+            segment_start = segment_end;
+        }
+    }
+
+    let alignment_code = fennel_alignment_code_from_text_flags(input.text_flags);
+    let vertical_offset = if vertical_overflow.is_some() {
+        // On a center/bottom first pass overflow, the game jumps directly to
+        // its positioning pass without writing TextBoxObject+0x108. The
+        // resulting positioned prefix is therefore top-aligned.
+        0.0
+    } else {
+        match alignment_code / 3 {
+            0 => 0.0,
+            1 => fennel_cvttss2si_as_f32((input.box_height - current_y) * 0.5),
+            2 => input.box_height - current_y,
+            _ => unreachable!(),
+        }
+    };
+
+    for line in &measured_lines {
+        let mut advance = 0.0f32;
+        for record_index in line.start..line.end {
+            let record = &mut stream.records[record_index];
+            let metric = metrics[record_index].expect("metrics were populated during validation");
+            record.x += line.x_offset + advance;
+            record.y += line.y_bottom + vertical_offset;
+            record.scale_x *= prepared.scale_x_multiplier;
+            advance += fennel_advance(record, metric, prepared.effective_scale_x);
+        }
+    }
+    if let Some(overflow) = vertical_overflow {
+        stream.records[overflow.record_index].kind = FENNEL_RECORD_LINE_TABLE_OVERFLOW;
+    }
+
+    let mut record_limit = stream.glyph_count as i32;
+    for (record_index, record) in stream.records.iter().enumerate() {
+        if record.kind == FENNEL_RECORD_LINE_TABLE_OVERFLOW {
+            record_limit = if record_index == 0 {
+                -1
+            } else {
+                record_index as i32
+            };
+        }
+    }
+
+    Ok(FennelDefaultLayoutResult {
+        effective_scale_x: prepared.effective_scale_x,
+        effective_scale_y: prepared.effective_scale_y,
+        total_height: current_y,
+        positioned_line_count: measured_lines.len(),
+        automatic_wrap_count,
+        first_automatic_wrap,
+        vertical_overflow,
+        record_limit,
+    })
+}
+
+fn prepare_fennel_line_ranges<F>(
+    stream: &FennelPlainRecordStream,
+    glyph_metrics: &mut F,
+) -> Result<
+    (
+        Vec<(usize, usize)>,
+        Vec<Option<FennelLayoutGlyphMetrics>>,
+        usize,
+    ),
+    FennelDefaultLayoutError,
+>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    let line_count = stream
+        .line_start_indices
+        .len()
+        .checked_sub(1)
+        .ok_or(FennelDefaultLayoutError::InvalidLineTable)?;
+    if line_count == 0 {
+        return Err(FennelDefaultLayoutError::InvalidLineTable);
+    }
+    let Some(&stream_end_index) = stream.line_start_indices.last() else {
+        return Err(FennelDefaultLayoutError::InvalidLineTable);
+    };
+    if stream_end_index >= stream.records.len()
+        || stream.records[stream_end_index].kind != FENNEL_RECORD_STREAM_END
+    {
+        return Err(FennelDefaultLayoutError::InvalidLineTable);
+    }
+    let mut metrics = vec![None; stream.records.len()];
+    let mut line_ranges = Vec::with_capacity(line_count);
+    for line_index in 0..line_count {
+        let start = stream.line_start_indices[line_index];
+        let next_start = stream.line_start_indices[line_index + 1];
+        let Some(end) = next_start.checked_sub(1) else {
+            return Err(FennelDefaultLayoutError::InvalidLineTable);
+        };
+        if start > end
+            || end >= stream.records.len()
+            || stream.records[end].kind != FENNEL_RECORD_LINE_END
+        {
+            return Err(FennelDefaultLayoutError::InvalidLineTable);
+        }
+        for record_index in start..end {
+            let record = &stream.records[record_index];
+            if record.kind != 0 && record.kind != FENNEL_RECORD_ZERO_WIDTH_GLYPH {
+                return Err(FennelDefaultLayoutError::UnsupportedRecordKind {
+                    record_index,
+                    kind: record.kind,
+                });
+            }
+            metrics[record_index] = Some(glyph_metrics(record.glyph_token).ok_or(
+                FennelDefaultLayoutError::MissingGlyphMetrics {
+                    record_index,
+                    glyph_token: record.glyph_token,
+                },
+            )?);
+        }
+        line_ranges.push((start, end));
+    }
+    Ok((line_ranges, metrics, stream_end_index))
+}
+
+fn prepare_fennel_static_scales(
+    stream: &FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    line_ranges: &[(usize, usize)],
+    metrics: &[Option<FennelLayoutGlyphMetrics>],
+    stream_end_index: usize,
+) -> FennelPreparedStaticLayout {
+    let static_layout_flags = if input.text_flags & 1 == 0 {
+        7u32
+    } else {
+        3u32
+    };
+    let mut effective_scale_x = input.scale_x;
+    let effective_scale_y = input.scale_y;
+    let mut scale_x_multiplier = 1.0f32;
+    if static_layout_flags & 4 != 0
+        && !fennel_float_nearly_equal(input.scale_x, 0.0)
+        && !fennel_float_nearly_equal(input.scale_y, 0.0)
+    {
+        let (first_start, first_end) = line_ranges[0];
+        let mut advance = 0.0f32;
+        let mut visual_extent = 0.0f32;
+        for record_index in first_start..first_end {
+            let record = &stream.records[record_index];
+            let metric = metrics[record_index].expect("metrics were populated during validation");
+            visual_extent = fennel_visual_width(metric) * input.scale_x + advance;
+            advance += fennel_advance(record, metric, input.scale_x);
+        }
+        if visual_extent > input.box_width {
+            effective_scale_x =
+                ((input.scale_x * input.box_width) / visual_extent) * FENNEL_AUTO_FIT_BIAS;
+            scale_x_multiplier = effective_scale_x / input.scale_x;
+        }
+    }
+    let initial_fallback_line_height = stream
+        .records
+        .iter()
+        .enumerate()
+        .take(stream_end_index)
+        .find(|(_, record)| record.kind >= 0)
+        .and_then(|(index, _)| metrics[index])
+        .map(|metric| (metric.em_pixels_y as f32) * effective_scale_y)
+        .unwrap_or(0.0);
+    FennelPreparedStaticLayout {
+        effective_scale_x,
+        effective_scale_y,
+        scale_x_multiplier,
+        initial_fallback_line_height,
+    }
+}
+
 /// Reproduces the default `sub_7C1F90` path while every explicit line fits
 /// horizontally and vertically.
 ///
@@ -464,178 +865,54 @@ struct FennelMeasuredLine {
 pub fn layout_fennel_static_fitting_lines<F>(
     stream: &mut FennelPlainRecordStream,
     input: FennelStaticLayoutInput,
-    mut glyph_metrics: F,
+    glyph_metrics: F,
 ) -> Result<FennelFittingLayoutResult, FennelFittingLayoutError>
 where
     F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
 {
-    let line_count = stream
-        .line_start_indices
-        .len()
-        .checked_sub(1)
-        .ok_or(FennelFittingLayoutError::InvalidLineTable)?;
-    if line_count == 0 {
-        return Err(FennelFittingLayoutError::InvalidLineTable);
-    }
-    let Some(&stream_end_index) = stream.line_start_indices.last() else {
-        return Err(FennelFittingLayoutError::InvalidLineTable);
-    };
-    if stream_end_index >= stream.records.len()
-        || stream.records[stream_end_index].kind != FENNEL_RECORD_STREAM_END
-    {
-        return Err(FennelFittingLayoutError::InvalidLineTable);
-    }
-
-    let mut metrics = vec![None; stream.records.len()];
-    let mut line_ranges = Vec::with_capacity(line_count);
-    for line_index in 0..line_count {
-        let start = stream.line_start_indices[line_index];
-        let next_start = stream.line_start_indices[line_index + 1];
-        let Some(end) = next_start.checked_sub(1) else {
-            return Err(FennelFittingLayoutError::InvalidLineTable);
-        };
-        if start > end
-            || end >= stream.records.len()
-            || stream.records[end].kind != FENNEL_RECORD_LINE_END
-        {
-            return Err(FennelFittingLayoutError::InvalidLineTable);
-        }
-        for record_index in start..end {
-            let record = &stream.records[record_index];
-            if record.kind != 0 && record.kind != FENNEL_RECORD_ZERO_WIDTH_GLYPH {
-                return Err(FennelFittingLayoutError::UnsupportedRecordKind {
-                    record_index,
-                    kind: record.kind,
-                });
-            }
-            metrics[record_index] = Some(glyph_metrics(record.glyph_token).ok_or(
-                FennelFittingLayoutError::MissingGlyphMetrics {
-                    record_index,
-                    glyph_token: record.glyph_token,
-                },
-            )?);
-        }
-        line_ranges.push((start, end));
-    }
-
-    // TextBoxObject constructs +0x2E0 as 3. `sub_AC6F50` clears the mode
-    // groups, and static state mode zero adds bit 2 only when TEXT bit 0 is
-    // clear. Thus static SRD input reaches this routine with exactly 3 or 7.
-    let static_layout_flags = if input.text_flags & 1 == 0 {
-        7u32
-    } else {
-        3u32
-    };
-    let mut effective_scale_x = input.scale_x;
-    let effective_scale_y = input.scale_y;
-    let mut scale_x_multiplier = 1.0f32;
-
-    if static_layout_flags & 4 != 0
-        && !fennel_float_nearly_equal(input.scale_x, 0.0)
-        && !fennel_float_nearly_equal(input.scale_y, 0.0)
-    {
-        let (first_start, first_end) = line_ranges[0];
-        let mut advance = 0.0f32;
-        let mut visual_extent = 0.0f32;
-        for record_index in first_start..first_end {
-            let record = &stream.records[record_index];
-            let metric = metrics[record_index].expect("metrics were populated above");
-            visual_extent = fennel_visual_width(metric) * input.scale_x + advance;
-            advance += fennel_advance(record, metric, input.scale_x);
-        }
-        if visual_extent > input.box_width {
-            effective_scale_x =
-                ((input.scale_x * input.box_width) / visual_extent) * FENNEL_AUTO_FIT_BIAS;
-            scale_x_multiplier = effective_scale_x / input.scale_x;
-        }
-    }
-
-    let fallback_line_height = stream
-        .records
-        .iter()
-        .enumerate()
-        .take(stream_end_index)
-        .find(|(_, record)| record.kind >= 0)
-        .and_then(|(index, _)| metrics[index])
-        .map(|metric| (metric.em_pixels_y as f32) * effective_scale_y)
-        .unwrap_or(0.0);
-
-    let horizontal_alignment = fennel_alignment_code_from_text_flags(input.text_flags) % 3;
-    let mut measured_lines = Vec::with_capacity(line_count);
-    let mut current_y = 0.0f32;
-    for (line_index, &(start, end)) in line_ranges.iter().enumerate() {
-        let mut advance = 0.0f32;
-        let mut visual_extent = 0.0f32;
-        let mut line_height = 0.0f32;
-        for record_index in start..end {
-            let record = &stream.records[record_index];
-            let metric = metrics[record_index].expect("metrics were populated above");
-            let glyph_visual_end = fennel_visual_width(metric) * effective_scale_x + advance;
-            if glyph_visual_end > input.box_width {
-                return Err(FennelFittingLayoutError::HorizontalWrapRequired {
-                    line_index,
-                    record_index,
-                });
-            }
-            visual_extent = glyph_visual_end;
-            advance += fennel_advance(record, metric, effective_scale_x);
-            let glyph_height = (metric.em_pixels_y as f32) * effective_scale_y;
-            if glyph_height > line_height {
-                line_height = glyph_height;
-            }
-        }
-        if line_height == 0.0 {
-            line_height = fallback_line_height;
-        }
-        if current_y.abs() + line_height > input.box_height {
-            return Err(FennelFittingLayoutError::VerticalOverflow { line_index });
-        }
-        let x_offset = match horizontal_alignment {
-            0 => 0.0,
-            1 => fennel_cvttss2si_as_f32((input.box_width - visual_extent) * 0.5),
-            2 => input.box_width - visual_extent,
-            _ => unreachable!(),
-        };
-        let line_advance = if line_index == 0 {
-            line_height
-        } else {
-            line_height + input.line_spacing as f32
-        };
-        measured_lines.push(FennelMeasuredLine {
-            start,
-            end,
-            x_offset,
-            y_bottom: current_y + line_advance,
+    let mut positioned = stream.clone();
+    let result = layout_fennel_static_default(&mut positioned, input, glyph_metrics)
+        .map_err(fennel_default_error_to_fitting)?;
+    if let Some(wrap) = result.first_automatic_wrap {
+        return Err(FennelFittingLayoutError::HorizontalWrapRequired {
+            line_index: wrap.explicit_line_index,
+            record_index: wrap.record_index,
         });
-        current_y += line_advance;
     }
+    if let Some(overflow) = result.vertical_overflow {
+        return Err(FennelFittingLayoutError::VerticalOverflow {
+            line_index: overflow.explicit_line_index,
+        });
+    }
+    *stream = positioned;
+    Ok(FennelFittingLayoutResult {
+        effective_scale_x: result.effective_scale_x,
+        effective_scale_y: result.effective_scale_y,
+        total_height: result.total_height,
+        line_count: result.positioned_line_count,
+    })
+}
 
-    let alignment_code = fennel_alignment_code_from_text_flags(input.text_flags);
-    let vertical_offset = match alignment_code / 3 {
-        0 => 0.0,
-        1 => fennel_cvttss2si_as_f32((input.box_height - current_y) * 0.5),
-        2 => input.box_height - current_y,
-        _ => unreachable!(),
-    };
-
-    for line in &measured_lines {
-        let mut advance = 0.0f32;
-        for record_index in line.start..line.end {
-            let record = &mut stream.records[record_index];
-            let metric = metrics[record_index].expect("metrics were populated above");
-            record.x += line.x_offset + advance;
-            record.y += line.y_bottom + vertical_offset;
-            record.scale_x *= scale_x_multiplier;
-            advance += fennel_advance(record, metric, effective_scale_x);
+fn fennel_default_error_to_fitting(error: FennelDefaultLayoutError) -> FennelFittingLayoutError {
+    match error {
+        FennelDefaultLayoutError::InvalidLineTable => FennelFittingLayoutError::InvalidLineTable,
+        FennelDefaultLayoutError::UnsupportedRecordKind { record_index, kind } => {
+            FennelFittingLayoutError::UnsupportedRecordKind { record_index, kind }
+        }
+        FennelDefaultLayoutError::MissingGlyphMetrics {
+            record_index,
+            glyph_token,
+        } => FennelFittingLayoutError::MissingGlyphMetrics {
+            record_index,
+            glyph_token,
+        },
+        FennelDefaultLayoutError::NonProgressingZeroHeightWrap { record_index } => {
+            FennelFittingLayoutError::HorizontalWrapRequired {
+                line_index: 0,
+                record_index,
+            }
         }
     }
-
-    Ok(FennelFittingLayoutResult {
-        effective_scale_x,
-        effective_scale_y,
-        total_height: current_y,
-        line_count,
-    })
 }
 
 const FENNEL_AUTO_FIT_BIAS: f32 = f32::from_bits(0x3F7F_BE77);
@@ -1282,6 +1559,188 @@ mod tests {
             }
         );
         assert_eq!(stream, before);
+    }
+
+    #[test]
+    fn default_layout_wraps_at_the_overflowing_record() {
+        let mut stream = one_line_stream(&[1, 2]);
+        let result = layout_fennel_static_default(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 1,
+                box_width: 10.0,
+                box_height: 40.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            metrics,
+        )
+        .unwrap();
+
+        assert_eq!(result.positioned_line_count, 2);
+        assert_eq!(result.automatic_wrap_count, 1);
+        assert_eq!(
+            result.first_automatic_wrap,
+            Some(FennelAutomaticWrap {
+                explicit_line_index: 0,
+                record_index: 1,
+            })
+        );
+        assert_eq!(result.vertical_overflow, None);
+        assert_eq!(result.record_limit, 2);
+        assert_eq!((stream.records[0].x, stream.records[0].y), (0.0, 12.0));
+        assert_eq!((stream.records[1].x, stream.records[1].y), (0.0, 24.0));
+    }
+
+    #[test]
+    fn default_layout_uses_the_saved_space_candidate_before_alignment() {
+        let mut stream = one_line_stream(&[1, 3, 2]);
+        let result = layout_fennel_static_default(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 5,
+                box_width: 8.0,
+                box_height: 40.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            |token| match token {
+                1 => Some(FennelLayoutGlyphMetrics {
+                    code: b'A' as u16,
+                    bearing_x: 0,
+                    width: 4,
+                    advance_x: 5,
+                    em_pixels_y: 10,
+                }),
+                2 => Some(FennelLayoutGlyphMetrics {
+                    code: b'B' as u16,
+                    bearing_x: 0,
+                    width: 4,
+                    advance_x: 5,
+                    em_pixels_y: 10,
+                }),
+                3 => Some(FennelLayoutGlyphMetrics {
+                    code: 0x20,
+                    bearing_x: 0,
+                    width: 2,
+                    advance_x: 3,
+                    em_pixels_y: 10,
+                }),
+                _ => None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.automatic_wrap_count, 1);
+        // The saved candidate is after the space, but its visual extent is
+        // the pre-space value 4. Centering therefore truncates (8-4)/2 to 2.
+        assert_eq!(stream.records[0].x, 2.0);
+        assert_eq!(stream.records[1].x, 7.0);
+        assert_eq!(stream.records[2].x, 2.0);
+    }
+
+    #[test]
+    fn default_layout_applies_both_fixed_set_pointer_rules() {
+        let metric = |token| match token {
+            1 => Some(FennelLayoutGlyphMetrics {
+                code: b'A' as u16,
+                bearing_x: 0,
+                width: 4,
+                advance_x: 5,
+                em_pixels_y: 10,
+            }),
+            2 => Some(FennelLayoutGlyphMetrics {
+                code: b'B' as u16,
+                bearing_x: 0,
+                width: 4,
+                advance_x: 5,
+                em_pixels_y: 10,
+            }),
+            3 => Some(FennelLayoutGlyphMetrics {
+                code: 0x3008,
+                bearing_x: 0,
+                width: 12,
+                advance_x: 12,
+                em_pixels_y: 10,
+            }),
+            4 => Some(FennelLayoutGlyphMetrics {
+                code: 0x3002,
+                bearing_x: 0,
+                width: 4,
+                advance_x: 5,
+                em_pixels_y: 10,
+            }),
+            _ => None,
+        };
+        let input = FennelStaticLayoutInput {
+            text_flags: 1,
+            box_width: 10.0,
+            box_height: 50.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            line_spacing: 0,
+        };
+
+        let mut set_e4 = one_line_stream(&[3, 1]);
+        let result = layout_fennel_static_default(&mut set_e4, input, metric).unwrap();
+        assert_eq!(result.automatic_wrap_count, 1);
+        // The first over-width +0xE4 member is accepted once, so the break is
+        // made before the following glyph rather than before record zero.
+        assert_eq!(result.first_automatic_wrap.unwrap().record_index, 1);
+        assert_eq!(set_e4.records[0].y, 10.0);
+        assert_eq!(set_e4.records[1].y, 20.0);
+
+        let mut set_e0 = one_line_stream(&[1, 4, 2]);
+        let result = layout_fennel_static_default(&mut set_e0, input, metric).unwrap();
+        assert_eq!(result.automatic_wrap_count, 1);
+        // On overflow at B, the previous +0xE0 member is moved to the next
+        // logical segment, so only A remains on the first line.
+        assert_eq!(set_e0.records[0].y, 10.0);
+        assert_eq!((set_e0.records[1].x, set_e0.records[1].y), (0.0, 20.0));
+        assert_eq!((set_e0.records[2].x, set_e0.records[2].y), (5.0, 20.0));
+    }
+
+    #[test]
+    fn default_layout_marks_the_first_record_of_a_vertical_overflow_segment() {
+        let mut stream = one_line_stream(&[1]);
+        let result = layout_fennel_static_default(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 1,
+                box_width: 10.0,
+                box_height: 6.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            |_| {
+                Some(FennelLayoutGlyphMetrics {
+                    code: b'A' as u16,
+                    bearing_x: 0,
+                    width: 20,
+                    advance_x: 20,
+                    em_pixels_y: 5,
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.total_height, 5.0);
+        assert_eq!(result.positioned_line_count, 1);
+        assert_eq!(result.automatic_wrap_count, 1);
+        assert_eq!(
+            result.vertical_overflow,
+            Some(FennelVerticalOverflow {
+                explicit_line_index: 0,
+                positioned_line_count: 1,
+                record_index: 0,
+            })
+        );
+        assert_eq!(stream.records[0].kind, FENNEL_RECORD_LINE_TABLE_OVERFLOW);
+        assert_eq!(result.record_limit, -1);
+        assert_eq!((stream.records[0].x, stream.records[0].y), (0.0, 0.0));
     }
 
     #[test]
