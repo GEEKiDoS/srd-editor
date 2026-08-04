@@ -6,7 +6,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 
 - 使用 Rust 实现 SRD 二进制解析与完整重序列化。
 - 使用 Dear ImGui 构建桌面编辑界面。
-- 使用 Direct3D 9 复现游戏侧的 SRD 渲染路径。
+- 使用 Direct3D 9Ex 承载编辑器和复现游戏侧的 SRD 渲染路径。
 - 按构建宿主机的原生指令集发布，不把编辑器绑定到原游戏的 32 位 x86 架构。
 - 不依赖或调用 D3DX；纹理解码使用独立库并将结果上传至 D3D9，着色器采用不依赖 D3DX 的、经二进制行为验证的方案。
 - 支持纹理图集、裁剪、节点层级、动画、文本与常见 CAST 类型。
@@ -41,8 +41,8 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 绘制包到 64 位 ShapeEnv shader cache key 的全部位来源、CREF/CRE1 到 D3D9 texture stage 0/1 的映射、vertex-format/blend/multi-texture 模块索引，以及完整 `surfboard` 语料 19,484 个初始 image node 的实际 key 回归。
 - ShaderSelector 注册顺序、SRD/ShapeEnv 对 Simple 槽位 9 的实际选择、Simple 的 18 字节键与 71 项表、Default 的 46 字节键机制、嵌入式 Cg source 的精确 dword 解码/include 闭包、format 14 的双 UV/双顶点色公式，以及 stage 0/1 到 pixel/vertex Shader resource 的映射。
 - 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
-- 可运行的原生 D3D9 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 device/present 冒烟测试。
-- Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 device lost/reset 时 DEFAULT-pool 资源的失效与重建。
+- 可运行的原生 D3D9Ex 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 的 `Direct3DCreate9Ex`/`IDirect3DDevice9Ex` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 `PresentEx`/`ResetEx` 冒烟测试。
+- Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、层、NODE、变换、纹理和首个动画的实际关键帧会进入这些面板。
 
 尚未实现：SRD 写回、公共 packed color/alpha 通道、投影矩阵的上游 camera/backend 输入、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request、SRD GPU scene/texture draw submission、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及 bytecode 表的 runtime 选择、常量/sampler 与设备接入。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器将使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
@@ -53,10 +53,10 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 cargo run -- "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 ```
 
-执行不可见窗口的 D3D9/ImGui 两帧及强制 Reset 冒烟测试：
+执行不可见窗口的 D3D9Ex/ImGui 两帧及强制 `ResetEx` 冒烟测试：
 
 ```powershell
-cargo run -- --d3d9-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
+cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 ```
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

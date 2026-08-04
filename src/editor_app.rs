@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use imgui::{ConfigFlags, Context};
+use imgui::{ConfigFlags, Context, FontConfig, FontSource};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -11,7 +11,7 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::d3d9_backend::{D3d9Device, D3d9DeviceStatus, D3d9FrameStatus};
+use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
 use crate::imgui_dx9::ImguiDx9Renderer;
 
@@ -19,7 +19,9 @@ const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let smoke_test = arguments.iter().any(|argument| argument == "--d3d9-smoke");
+    let smoke_test = arguments
+        .iter()
+        .any(|argument| argument == "--d3d9ex-smoke" || argument == "--d3d9-smoke");
     let document_path = arguments
         .iter()
         .find(|argument| !argument.starts_with("--"))
@@ -43,11 +45,12 @@ struct EditorApplication {
 
 struct EditorWindow {
     window: Window,
-    d3d9: D3d9Device,
+    d3d9: D3d9ExDevice,
     imgui: Context,
     platform: WinitPlatform,
     imgui_renderer: ImguiDx9Renderer,
     workspace: EditorWorkspace,
+    dpi_factor: f64,
     last_frame: Instant,
 }
 
@@ -65,7 +68,7 @@ impl EditorApplication {
 impl EditorWindow {
     fn new(
         window: Window,
-        d3d9: D3d9Device,
+        d3d9: D3d9ExDevice,
         smoke_test: bool,
         document_path: Option<PathBuf>,
     ) -> Result<Self, String> {
@@ -78,6 +81,8 @@ impl EditorWindow {
 
         let mut platform = WinitPlatform::new(&mut imgui);
         platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
+        let dpi_factor = platform.hidpi_factor();
+        configure_imgui_fonts(&mut imgui, dpi_factor);
         let imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
 
@@ -88,14 +93,27 @@ impl EditorWindow {
             platform,
             imgui_renderer,
             workspace: EditorWorkspace::new(build_default_layout, document_path),
+            dpi_factor,
             last_frame: Instant::now(),
         })
     }
 
-    fn render_frame(&mut self) -> Result<D3d9FrameStatus, String> {
+    fn handle_scale_factor_change(&mut self) {
+        let dpi_factor = self.platform.hidpi_factor();
+        if (dpi_factor - self.dpi_factor).abs() <= f64::EPSILON {
+            return;
+        }
+        self.imgui_renderer
+            .invalidate_device_objects(&mut self.imgui);
+        configure_imgui_fonts(&mut self.imgui, dpi_factor);
+        self.dpi_factor = dpi_factor;
+        self.d3d9.resize(self.window.inner_size());
+    }
+
+    fn render_frame(&mut self) -> Result<D3d9ExFrameStatus, String> {
         match self.d3d9.status().map_err(|error| error.to_string())? {
-            D3d9DeviceStatus::Ready => {}
-            D3d9DeviceStatus::NeedsReset => {
+            D3d9ExDeviceStatus::Ready => {}
+            D3d9ExDeviceStatus::NeedsReset => {
                 self.imgui_renderer
                     .invalidate_device_objects(&mut self.imgui);
                 self.d3d9.reset().map_err(|error| error.to_string())?;
@@ -103,8 +121,8 @@ impl EditorWindow {
                     .create_device_objects(&mut self.imgui)
                     .map_err(|error| error.to_string())?;
             }
-            D3d9DeviceStatus::DeviceLost => return Ok(D3d9FrameStatus::DeviceLost),
-            D3d9DeviceStatus::Minimized => return Ok(D3d9FrameStatus::Minimized),
+            D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
+            D3d9ExDeviceStatus::Minimized => return Ok(D3d9ExFrameStatus::Minimized),
         }
 
         let now = Instant::now();
@@ -140,6 +158,20 @@ fn editor_ini_path() -> Option<PathBuf> {
     Some(directory.join("imgui.ini"))
 }
 
+fn configure_imgui_fonts(imgui: &mut Context, dpi_factor: f64) {
+    let dpi_factor = dpi_factor.max(0.5) as f32;
+    let fonts = imgui.fonts();
+    fonts.clear();
+    fonts.add_font(&[FontSource::DefaultFontData {
+        config: Some(FontConfig {
+            size_pixels: 13.0 * dpi_factor,
+            pixel_snap_h: true,
+            ..FontConfig::default()
+        }),
+    }]);
+    imgui.io_mut().font_global_scale = 1.0 / dpi_factor;
+}
+
 impl ApplicationHandler for EditorApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() || self.fatal_error.is_some() {
@@ -154,7 +186,7 @@ impl ApplicationHandler for EditorApplication {
             .create_window(attributes)
             .map_err(|error| error.to_string())
             .and_then(|window| {
-                D3d9Device::new(&window)
+                D3d9ExDevice::new(&window)
                     .map_err(|error| error.to_string())
                     .and_then(|d3d9| {
                         EditorWindow::new(window, d3d9, self.smoke_test, self.document_path.clone())
@@ -168,15 +200,15 @@ impl ApplicationHandler for EditorApplication {
                     window.d3d9.resize(current_size);
                     let reset_frame = window.render_frame();
                     match first_frame.and(reset_frame) {
-                        Ok(D3d9FrameStatus::Presented) => {}
+                        Ok(D3d9ExFrameStatus::Presented) => {}
                         Ok(status) => {
                             self.fatal_error = Some(format!(
-                                "D3D9/ImGui smoke frame did not present: {status:?}"
+                                "D3D9Ex/ImGui smoke frame did not present: {status:?}"
                             ));
                         }
                         Err(error) => {
                             self.fatal_error =
-                                Some(format!("D3D9/ImGui smoke frame failed: {error}"));
+                                Some(format!("D3D9Ex/ImGui smoke frame failed: {error}"));
                         }
                     }
                     self.window = Some(window);
@@ -223,18 +255,22 @@ impl ApplicationHandler for EditorApplication {
                 editor.d3d9.resize(size);
                 editor.window.request_redraw();
             }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                editor.handle_scale_factor_change();
+                editor.window.request_redraw();
+            }
             WindowEvent::RedrawRequested => {
                 editor.window.pre_present_notify();
                 match editor.render_frame() {
-                    Ok(D3d9FrameStatus::Presented) => {
+                    Ok(D3d9ExFrameStatus::Presented) => {
                         if self.smoke_test {
                             event_loop.exit();
                         }
                     }
-                    Ok(D3d9FrameStatus::DeviceLost) => editor.window.request_redraw(),
-                    Ok(D3d9FrameStatus::Minimized) => {}
+                    Ok(D3d9ExFrameStatus::DeviceLost) => editor.window.request_redraw(),
+                    Ok(D3d9ExFrameStatus::Minimized) => {}
                     Err(error) => {
-                        let message = format!("D3D9/ImGui frame failed: {error}");
+                        let message = format!("D3D9Ex/ImGui frame failed: {error}");
                         eprintln!("{message}");
                         self.fatal_error = Some(message);
                         event_loop.exit();

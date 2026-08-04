@@ -7,7 +7,8 @@ use windows::Win32::Graphics::Direct3D9::{
     D3D_SDK_VERSION, D3DADAPTER_DEFAULT, D3DCLEAR_STENCIL, D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER,
     D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING, D3DDEVTYPE_HAL,
     D3DFMT_D24S8, D3DFMT_UNKNOWN, D3DMULTISAMPLE_NONE, D3DPRESENT_INTERVAL_ONE,
-    D3DPRESENT_PARAMETERS, D3DSWAPEFFECT_DISCARD, Direct3DCreate9, IDirect3D9, IDirect3DDevice9,
+    D3DPRESENT_PARAMETERS, D3DSWAPEFFECT_DISCARD, Direct3DCreate9Ex, IDirect3D9Ex,
+    IDirect3DDevice9, IDirect3DDevice9Ex,
 };
 use windows::core::{BOOL, Error, HRESULT, Result};
 use winit::dpi::PhysicalSize;
@@ -15,47 +16,46 @@ use winit::window::Window;
 
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
 const D3DERR_DEVICELOST: HRESULT = HRESULT(0x8876_0868_u32 as i32);
-const D3DERR_DEVICENOTRESET: HRESULT = HRESULT(0x8876_0869_u32 as i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum D3d9FrameStatus {
+pub enum D3d9ExFrameStatus {
     Presented,
     DeviceLost,
     Minimized,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum D3d9DeviceStatus {
+pub enum D3d9ExDeviceStatus {
     Ready,
     NeedsReset,
     DeviceLost,
     Minimized,
 }
 
-/// Owns the native Direct3D 9 interface, device and reset parameters.
+/// Owns the native Direct3D 9Ex interface, device and reset parameters.
 ///
 /// The wrapper intentionally uses only `d3d9.dll`; it does not load D3DX or
 /// any NVIDIA Cg runtime. COM interface widths are supplied by `windows-rs`,
 /// so the same source builds for every Windows host architecture supported by
 /// the Rust toolchain.
-pub struct D3d9Device {
-    _direct3d: IDirect3D9,
-    device: IDirect3DDevice9,
+pub struct D3d9ExDevice {
+    _direct3d: IDirect3D9Ex,
+    device: IDirect3DDevice9Ex,
     present: D3DPRESENT_PARAMETERS,
+    hwnd: HWND,
     size: PhysicalSize<u32>,
     reset_pending: bool,
-    device_lost: bool,
 }
 
-impl D3d9Device {
+impl D3d9ExDevice {
     pub fn new(window: &Window) -> Result<Self> {
         let hwnd = hwnd_from_window(window)?;
         let size = window.inner_size();
         let mut present = make_present_parameters(hwnd, size);
-        let direct3d = unsafe { Direct3DCreate9(D3D_SDK_VERSION) }.ok_or_else(|| {
+        let direct3d = unsafe { Direct3DCreate9Ex(D3D_SDK_VERSION) }.map_err(|error| {
             Error::new(
-                E_FAIL,
-                "Direct3DCreate9 returned a null IDirect3D9 interface",
+                error.code(),
+                format!("Direct3DCreate9Ex failed to create IDirect3D9Ex: {error}"),
             )
         })?;
 
@@ -76,7 +76,7 @@ impl D3d9Device {
                 Error::new(
                     software_error.code(),
                     format!(
-                        "IDirect3D9::CreateDevice failed with hardware vertex processing ({hardware_error}) and software vertex processing ({software_error})"
+                        "IDirect3D9Ex::CreateDeviceEx failed with hardware vertex processing ({hardware_error}) and software vertex processing ({software_error})"
                     ),
                 )
             })?,
@@ -86,9 +86,9 @@ impl D3d9Device {
             _direct3d: direct3d,
             device,
             present,
+            hwnd,
             size,
             reset_pending: false,
-            device_lost: false,
         })
     }
 
@@ -105,46 +105,36 @@ impl D3d9Device {
         }
     }
 
-    pub fn render_clear_frame(&mut self, clear_argb: u32) -> Result<D3d9FrameStatus> {
+    pub fn render_clear_frame(&mut self, clear_argb: u32) -> Result<D3d9ExFrameStatus> {
         match self.status()? {
-            D3d9DeviceStatus::Ready => {}
-            D3d9DeviceStatus::NeedsReset => self.reset()?,
-            D3d9DeviceStatus::DeviceLost => return Ok(D3d9FrameStatus::DeviceLost),
-            D3d9DeviceStatus::Minimized => return Ok(D3d9FrameStatus::Minimized),
+            D3d9ExDeviceStatus::Ready => {}
+            D3d9ExDeviceStatus::NeedsReset => self.reset()?,
+            D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
+            D3d9ExDeviceStatus::Minimized => return Ok(D3d9ExFrameStatus::Minimized),
         }
 
         self.clear_and_begin_scene(clear_argb)?;
         self.end_scene_and_present()
     }
 
-    pub fn status(&mut self) -> Result<D3d9DeviceStatus> {
+    pub fn status(&mut self) -> Result<D3d9ExDeviceStatus> {
         if self.size.width == 0 || self.size.height == 0 {
-            return Ok(D3d9DeviceStatus::Minimized);
+            return Ok(D3d9ExDeviceStatus::Minimized);
         }
 
-        if self.device_lost {
-            match unsafe { self.device.TestCooperativeLevel() } {
-                Ok(()) => self.device_lost = false,
-                Err(error) if error.code() == D3DERR_DEVICELOST => {
-                    return Ok(D3d9DeviceStatus::DeviceLost);
-                }
-                Err(error) if error.code() == D3DERR_DEVICENOTRESET => {
-                    self.reset_pending = true;
-                }
-                Err(error) => return Err(error),
-            }
-        }
         if self.reset_pending {
-            Ok(D3d9DeviceStatus::NeedsReset)
-        } else {
-            Ok(D3d9DeviceStatus::Ready)
+            return Ok(D3d9ExDeviceStatus::NeedsReset);
+        }
+        match unsafe { self.device.CheckDeviceState(self.hwnd) } {
+            Ok(()) => Ok(D3d9ExDeviceStatus::Ready),
+            Err(error) if error.code() == D3DERR_DEVICELOST => Ok(D3d9ExDeviceStatus::DeviceLost),
+            Err(error) => Err(error),
         }
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        unsafe { self.device.Reset(&mut self.present)? };
+        unsafe { self.device.ResetEx(&mut self.present, ptr::null_mut())? };
         self.reset_pending = false;
-        self.device_lost = false;
         Ok(())
     }
 
@@ -162,18 +152,15 @@ impl D3d9Device {
         }
     }
 
-    pub fn end_scene_and_present(&mut self) -> Result<D3d9FrameStatus> {
+    pub fn end_scene_and_present(&mut self) -> Result<D3d9ExFrameStatus> {
         unsafe { self.device.EndScene()? };
 
         match unsafe {
             self.device
-                .Present(ptr::null(), ptr::null(), HWND::default(), ptr::null())
+                .PresentEx(ptr::null(), ptr::null(), HWND::default(), ptr::null(), 0)
         } {
-            Ok(()) => Ok(D3d9FrameStatus::Presented),
-            Err(error) if error.code() == D3DERR_DEVICELOST => {
-                self.device_lost = true;
-                Ok(D3d9FrameStatus::DeviceLost)
-            }
+            Ok(()) => Ok(D3d9ExFrameStatus::Presented),
+            Err(error) if error.code() == D3DERR_DEVICELOST => Ok(D3d9ExFrameStatus::DeviceLost),
             Err(error) => Err(error),
         }
     }
@@ -212,21 +199,22 @@ fn make_present_parameters(hwnd: HWND, size: PhysicalSize<u32>) -> D3DPRESENT_PA
 }
 
 fn create_device(
-    direct3d: &IDirect3D9,
+    direct3d: &IDirect3D9Ex,
     hwnd: HWND,
     present: &mut D3DPRESENT_PARAMETERS,
     behavior_flags: u32,
-) -> Result<IDirect3DDevice9> {
+) -> Result<IDirect3DDevice9Ex> {
     let mut device = None;
     unsafe {
-        direct3d.CreateDevice(
+        direct3d.CreateDeviceEx(
             D3DADAPTER_DEFAULT,
             D3DDEVTYPE_HAL,
             hwnd,
             behavior_flags,
             present,
+            ptr::null_mut(),
             &mut device,
         )?;
     }
-    device.ok_or_else(|| Error::new(E_FAIL, "CreateDevice returned a null IDirect3DDevice9"))
+    device.ok_or_else(|| Error::new(E_FAIL, "CreateDeviceEx returned a null IDirect3DDevice9Ex"))
 }
