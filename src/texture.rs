@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::csli::{CrefEntry, CsliDefinition, slice_texture_coordinates};
 use crate::vtbf::{Block, SrdFile};
@@ -73,6 +74,8 @@ pub struct TextureList {
     pub textures: Vec<TextureDefinition>,
 }
 
+pub const SURFBOARD_TEXTURE_RELATIVE_ROOT: &str = "surfboard/texture";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResolvedSliceTexture {
     pub image_index: usize,
@@ -103,6 +106,22 @@ impl TextureDefinition {
             linear: state(TextureFilter::Linear),
             point: state(TextureFilter::Point),
         }
+    }
+
+    /// Resolves the Chusan Surfride texture root proven by
+    /// `chusan_get_surfboard_texture_root_path`. The TEX value remains a base
+    /// name and receives the same unconditional `.dds` suffix as the binary.
+    pub fn external_dds_path(&self, game_data_root: &Path) -> Result<PathBuf, TextureError> {
+        let end = self
+            .filename
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.filename.len());
+        let base = std::str::from_utf8(&self.filename[..end])
+            .map_err(|error| TextureError(format!("TEX filename is not UTF-8: {error}")))?;
+        let mut path = game_data_root.join(SURFBOARD_TEXTURE_RELATIVE_ROOT);
+        path.push(format!("{base}.dds"));
+        Ok(path)
     }
 }
 
@@ -366,5 +385,19 @@ mod tests {
         let wrap = TextureDefinition::default().sampler_pair();
         assert_eq!(wrap.linear.address_u, TextureAddressMode::Wrap);
         assert_eq!(wrap.linear.address_v, TextureAddressMode::Wrap);
+    }
+
+    #[test]
+    fn external_dds_path_uses_the_proven_surfboard_texture_root() {
+        let texture = TextureDefinition {
+            filename: b"CHU_UI_Advertise_00_v250".to_vec(),
+            ..TextureDefinition::default()
+        };
+        assert_eq!(
+            texture
+                .external_dds_path(Path::new(r"D:\game\data"))
+                .unwrap(),
+            PathBuf::from(r"D:\game\data\surfboard\texture\CHU_UI_Advertise_00_v250.dds")
+        );
     }
 }

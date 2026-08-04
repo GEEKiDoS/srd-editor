@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem;
 use std::ptr;
+use std::slice;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D9::{
@@ -9,16 +11,21 @@ use windows::Win32::Graphics::Direct3D9::{
     D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE, D3DRS_CULLMODE, D3DRS_DESTBLEND,
     D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_SEPARATEALPHABLENDENABLE,
     D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE, D3DRS_ZENABLE, D3DRS_ZFUNC,
-    D3DRS_ZWRITEENABLE, D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET, D3DUSAGE_WRITEONLY,
-    D3DVERTEXELEMENT9, D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9,
-    IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9,
-    IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
+    D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER,
+    D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET, D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9,
+    D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DPixelShader9,
+    IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9, IDirect3DVertexBuffer9,
+    IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
 };
 use windows::core::{Error, HRESULT, Interface, Result};
 
+use crate::d3d9_texture::SrdD3d9TextureSet;
 use crate::render::CeylonRenderScissorState;
 use crate::render::{SRD_D3D9_VERTEX_DECLARATION, SrdRenderVertex};
-use crate::shader_bytecode::{EmbeddedSimpleShaderPair, embedded_simple_shader_pair};
+use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
+use crate::shader_bytecode::{
+    EMBEDDED_SIMPLE_SHADER_KEYS, EmbeddedSimpleShaderPair, embedded_simple_shader_pair,
+};
 use crate::srd_draw::EvidenceCompleteSrdDraw;
 
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
@@ -55,11 +62,15 @@ impl SrdDx9ExternalContext {
 pub struct SrdDx9Renderer {
     device: IDirect3DDevice9,
     vertex_declaration: Option<IDirect3DVertexDeclaration9>,
-    vertex_shader: Option<IDirect3DVertexShader9>,
-    pixel_shader: Option<IDirect3DPixelShader9>,
+    shaders: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], ShaderObjects>,
     vertex_buffer: Option<IDirect3DVertexBuffer9>,
     composition_size: Option<[u32; 2]>,
     composition_target: Option<CompositionTarget>,
+}
+
+struct ShaderObjects {
+    vertex: IDirect3DVertexShader9,
+    pixel: IDirect3DPixelShader9,
 }
 
 struct CompositionTarget {
@@ -68,13 +79,18 @@ struct CompositionTarget {
     size: [u32; 2],
 }
 
+pub struct D3d9BgraSurfaceReadback {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: Vec<u8>,
+}
+
 impl SrdDx9Renderer {
     pub fn new(device: &IDirect3DDevice9) -> Result<Self> {
         let mut renderer = Self {
             device: device.clone(),
             vertex_declaration: None,
-            vertex_shader: None,
-            pixel_shader: None,
+            shaders: BTreeMap::new(),
             vertex_buffer: None,
             composition_size: None,
             composition_target: None,
@@ -86,8 +102,7 @@ impl SrdDx9Renderer {
     pub fn invalidate_device_objects(&mut self) {
         self.composition_target = None;
         self.vertex_buffer = None;
-        self.pixel_shader = None;
-        self.vertex_shader = None;
+        self.shaders.clear();
         self.vertex_declaration = None;
     }
 
@@ -100,17 +115,21 @@ impl SrdDx9Renderer {
             Usage: element.usage,
             UsageIndex: element.usage_index,
         });
-        let pair = embedded_simple_shader_pair(&crate::shader_bytecode::FIRST_FIXTURE_SIMPLE_KEY)
-            .ok_or_else(|| {
-            Error::new(E_FAIL, "embedded first-fixture shader pair is missing")
-        })?;
         unsafe {
             self.vertex_declaration = Some(self.device.CreateVertexDeclaration(elements.as_ptr())?);
-            self.vertex_shader = Some(
-                self.device
-                    .CreateVertexShader(pair.vertex_shader.as_ptr())?,
-            );
-            self.pixel_shader = Some(self.device.CreatePixelShader(pair.pixel_shader.as_ptr())?);
+            for key in EMBEDDED_SIMPLE_SHADER_KEYS {
+                let pair = embedded_simple_shader_pair(&key)
+                    .ok_or_else(|| Error::new(E_FAIL, "embedded SRD shader pair is missing"))?;
+                self.shaders.insert(
+                    key,
+                    ShaderObjects {
+                        vertex: self
+                            .device
+                            .CreateVertexShader(pair.vertex_shader.as_ptr())?,
+                        pixel: self.device.CreatePixelShader(pair.pixel_shader.as_ptr())?,
+                    },
+                );
+            }
         }
         self.vertex_buffer = Some(create_vertex_buffer(&self.device)?);
         if let Some([width, height]) = self.composition_size {
@@ -146,10 +165,19 @@ impl SrdDx9Renderer {
         read_render_target_pixel(&self.device, &target.surface, x, y)
     }
 
+    pub fn read_composition_bgra(&self) -> Result<D3d9BgraSurfaceReadback> {
+        let target = self
+            .composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
+        read_render_target_bgra(&self.device, &target.surface)
+    }
+
     pub fn render_to_composition(
         &mut self,
         draws: &[EvidenceCompleteSrdDraw],
         external: SrdDx9ExternalContext,
+        textures: Option<&SrdD3d9TextureSet>,
         clear_argb: u32,
     ) -> Result<()> {
         let target = self
@@ -163,20 +191,21 @@ impl SrdDx9Renderer {
             self.device
                 .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
         }
-        self.render(draws, external)
+        self.render(draws, external, textures)
     }
 
     pub fn render(
         &mut self,
         draws: &[EvidenceCompleteSrdDraw],
         external: SrdDx9ExternalContext,
+        textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
         if draws.is_empty() {
             return Ok(());
         }
         let state = StateBlockGuard::capture(&self.device)?;
         for draw in draws {
-            self.render_draw(draw, external)?;
+            self.render_draw(draw, external, textures)?;
         }
         state.restore()
     }
@@ -185,6 +214,7 @@ impl SrdDx9Renderer {
         &mut self,
         draw: &EvidenceCompleteSrdDraw,
         external: SrdDx9ExternalContext,
+        textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
         if draw.blend.alpha_test_enabled || draw.packet.flags_0c & 0x100 != 0 {
             return Err(Error::new(
@@ -203,14 +233,12 @@ impl SrdDx9Renderer {
             .vertex_declaration
             .as_ref()
             .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex declaration is not available"))?;
-        let vertex_shader = self
-            .vertex_shader
-            .as_ref()
-            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex shader is not available"))?;
-        let pixel_shader = self
-            .pixel_shader
-            .as_ref()
-            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 pixel shader is not available"))?;
+        let shaders = self.shaders.get(&draw.shader_key).ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                "SRD D3D9 shader objects are not available for this key",
+            )
+        })?;
         let vertex_buffer = self
             .vertex_buffer
             .as_ref()
@@ -231,8 +259,47 @@ impl SrdDx9Renderer {
             self.device.SetVertexDeclaration(declaration)?;
             self.device
                 .SetStreamSource(0, vertex_buffer, 0, SrdRenderVertex::STRIDE as u32)?;
-            self.device.SetVertexShader(vertex_shader)?;
-            self.device.SetPixelShader(pixel_shader)?;
+            self.device.SetVertexShader(&shaders.vertex)?;
+            self.device.SetPixelShader(&shaders.pixel)?;
+
+            for (slot, binding) in draw.texture_bindings.iter().enumerate() {
+                if let Some(binding) = binding {
+                    let texture = textures
+                        .and_then(|textures| textures.get(binding.texture_index))
+                        .ok_or_else(|| {
+                            Error::new(
+                                E_FAIL,
+                                format!(
+                                    "SRD texture index {} is not loaded for slot {slot}",
+                                    binding.texture_index
+                                ),
+                            )
+                        })?;
+                    self.device.SetTexture(slot as u32, &texture.texture)?;
+                    self.device.SetSamplerState(
+                        slot as u32,
+                        D3DSAMP_ADDRESSU,
+                        binding.sampler.address_u as u32,
+                    )?;
+                    self.device.SetSamplerState(
+                        slot as u32,
+                        D3DSAMP_ADDRESSV,
+                        binding.sampler.address_v as u32,
+                    )?;
+                    self.device.SetSamplerState(
+                        slot as u32,
+                        D3DSAMP_MINFILTER,
+                        binding.sampler.min_filter as u32,
+                    )?;
+                    self.device.SetSamplerState(
+                        slot as u32,
+                        D3DSAMP_MAGFILTER,
+                        binding.sampler.mag_filter as u32,
+                    )?;
+                } else {
+                    self.device.SetTexture(slot as u32, None)?;
+                }
+            }
 
             self.device.SetVertexShaderConstantF(
                 0,
@@ -324,7 +391,7 @@ impl SrdDx9Renderer {
     }
 
     fn require_loaded_pair(&self, pair: &EmbeddedSimpleShaderPair) -> Result<()> {
-        if self.vertex_shader.is_none() || self.pixel_shader.is_none() {
+        if self.shaders.is_empty() {
             return Err(Error::new(
                 E_FAIL,
                 "SRD D3D9 shader objects are not available",
@@ -432,6 +499,51 @@ fn read_render_target_pixel(
     let pixel = unsafe { *(locked.pBits.cast::<[u8; 4]>()) };
     unsafe { staging.UnlockRect()? };
     Ok(pixel)
+}
+
+fn read_render_target_bgra(
+    device: &IDirect3DDevice9,
+    render_target: &IDirect3DSurface9,
+) -> Result<D3d9BgraSurfaceReadback> {
+    let mut description = Default::default();
+    unsafe { render_target.GetDesc(&mut description)? };
+    let mut staging = None;
+    unsafe {
+        device.CreateOffscreenPlainSurface(
+            description.Width,
+            description.Height,
+            description.Format,
+            D3DPOOL_SYSTEMMEM,
+            &mut staging,
+            ptr::null_mut(),
+        )?;
+    }
+    let staging = staging.ok_or_else(|| {
+        Error::new(
+            E_FAIL,
+            "CreateOffscreenPlainSurface returned null for composition readback",
+        )
+    })?;
+    unsafe { device.GetRenderTargetData(render_target, &staging)? };
+    let mut locked = D3DLOCKED_RECT::default();
+    unsafe { staging.LockRect(&mut locked, ptr::null(), 0)? };
+    let row_bytes = description.Width as usize * 4;
+    let mut bgra = vec![0u8; row_bytes * description.Height as usize];
+    for row in 0..description.Height as usize {
+        let source = unsafe {
+            slice::from_raw_parts(
+                locked.pBits.cast::<u8>().add(row * locked.Pitch as usize),
+                row_bytes,
+            )
+        };
+        bgra[row * row_bytes..][..row_bytes].copy_from_slice(source);
+    }
+    unsafe { staging.UnlockRect()? };
+    Ok(D3d9BgraSurfaceReadback {
+        width: description.Width,
+        height: description.Height,
+        bgra,
+    })
 }
 
 fn upload_vertices(buffer: &IDirect3DVertexBuffer9, vertices: &[SrdRenderVertex; 4]) -> Result<()> {

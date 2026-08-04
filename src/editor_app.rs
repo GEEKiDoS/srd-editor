@@ -13,10 +13,12 @@ use winit::window::{Window, WindowId};
 
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
-use crate::d3d9_texture::audit_dds_device_uploads;
+use crate::d3d9_texture::{SrdD3d9TextureSet, audit_dds_device_uploads};
 use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
 use crate::imgui_dx9::ImguiDx9Renderer;
-use crate::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair};
+use crate::shader_bytecode::{
+    FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
+};
 use crate::srd_draw::{EvidenceCompleteSrdDraw, build_evidence_complete_initial_image_draws};
 use crate::transform::Affine3x4;
 
@@ -27,10 +29,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let srd_draw_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-draw-smoke");
+    let srd_texture_smoke = arguments
+        .iter()
+        .any(|argument| argument == "--srd-texture-smoke");
     let dds_device_audit = arguments
         .iter()
         .any(|argument| argument == "--dds-device-audit");
     let smoke_test = srd_draw_smoke
+        || srd_texture_smoke
         || dds_device_audit
         || arguments
             .iter()
@@ -41,8 +47,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from);
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut application =
-        EditorApplication::new(smoke_test, srd_draw_smoke, dds_device_audit, document_path);
+    let mut application = EditorApplication::new(
+        smoke_test,
+        srd_draw_smoke,
+        srd_texture_smoke,
+        dds_device_audit,
+        document_path,
+    );
     event_loop.run_app(&mut application)?;
     if let Some(error) = application.fatal_error {
         return Err(io::Error::other(error).into());
@@ -55,6 +66,7 @@ struct EditorApplication {
     fatal_error: Option<String>,
     smoke_test: bool,
     srd_draw_smoke: bool,
+    srd_texture_smoke: bool,
     dds_device_audit: bool,
     document_path: Option<PathBuf>,
 }
@@ -66,9 +78,12 @@ struct EditorWindow {
     platform: WinitPlatform,
     imgui_renderer: ImguiDx9Renderer,
     srd_renderer: Option<SrdDx9Renderer>,
+    srd_textures: Option<SrdD3d9TextureSet>,
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
     composition_texture_id: Option<TextureId>,
     verify_srd_pixels: bool,
+    verify_textured_pixels: bool,
+    verify_hidpi: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
     last_frame: Instant,
@@ -78,6 +93,7 @@ impl EditorApplication {
     fn new(
         smoke_test: bool,
         srd_draw_smoke: bool,
+        srd_texture_smoke: bool,
         dds_device_audit: bool,
         document_path: Option<PathBuf>,
     ) -> Self {
@@ -86,6 +102,7 @@ impl EditorApplication {
             fatal_error: None,
             smoke_test,
             srd_draw_smoke,
+            srd_texture_smoke,
             dds_device_audit,
             document_path,
         }
@@ -98,6 +115,7 @@ impl EditorWindow {
         d3d9: D3d9ExDevice,
         smoke_test: bool,
         srd_draw_smoke: bool,
+        srd_texture_smoke: bool,
         dds_device_audit: bool,
         document_path: Option<PathBuf>,
     ) -> Result<Self, String> {
@@ -147,21 +165,61 @@ impl EditorWindow {
                 [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
             ))
         });
-        let (mut srd_renderer, srd_draws, composition_size) = match draw_result {
+        let require_srd_draw = srd_draw_smoke || srd_texture_smoke;
+        let (mut srd_renderer, mut srd_draws, composition_size) = match draw_result {
             Some((Ok(draws), size)) if !draws.is_empty() => {
                 let renderer = SrdDx9Renderer::new(d3d9.device())
                     .map_err(|error| format!("failed to create the SRD D3D9 renderer: {error}"))?;
                 (Some(renderer), draws, Some(size))
             }
-            Some((Err(error), _)) if srd_draw_smoke => {
+            Some((Err(error), _)) if require_srd_draw => {
                 return Err(format!(
                     "failed to build evidence-complete SRD draws: {error}"
                 ));
             }
-            _ if srd_draw_smoke => {
+            _ if require_srd_draw => {
                 return Err("the selected SRD did not produce an evidence-complete draw".into());
             }
             _ => (None, Vec::new(), None),
+        };
+        if srd_texture_smoke {
+            srd_draws.retain(|draw| {
+                (draw.layer_index, draw.node_index) == (4, 4)
+                    && draw.shader_key == FIRST_TEXTURED_FIXTURE_SIMPLE_KEY
+            });
+            if srd_draws.len() != 1 {
+                return Err(format!(
+                    "textured SRD smoke expected exactly layer 4/node 4 with shader key AAEBABBAABGAAAAAAA, found {} draws",
+                    srd_draws.len()
+                ));
+            }
+        }
+        let required_texture_indices = srd_draws
+            .iter()
+            .flat_map(|draw| draw.texture_bindings.iter().flatten())
+            .map(|binding| binding.texture_index)
+            .collect::<Vec<_>>();
+        let srd_textures = if required_texture_indices.is_empty() {
+            None
+        } else {
+            let document = workspace
+                .document()
+                .ok_or_else(|| "SRD texture loading requires a document".to_string())?;
+            let game_data_root = find_game_data_root(&document.path).ok_or_else(|| {
+                format!(
+                    "could not locate the game data root above {}",
+                    document.path.display()
+                )
+            })?;
+            Some(
+                SrdD3d9TextureSet::load_required(
+                    d3d9.device(),
+                    &game_data_root,
+                    &document.textures,
+                    required_texture_indices,
+                )
+                .map_err(|error| format!("failed to load SRD textures: {error}"))?,
+            )
         };
         let composition_texture_id =
             if let (Some(renderer), Some(size)) = (srd_renderer.as_mut(), composition_size) {
@@ -186,9 +244,12 @@ impl EditorWindow {
             platform,
             imgui_renderer,
             srd_renderer,
+            srd_textures,
             srd_draws,
             composition_texture_id,
             verify_srd_pixels: srd_draw_smoke,
+            verify_textured_pixels: srd_texture_smoke,
+            verify_hidpi: smoke_test,
             workspace,
             dpi_factor,
             last_frame: Instant::now(),
@@ -220,6 +281,9 @@ impl EditorWindow {
                 if let Some(renderer) = &mut self.srd_renderer {
                     renderer.invalidate_device_objects();
                 }
+                if let Some(textures) = &mut self.srd_textures {
+                    textures.invalidate_device_objects();
+                }
                 self.d3d9.reset().map_err(|error| error.to_string())?;
                 self.imgui_renderer
                     .create_device_objects(&mut self.imgui)
@@ -240,6 +304,11 @@ impl EditorWindow {
                         .set_composition_texture(Some((texture_id, size)));
                     self.composition_texture_id = Some(texture_id);
                 }
+                if let Some(textures) = &mut self.srd_textures {
+                    textures
+                        .create_device_objects(self.d3d9.device())
+                        .map_err(|error| error.to_string())?;
+                }
             }
             D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
             D3d9ExDeviceStatus::Minimized => return Ok(D3d9ExFrameStatus::Minimized),
@@ -251,6 +320,9 @@ impl EditorWindow {
         self.platform
             .prepare_frame(self.imgui.io_mut(), &self.window)
             .map_err(|error| error.to_string())?;
+        if self.verify_hidpi {
+            validate_hidpi_frame_contract(&self.window, &self.platform, &self.imgui)?;
+        }
         let ui = self.imgui.frame();
         self.workspace.draw(ui);
         self.platform.prepare_render(ui, &self.window);
@@ -264,6 +336,7 @@ impl EditorWindow {
                 .render_to_composition(
                     &self.srd_draws,
                     SrdDx9ExternalContext::smoke_without_scissor(),
+                    self.srd_textures.as_ref(),
                     CLEAR_COLOR_ARGB,
                 )
                 .map_err(|error| format!("SRD composition draw failed: {error}"))?;
@@ -275,6 +348,7 @@ impl EditorWindow {
                 .render(
                     &self.srd_draws,
                     SrdDx9ExternalContext::smoke_without_scissor(),
+                    self.srd_textures.as_ref(),
                 )
                 .map_err(|error| format!("SRD D3D9 draw submission failed: {error}"))?;
         }
@@ -307,6 +381,37 @@ impl EditorWindow {
             }
             self.d3d9.begin_scene().map_err(|error| error.to_string())?;
         }
+        if self.verify_textured_pixels {
+            self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let readback = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "textured SRD smoke lost the composition renderer".to_string())?
+                .read_composition_bgra()
+                .map_err(|error| format!("textured SRD composition readback failed: {error}"))?;
+            let diagnostic = analyze_composition_readback(
+                readback.width,
+                readback.height,
+                &readback.bgra,
+                [0x26, 0x22, 0x20],
+            )?;
+            if diagnostic.changed_pixels == 0 {
+                return Err(
+                    "textured SRD draw did not change any Composition pixel from the clear color"
+                        .into(),
+                );
+            }
+            eprintln!(
+                "textured SRD composition pixels={} bbox=({}, {})..({}, {}) fnv1a64={:016X}",
+                diagnostic.changed_pixels,
+                diagnostic.min_x,
+                diagnostic.min_y,
+                diagnostic.max_x,
+                diagnostic.max_y,
+                diagnostic.fnv1a64,
+            );
+            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+        }
         let render_result = self
             .imgui_renderer
             .render(draw_data)
@@ -326,6 +431,16 @@ fn editor_ini_path() -> Option<PathBuf> {
     Some(directory.join("imgui.ini"))
 }
 
+fn find_game_data_root(path: &std::path::Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("data"))
+        })
+        .map(std::path::Path::to_path_buf)
+}
+
 fn configure_imgui_fonts(imgui: &mut Context, dpi_factor: f64) {
     let dpi_factor = dpi_factor.max(0.5) as f32;
     let fonts = imgui.fonts();
@@ -338,6 +453,91 @@ fn configure_imgui_fonts(imgui: &mut Context, dpi_factor: f64) {
         }),
     }]);
     imgui.io_mut().font_global_scale = 1.0 / dpi_factor;
+}
+
+fn validate_hidpi_frame_contract(
+    window: &Window,
+    platform: &WinitPlatform,
+    imgui: &Context,
+) -> Result<(), String> {
+    let dpi_factor = platform.hidpi_factor();
+    if (window.scale_factor() - dpi_factor).abs() > f64::EPSILON {
+        return Err(format!(
+            "HiDPI platform factor {dpi_factor} differs from window factor {}",
+            window.scale_factor()
+        ));
+    }
+    let io = imgui.io();
+    let framebuffer_scale = f64::from(io.display_framebuffer_scale[0]);
+    if (framebuffer_scale - dpi_factor).abs() > 0.0001
+        || (f64::from(io.display_framebuffer_scale[1]) - dpi_factor).abs() > 0.0001
+    {
+        return Err(format!(
+            "ImGui framebuffer scale {:?} differs from window DPI factor {dpi_factor}",
+            io.display_framebuffer_scale
+        ));
+    }
+    let physical = window.inner_size();
+    let expected_width = f64::from(io.display_size[0]) * framebuffer_scale;
+    let expected_height = f64::from(io.display_size[1]) * framebuffer_scale;
+    if (expected_width - f64::from(physical.width)).abs() > 1.0
+        || (expected_height - f64::from(physical.height)).abs() > 1.0
+    {
+        return Err(format!(
+            "HiDPI logical size {:?} times scale {framebuffer_scale} does not match physical backbuffer {}x{}",
+            io.display_size, physical.width, physical.height
+        ));
+    }
+    Ok(())
+}
+
+struct CompositionReadbackDiagnostic {
+    changed_pixels: usize,
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+    fnv1a64: u64,
+}
+
+fn analyze_composition_readback(
+    width: u32,
+    height: u32,
+    bgra: &[u8],
+    clear_bgr: [u8; 3],
+) -> Result<CompositionReadbackDiagnostic, String> {
+    let expected_len = width as usize * height as usize * 4;
+    if bgra.len() != expected_len {
+        return Err(format!(
+            "Composition readback has {} bytes, expected {expected_len} for {width}x{height}",
+            bgra.len()
+        ));
+    }
+    let mut result = CompositionReadbackDiagnostic {
+        changed_pixels: 0,
+        min_x: width,
+        min_y: height,
+        max_x: 0,
+        max_y: 0,
+        fnv1a64: 0xcbf2_9ce4_8422_2325,
+    };
+    for (index, pixel) in bgra.chunks_exact(4).enumerate() {
+        for byte in pixel {
+            result.fnv1a64 ^= u64::from(*byte);
+            result.fnv1a64 = result.fnv1a64.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        if pixel[..3] == clear_bgr {
+            continue;
+        }
+        let x = index as u32 % width;
+        let y = index as u32 / width;
+        result.changed_pixels += 1;
+        result.min_x = result.min_x.min(x);
+        result.min_y = result.min_y.min(y);
+        result.max_x = result.max_x.max(x);
+        result.max_y = result.max_y.max(y);
+    }
+    Ok(result)
 }
 
 impl ApplicationHandler for EditorApplication {
@@ -362,6 +562,7 @@ impl ApplicationHandler for EditorApplication {
                             d3d9,
                             self.smoke_test,
                             self.srd_draw_smoke,
+                            self.srd_texture_smoke,
                             self.dds_device_audit,
                             self.document_path.clone(),
                         )
@@ -460,5 +661,22 @@ impl ApplicationHandler for EditorApplication {
         if let Some(editor) = &self.window {
             editor.window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composition_diagnostic_ignores_alpha_in_the_clear_comparison() {
+        let pixels = [
+            0x26, 0x22, 0x20, 0x00, 0x26, 0x22, 0x20, 0xff, 0x27, 0x22, 0x20, 0xff, 0x26, 0x22,
+            0x21, 0xff,
+        ];
+        let result = analyze_composition_readback(2, 2, &pixels, [0x26, 0x22, 0x20]).unwrap();
+        assert_eq!(result.changed_pixels, 2);
+        assert_eq!([result.min_x, result.min_y], [0, 1]);
+        assert_eq!([result.max_x, result.max_y], [1, 1]);
     }
 }

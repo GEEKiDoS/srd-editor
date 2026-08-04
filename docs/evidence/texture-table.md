@@ -55,6 +55,8 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 
 这证明 TEX `0x61` 是不含 `.dds` 后缀的外部纹理路径基础名，也证明运行时按 TEXL 声明顺序逐项提交存在的 DDS。加载入口已经闭环到 `air::TextureResource`，DDS 描述符、D3D9 原生创建和 D3DX9_43 回退参数详见 [`dds-resource-loading.md`](dds-resource-loading.md)；已加载纹理进入包装对象和绘制绑定的后续路径见 [`texture-binding.md`](texture-binding.md)。
 
+Chusan 的独立路径 provider `0x7D6360/0x7D61A0` 已证明专用根为 `surfboard/texture/`。编辑器给定完整 data 根时使用 `<data>/surfboard/texture/<base>.dds`；这是一条由 provider 与本地文件语料共同验证的编辑器映射，不把不同游戏资源对象内部的绝对路径管理方式混为同一个字符串拼接调用。首个实际 stage-0 draw 使用该映射加载 `CHU_UI_Movie_dummy.dds`，见 [`render-first-textured-draw.md`](render-first-textured-draw.md)。
+
 ## 样本回归
 
 53 个本地 SRD 中共解析出：
@@ -67,7 +69,7 @@ rectangle[3] = (1.0f / float(height)) * raw[3]
 
 ## 仍未闭环
 
-- 无需格式转换的二维 DDS staging/`UpdateSurface` 已闭环；内部格式转换、cube request 和设备丢失时的资源生命周期仍待闭环。
+- 无需格式转换的二维 DDS staging/`UpdateSurface`、独立 BC1/BC3 fallback 解码和编辑器 DEFAULT-pool `ResetEx` 重建已接入；完整语料未出现的内部格式转换与 cube request 仍待闭环。
 - CIMG/CRE1 与 CNUM 每个静态 glyph 的 CREF/CRE1 已闭环到 TEXL/CROP；剩余的是 TEXT、CNUM 历史 glyph 动画和双 UV 的最终管线消费。
 - CIMG/CNUM 动画通道 `17/20` 的显式矩形也已闭环到相同 TEXL/CROP 表。
-- 双 UV 的 shader/固定管线消费和其余尚未闭环的 draw state。
+- 单贴图 TEXCOORD0 的 shader 消费已实际提交；双纹理 TEXCOORD1 与其余尚未闭环的 draw state 仍待独立 fixture。

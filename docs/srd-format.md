@@ -31,6 +31,7 @@
 - SRD 实际 SimpleShaderSelector、18 字节键与 71 项 feature 表：[`evidence/render-simple-selector.md`](evidence/render-simple-selector.md)
 - Simple Cg source/公式、canonical assembly 与无 D3DX D3D9 bytecode：[`evidence/render-shader-source.md`](evidence/render-shader-source.md)、[`evidence/render-shader-bytecode.md`](evidence/render-shader-bytecode.md)
 - 编辑器原生 D3D9Ex device、Dear ImGui renderer、HiDPI/ResetEx 生命周期与 AE 风格工作区：[`evidence/editor-d3d9-backend.md`](evidence/editor-d3d9-backend.md)
+- 首个 stage-0 贴图 draw、完整 Composition 回读及宿主 `FirstCalcMatrix` 边界：[`evidence/render-first-textured-draw.md`](evidence/render-first-textured-draw.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
 - Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
 - 首个 fixture 的证据完整 CPU draw list 与明确排除边界：[`evidence/render-first-draw.md`](evidence/render-first-draw.md)

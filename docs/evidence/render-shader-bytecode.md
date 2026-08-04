@@ -42,6 +42,8 @@
 
 首个无贴图渲染 fixture 使用的 key `AAEBABBAAAGAAAAAAA` 已单独嵌入 Rust：VS 332 bytes、SHA-256 `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61`；PS 216 bytes、SHA-256 `B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F`。运行时只按精确 key 返回该 pair，不调用 Cg/D3DX，也不为其他 key 猜测替代品。
 
+首个单贴图 fixture 的 key `AAEBABBAABGAAAAAAA` 也已按精确值嵌入：VS 复用上述 332-byte bytecode；PS 为 248 bytes、SHA-256 `066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F`。D3D9Ex renderer 以 compact key 查找对应 shader 对象并绑定 stage 0 DDS；实际像素和 ResetEx 结果见 [`render-first-textured-draw.md`](render-first-textured-draw.md)。
+
 collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 | stage | assembly bytes | bytecode bytes | SHA-256 |
@@ -70,4 +72,4 @@ collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 已经证明：原版 Cg profile/参数、完整 collection 的 canonical assembly、无需 D3DX 的确定性 D3D9 bytecode 生成、bytecode profile/end token，以及全部 164 份 bytecode 的 D3D9 HAL shader 对象创建。
 
-仍需完成：把 runtime ShapeEnv context 精确映射到 compact key；决定发布包是嵌入经验证的 key->bytecode 表，还是在构建期生成同一表；把已验证 shader 接入编辑器 runtime 的常量、sampler 与 draw submission。不会把离线 x86 Cg 工具变成发布依赖。
+仍需完成：把 runtime ShapeEnv context 精确映射到其余 compact key；决定发布包是嵌入经验证的完整 key->bytecode 表，还是在构建期生成同一表；逐项接入其余 shader、常量与多纹理 draw。不会把离线 x86 Cg 工具变成发布依赖。

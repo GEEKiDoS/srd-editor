@@ -1,11 +1,18 @@
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 
 pub const FIRST_FIXTURE_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] = *b"AAEBABBAAAGAAAAAAA";
+pub const FIRST_TEXTURED_FIXTURE_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAEBABBAABGAAAAAAA";
 
 pub const FIRST_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61";
 pub const FIRST_FIXTURE_PIXEL_SHADER_SHA256: &str =
     "B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F";
+pub const FIRST_TEXTURED_FIXTURE_PIXEL_SHADER_SHA256: &str =
+    "066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F";
+
+pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 2] =
+    [FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY];
 
 pub struct EmbeddedSimpleShaderPair {
     pub vertex_shader: &'static [u32],
@@ -15,10 +22,17 @@ pub struct EmbeddedSimpleShaderPair {
 pub fn embedded_simple_shader_pair(
     key: &[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
 ) -> Option<EmbeddedSimpleShaderPair> {
-    (*key == FIRST_FIXTURE_SIMPLE_KEY).then_some(EmbeddedSimpleShaderPair {
-        vertex_shader: &FIRST_FIXTURE_VERTEX_SHADER,
-        pixel_shader: &FIRST_FIXTURE_PIXEL_SHADER,
-    })
+    match *key {
+        FIRST_FIXTURE_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_FIXTURE_PIXEL_SHADER,
+        }),
+        FIRST_TEXTURED_FIXTURE_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        _ => None,
+    }
 }
 
 const FIRST_FIXTURE_VERTEX_SHADER: [u32; 83] = [
@@ -45,12 +59,23 @@ const FIRST_FIXTURE_PIXEL_SHADER: [u32; 54] = [
     0x04000058, 0x800F0800, 0x81000001, 0x80E40000, 0xA0550002, 0x0000FFFF,
 ];
 
+const FIRST_TEXTURED_FIXTURE_PIXEL_SHADER: [u32; 62] = [
+    0xFFFF0300, 0x0200001F, 0x90000000, 0xA00F0800, 0x05000051, 0xA00F0002, 0x4479F99A, 0x00000000,
+    0x3F800000, 0x00000000, 0x0200001F, 0x8000000A, 0x900F0000, 0x0200001F, 0x8001000A, 0x90070001,
+    0x0200001F, 0x80000005, 0x90030002, 0x03000042, 0x800F0000, 0x90E40002, 0xA0E40800, 0x03000005,
+    0x800F0000, 0x80E40000, 0x90E40000, 0x03000002, 0x80070000, 0x80E40000, 0x90E40001, 0x03000005,
+    0x80070000, 0x80E40000, 0xA0AA0000, 0x03000002, 0x800F0001, 0x81E40000, 0xA0000002, 0x04000058,
+    0x800F0001, 0x80E40001, 0xA0550002, 0xA0AA0002, 0x03000002, 0x80310001, 0x80E40001, 0x80550001,
+    0x03000002, 0x80310001, 0x80E40001, 0x80AA0001, 0x03000002, 0x80310001, 0x80E40001, 0x80FF0001,
+    0x04000058, 0x800F0800, 0x81000001, 0x80E40000, 0xA0550002, 0x0000FFFF,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn only_the_evidence_complete_fixture_key_is_packaged() {
+    fn only_evidence_complete_fixture_keys_are_packaged() {
         let pair = embedded_simple_shader_pair(&FIRST_FIXTURE_SIMPLE_KEY).unwrap();
         assert_eq!(pair.vertex_shader.len() * 4, 332);
         assert_eq!(pair.pixel_shader.len() * 4, 216);
@@ -58,6 +83,12 @@ mod tests {
         assert_eq!(pair.pixel_shader[0], 0xFFFF0300);
         assert_eq!(pair.vertex_shader.last(), Some(&0x0000FFFF));
         assert_eq!(pair.pixel_shader.last(), Some(&0x0000FFFF));
+
+        let textured = embedded_simple_shader_pair(&FIRST_TEXTURED_FIXTURE_SIMPLE_KEY).unwrap();
+        assert_eq!(textured.vertex_shader, pair.vertex_shader);
+        assert_eq!(textured.pixel_shader.len() * 4, 248);
+        assert_eq!(textured.pixel_shader[0], 0xFFFF0300);
+        assert_eq!(textured.pixel_shader.last(), Some(&0x0000FFFF));
 
         let mut unsupported = FIRST_FIXTURE_SIMPLE_KEY;
         unsupported[0] = b'B';

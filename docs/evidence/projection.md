@@ -67,7 +67,7 @@ degrees = float(angle_units) * f32::from_bits(0x3BB40000)
 radians = degrees * f32::from_bits(0x3C8EFA35)
 ```
 
-样本 `8191` 得到 `44.994507°`。注意：虚表 `+0x88` 写入名为 `Aspect` 的 property 3，但 `0xAC7400` 在此处传入的是当前渲染目标 Width；Rust API 保留显式的 `projection_width` 参数，没有擅自改成宽高比。
+样本 `8191` 得到 `44.994507°`。注意：虚表 `+0x88` 已进一步闭环到 `sea_camera_set_perspective_parameters` (`0x656450`)；它把第二个参数写入名为 `Aspect` 的 property 3，但 `0xAC7400` 在此处传入的是当前渲染目标 Width。函数前面虽然另行取得外部 target/camera aspect 或 override 值并保存到局部变量，该值没有进入这次全局 Camera 调用。Rust API 保留显式的 `projection_width` 参数，没有擅自改成宽高比。
 
 ## View、Projection 与 Projection*View
 
@@ -134,16 +134,25 @@ layer_world(+0x16C) = SrRenderer(+0xB8) * layer_local(+0x13C)
 
 `srd_construct_player` (`0xAA68B0`) 创建 `surfride::SrPlayer::Impl`，Impl `+0x10` 的 RTTI 类型是 `surfride::SrRenderer`。`srd_construct_renderer` (`0xAC4010`) 把 `SrRenderer+0x08` 和 `+0x48` 初始化为单位矩阵。
 
-`srd_renderer_configure_project_camera` 末尾构造：
+`srd_renderer_configure_project_camera` 先分别取得外部 camera 与 SRD 全局 camera 的 Projection/View：
+
+```text
+external_projection_view = external_projection * external_view
+external_inverse         = inverse(external_projection_view)
+srd_projection_view      = srd_projection * srd_view
+SrRenderer+0x08          = external_inverse * srd_projection_view
+```
+
+`ceylon_inverse_matrix4x4` (`0x6B4170`) 是带 pivot 的 4×4 Gauss-Jordan 求逆实现；该调用不是转置或复制。函数末尾再构造：
 
 ```text
 viewport = viewport_matrix(width, height)
-temporary = viewport * pre_viewport_transform
+temporary = viewport * external_projection_view
 screen_matrix = temporary * *(Matrix4x4 *)(SrRenderer + 0x08)
 *(Matrix4x4 *)(SrRenderer + 0x48) = screen_matrix
 ```
 
-全局 Camera 的 View/Projection 来源现已闭环；这里仍保留 `pre_viewport_transform` 这一中性名称，因为函数中的另一个 backend context 及其逆/组合变换尚未全部命名。
+因此在可逆且忽略浮点误差时，最终组合代数上约为 `viewport * srd_projection_view`；但 `SrRenderer+0x08` 同时明确记录了当前外部 camera context 到 SRD camera context 的变换，不能在独立宿主中无条件假设为 identity。
 
 Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从单位矩阵构造：
 
@@ -174,6 +183,6 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 
 ## 尚未闭环
 
-- `0xAC7400` 中另一个 backend context 的具体类名，以及它参与 `SrRenderer+0x08` 前的逆/组合矩阵语义。
+- 外部 camera context 的具体类名，以及每个实际 Chusan SRD 使用点提供的 camera/scene-node 数值。
 - 3D CAST 提交阶段的深度值和最终 D3D9 顶点/裁剪路径。
 - Camera OffsetX/OffsetY 是否存在 SRD renderer 之外的运行时写入者。

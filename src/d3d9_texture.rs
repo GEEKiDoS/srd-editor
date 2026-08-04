@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::fmt;
 use std::fs;
@@ -12,6 +13,7 @@ use windows::Win32::Graphics::Direct3D9::{
 };
 
 use crate::dds::{D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy};
+use crate::texture::TextureList;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct D3d9TextureError(pub String);
@@ -36,6 +38,64 @@ pub struct D3d9Texture2d {
     pub height: u32,
     pub mip_levels: u32,
     pub upload_path: D3d9TextureUploadPath,
+}
+
+pub struct SrdD3d9TextureSet {
+    sources: Vec<Option<Vec<u8>>>,
+    textures: Vec<Option<D3d9Texture2d>>,
+}
+
+impl SrdD3d9TextureSet {
+    pub fn load_required(
+        device: &IDirect3DDevice9,
+        game_data_root: &Path,
+        definitions: &TextureList,
+        required_indices: impl IntoIterator<Item = usize>,
+    ) -> Result<Self, D3d9TextureError> {
+        let required = required_indices.into_iter().collect::<BTreeSet<_>>();
+        let mut sources = vec![None; definitions.textures.len()];
+        for index in required {
+            let definition = definitions.textures.get(index).ok_or_else(|| {
+                D3d9TextureError(format!("required TEX index {index} is outside TEXL"))
+            })?;
+            let path = definition
+                .external_dds_path(game_data_root)
+                .map_err(|error| D3d9TextureError(error.to_string()))?;
+            let bytes = fs::read(&path).map_err(|error| {
+                D3d9TextureError(format!("failed to read {}: {error}", path.display()))
+            })?;
+            sources[index] = Some(bytes);
+        }
+        let mut set = Self {
+            textures: (0..sources.len()).map(|_| None).collect(),
+            sources,
+        };
+        set.create_device_objects(device)?;
+        Ok(set)
+    }
+
+    pub fn invalidate_device_objects(&mut self) {
+        for texture in &mut self.textures {
+            *texture = None;
+        }
+    }
+
+    pub fn create_device_objects(
+        &mut self,
+        device: &IDirect3DDevice9,
+    ) -> Result<(), D3d9TextureError> {
+        for (index, source) in self.sources.iter().enumerate() {
+            self.textures[index] = source
+                .as_ref()
+                .map(|bytes| D3d9Texture2d::from_dds_bytes(device, bytes))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, index: usize) -> Option<&D3d9Texture2d> {
+        self.textures.get(index)?.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

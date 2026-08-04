@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::image::{ImageDefinition, ImageReferenceChannel};
+use crate::image::{ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource};
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
     CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw,
@@ -11,7 +11,7 @@ use crate::render::{
 use crate::scene::{Layer, Project};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
-use crate::texture::TextureList;
+use crate::texture::{TextureList, TextureSamplerState};
 use crate::transform::{Affine3x4, SpatialTransform};
 use crate::{csli::add_color_saturating_game, csli::multiply_color_game};
 
@@ -38,6 +38,13 @@ pub struct EvidenceCompleteSrdDraw {
     pub blend: SrdD3d9BlendPreset,
     pub raster: CeylonRasterState,
     pub depth: CeylonDepthState,
+    pub texture_bindings: [Option<EvidenceSrdTextureBinding>; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvidenceSrdTextureBinding {
+    pub texture_index: usize,
+    pub sampler: TextureSamplerState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,9 +55,9 @@ struct InitialWorldColorState {
 }
 
 /// Builds only the initial ImageCast subset whose complete Simple shader pair
-/// and packet/device inputs are proven. TEXT, textures, special CAST matrix
-/// branches, alpha-test/stencil base contexts and unsupported shader keys are
-/// rejected or excluded explicitly.
+/// and packet/device inputs are proven. TEXT, explicit texture overrides,
+/// special CAST matrix branches, alpha-test/stencil base contexts and
+/// unsupported shader keys are rejected or excluded explicitly.
 pub fn build_evidence_complete_initial_image_draws(
     project: &Project,
     textures: &TextureList,
@@ -74,7 +81,9 @@ pub fn build_evidence_complete_initial_image_draws(
             .copied()
             .map(|transform| transform.spatial())
             .collect::<Vec<_>>();
-        reject_special_matrix_branches(layer)?;
+        if reject_special_matrix_branches(layer).is_err() {
+            continue;
+        }
         let world_matrices = layer
             .compose_world_matrices_with_csli_layout(&transforms, first_calc_matrix, false)
             .map_err(|error| SrdDrawError(error.to_string()))?;
@@ -114,7 +123,29 @@ pub fn build_evidence_complete_initial_image_draws(
                     [false; 2],
                 )
                 .map_err(|error| SrdDrawError(error.to_string()))?;
-            if slots.texture_present().into_iter().any(|present| present) {
+            let mut texture_bindings = [None; 3];
+            for (slot_index, destination) in texture_bindings.iter_mut().enumerate().take(2) {
+                match slots.slots[slot_index] {
+                    Some(SrdTextureBindingSource::TextureList(texture_index)) => {
+                        let sampler = slots.channels[slot_index].selected_sampler.ok_or_else(|| {
+                            SrdDrawError(format!(
+                                "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] texture slot {slot_index} has no proven sampler"
+                            ))
+                        })?;
+                        *destination = Some(EvidenceSrdTextureBinding {
+                            texture_index,
+                            sampler,
+                        });
+                    }
+                    Some(SrdTextureBindingSource::ExplicitOverride) => continue,
+                    None => {}
+                }
+            }
+            if slots
+                .slots
+                .iter()
+                .any(|slot| matches!(slot, Some(SrdTextureBindingSource::ExplicitOverride)))
+            {
                 continue;
             }
 
@@ -133,7 +164,7 @@ pub fn build_evidence_complete_initial_image_draws(
             apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
 
             let shader_key = packet
-                .srd_quad_shader_key([false; 3])
+                .srd_quad_shader_key(slots.texture_present())
                 .srd_simple_shader_direct_contributions()
                 .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
                 .compact_key();
@@ -171,6 +202,7 @@ pub fn build_evidence_complete_initial_image_draws(
                 blend,
                 raster,
                 depth: CeylonDepthState::from_draw_flags(packet.draw_flags_00),
+                texture_bindings,
             });
         }
     }

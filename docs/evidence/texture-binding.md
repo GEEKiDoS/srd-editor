@@ -102,8 +102,10 @@ packet 构造函数 `0x6CD8A0` 把三个槽全部初始化为空，而 SRD 路�
 
 `TextureDefinition::sampler_pair` 保留原始 `field_62`，同时生成已证明的 Wrap/Clamp 与 Linear/Point 状态。`ResolvedSliceTexture` 携带整对状态；调用方以 `TextureSamplerPair::select(point_sampled)` 复现 `SrSliceCast +0x100` 的选择。`ImageDefinition::resolve_texture_slots` 进一步把两个独立坐标结果解析为 packet slot 0/1，并保留“显式覆盖优先、否则按 TEXL 下标选择”的来源。枚举的 `repr(u32)` 数值就是 Windows SDK 的 D3D9 常量，可供后续 D3D9 后端直接提交。
 
+编辑器 D3D9Ex backend 现已把 `TextureList` 来源的 CREF/CRE1 绑定提交到 stage 0/1，并对每个非空槽设置上述四项精确 sampler state；空槽显式 `SetTexture(None)`。首个 stage-0 实际像素与 ResetEx 重建验证见 [`render-first-textured-draw.md`](render-first-textured-draw.md)。显式 override 的资源所有权尚未闭环，因此 draw-list 继续排除该分支，而不是拿 TEXL 资源替代。
+
 ## 仍未闭环
 
 - DDS 资源对象、格式选择、mipmap、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；剩余的是内部格式转换、cube request 和设备丢失生命周期。
-- CIMG/CRE1 已闭环到 TEXL 条目、Linear/Point pair 选择以及 packet/D3D9 stage 0/1；双 UV 的像素公式仍未闭环。
+- CIMG/CRE1 已闭环到 TEXL 条目、Linear/Point pair 选择、packet/D3D9 stage 0/1 和首个单贴图像素；双纹理 runtime draw 仍需独立 fixture。
 - 绘制包的 36 字节顶点格式、非索引 triangle strip 和 `DrawPrimitive` 参数已经闭环，见 [`render-vertex-submission.md`](render-vertex-submission.md)；混合、alpha/depth/stencil 和 scissor 状态也已分别闭环，剩余 shader 与其他 draw state。

@@ -17,7 +17,7 @@ use srd_editor::render::{
 };
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
-use srd_editor::shader_bytecode::FIRST_FIXTURE_SIMPLE_KEY;
+use srd_editor::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY};
 use srd_editor::srd_draw::build_evidence_complete_initial_image_draws;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -167,6 +167,68 @@ fn builds_the_first_evidence_complete_srd_draw() {
     assert!(!draw.depth.z_enabled);
     assert!(!draw.blend.alpha_test_enabled);
     assert_eq!(draw.packet.flags_0c & 0x100, 0);
+    assert_eq!(draw.texture_bindings, [None; 3]);
+}
+
+#[test]
+fn builds_evidence_complete_single_texture_draws() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
+    let scene = &document.project.scenes[0];
+    let draws = build_evidence_complete_initial_image_draws(
+        &document.project,
+        &document.textures,
+        0,
+        Affine3x4::IDENTITY,
+        scene.width,
+    )
+    .unwrap();
+    let textured = draws
+        .iter()
+        .filter(|draw| draw.shader_key == FIRST_TEXTURED_FIXTURE_SIMPLE_KEY)
+        .collect::<Vec<_>>();
+    assert!(!textured.is_empty());
+    assert!(textured.iter().all(|draw| {
+        draw.texture_bindings[0].is_some()
+            && draw.texture_bindings[1].is_none()
+            && draw.texture_bindings[2].is_none()
+    }));
+    let fixture = textured
+        .iter()
+        .copied()
+        .find(|draw| (draw.layer_index, draw.node_index) == (4, 4))
+        .expect("advertise C_movie_dummy fixture draw");
+    assert_eq!(fixture.texture_bindings[0].unwrap().texture_index, 5);
+    assert_ne!(
+        fixture.quad.vertices[0].position,
+        fixture.quad.vertices[3].position
+    );
+    let texture_path = document.textures.textures[5]
+        .external_dds_path(&root)
+        .unwrap();
+    assert_eq!(
+        texture_path,
+        root.join("surfboard/texture/CHU_UI_Movie_dummy.dds")
+    );
+    assert!(texture_path.is_file());
+    let texture_bytes = fs::read(&texture_path).unwrap();
+    let descriptor = DdsDescriptor::parse(&texture_bytes).unwrap();
+    let decoded = descriptor
+        .decode_rgba8_levels_with_library(&texture_bytes)
+        .unwrap();
+    let first_mip = &decoded[0];
+    let alpha_max = first_mip
+        .rgba
+        .chunks_exact(4)
+        .map(|pixel| pixel[3])
+        .max()
+        .unwrap();
+    assert_eq!([first_mip.width, first_mip.height], [720, 408]);
+    assert!(alpha_max > 0, "fixture texture must contain visible texels");
 }
 
 #[test]
