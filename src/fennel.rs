@@ -18,6 +18,8 @@ const FENNEL_NEWLINE_COMMAND_UPPER: u16 = b'N' as u16;
 const FENNEL_NEWLINE_COMMAND_LOWER: u16 = b'n' as u16;
 const FENNEL_POSITION_COMMAND_UPPER: u16 = b'T' as u16;
 const FENNEL_POSITION_COMMAND_LOWER: u16 = b't' as u16;
+const FENNEL_EFFECT_COMMAND_UPPER: u16 = b'S' as u16;
+const FENNEL_EFFECT_COMMAND_LOWER: u16 = b's' as u16;
 
 pub const FENNEL_RECORD_LINE_END: i32 = -1;
 pub const FENNEL_RECORD_ZERO_WIDTH_GLYPH: i32 = -2;
@@ -26,6 +28,9 @@ pub const FENNEL_RECORD_STREAM_END: i32 = -0xFF;
 pub const FENNEL_LINE_START_CAPACITY: usize = 0x80;
 pub const FENNEL_UV_BIAS: f32 = f32::from_bits(0x3727_C5AC);
 pub const FENNEL_TRIANGLE_CORNER_INDICES: [usize; 6] = [1, 0, 2, 3, 1, 2];
+/// Iterator state `+0x820`, token `+0x10`, and layout record `+0x0C` use this
+/// bit to request the second/effect glyph segment.
+pub const FENNEL_EFFECT_GLYPH_FLAG: u32 = 0x0004_0000;
 /// `fennel::FontObject` construction (`sub_F2BB60`) initializes the four
 /// effect colors at TextBoxObject `+0x80..+0x8C` to opaque black.
 pub const FENNEL_DEFAULT_EFFECT_COLORS: [u32; 4] = [0xFF00_0000; 4];
@@ -224,6 +229,7 @@ pub enum FennelPlainToken {
     Glyph(u16),
     NewLine,
     SetPosition { x: i32, y: i32 },
+    ToggleEffect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,8 +262,10 @@ impl std::error::Error for UnsupportedFennelControl {}
 /// Direct UTF-16 units produce type-zero glyph tokens. CRLF, CR, LF and the
 /// proven `$N`/`$n` aliases produce type-three newline tokens. `$$` produces a
 /// literal dollar glyph. The `$t[x:y]` branch writes signed decimal x/y values
-/// to iterator/output offsets +0x20/+0x24. Other commands are rejected until
-/// their parameter grammar and state writes are closed from the binary.
+/// to iterator/output offsets +0x20/+0x24. `$s`/`$S` toggles iterator state
+/// `+0x820` bit `0x40000`, which the normal-glyph output copy places at token
+/// `+0x10`. Other commands are rejected until their parameter grammar and
+/// state writes are closed from the binary.
 pub fn tokenize_fennel_plain_text(
     units: &[u16],
 ) -> Result<Vec<FennelPlainToken>, UnsupportedFennelControl> {
@@ -299,6 +307,10 @@ pub fn tokenize_fennel_plain_text(
                         };
                         tokens.push(FennelPlainToken::SetPosition { x, y });
                         index = end_index;
+                    }
+                    FENNEL_EFFECT_COMMAND_UPPER | FENNEL_EFFECT_COMMAND_LOWER => {
+                        tokens.push(FennelPlainToken::ToggleEffect);
+                        index += 1;
                     }
                     _ => {
                         return Err(UnsupportedFennelControl {
@@ -652,7 +664,8 @@ pub fn build_fennel_texture_batch_membership(
             .find(|batch| batch.texture_token == record.texture_token)
         {
             batch.normal_glyph_count += 1;
-            batch.effect_glyph_count += usize::from(record.field_0c & 0x40000 != 0);
+            batch.effect_glyph_count +=
+                usize::from(record.field_0c & FENNEL_EFFECT_GLYPH_FLAG != 0);
             batch.record_indices.push(record_index);
         } else {
             let unique_texture_count = batches.len() + 1;
@@ -671,7 +684,9 @@ pub fn build_fennel_texture_batch_membership(
                 FennelTextureBatchMembership {
                     texture_token: record.texture_token,
                     normal_glyph_count: 1,
-                    effect_glyph_count: usize::from(record.field_0c & 0x40000 != 0),
+                    effect_glyph_count: usize::from(
+                        record.field_0c & FENNEL_EFFECT_GLYPH_FLAG != 0,
+                    ),
                     record_indices: vec![record_index],
                 },
             );
@@ -908,7 +923,7 @@ where
             };
             normal_vertices.extend_from_slice(&glyph_vertices);
 
-            if record.field_0c & 0x40000 != 0 {
+            if record.field_0c & FENNEL_EFFECT_GLYPH_FLAG != 0 {
                 let mut effect_record = *record;
                 effect_record.colors = std::array::from_fn(|corner| {
                     fennel_effect_color(record.colors[corner], input.effect_colors[corner])
@@ -1486,7 +1501,12 @@ where
     let tokens = tokenize_fennel_plain_text(&units).map_err(FennelPlainRecordError::Control)?;
     let required = tokens
         .iter()
-        .filter(|token| !matches!(token, FennelPlainToken::SetPosition { .. }))
+        .filter(|token| {
+            !matches!(
+                token,
+                FennelPlainToken::SetPosition { .. } | FennelPlainToken::ToggleEffect
+            )
+        })
         .count()
         .checked_add(2)
         .unwrap_or(usize::MAX);
@@ -1532,6 +1552,9 @@ where
             FennelPlainToken::SetPosition { x, y } => {
                 current_placement.x = x;
                 current_placement.y = y;
+            }
+            FennelPlainToken::ToggleEffect => {
+                current_placement.field_0c ^= FENNEL_EFFECT_GLYPH_FLAG;
             }
         }
     }
@@ -2420,7 +2443,7 @@ mod tests {
         for (record, texture_token) in stream.records[..4].iter_mut().zip([1u32, 2, 16, 2]) {
             record.texture_token = texture_token;
         }
-        stream.records[1].field_0c = 0x40000;
+        stream.records[1].field_0c = FENNEL_EFFECT_GLYPH_FLAG;
 
         let build = build_fennel_texture_batch_membership(&stream, -1).unwrap();
         assert_eq!(FENNEL_INITIAL_TEXTURE_BATCH_BUCKET_COUNT, 17);
@@ -2561,7 +2584,7 @@ mod tests {
             kind: 1,
             glyph_token: 1,
             texture_token: 7,
-            field_0c: 0x40000,
+            field_0c: FENNEL_EFFECT_GLYPH_FLAG,
             y: -3.0,
             width: 1.0,
             height: 1.0,
@@ -2888,6 +2911,46 @@ mod tests {
                 FennelPlainToken::Glyph(b'C' as u16),
             ]
         );
+    }
+
+    #[test]
+    fn effect_control_toggles_the_iterator_flag_without_emitting_a_record() {
+        let units = "A$sB$SC".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(
+            tokenize_fennel_plain_text(&units).unwrap(),
+            vec![
+                FennelPlainToken::Glyph(b'A' as u16),
+                FennelPlainToken::ToggleEffect,
+                FennelPlainToken::Glyph(b'B' as u16),
+                FennelPlainToken::ToggleEffect,
+                FennelPlainToken::Glyph(b'C' as u16),
+            ]
+        );
+
+        let font = RuhunaRuntimeFont {
+            minimum_code: b'A' as u16,
+            maximum_code: b'C' as u16,
+            dense_glyph_indices: vec![0, 1, 2],
+            glyph_pages: vec![Some(0), Some(0), Some(0)],
+            glyphs: (b'A'..=b'C')
+                .map(|code| RuhunaRuntimeGlyphRecord {
+                    code: u16::from(code),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let mut placement = input();
+        placement.field_0c = 0x20;
+        let stream =
+            build_fennel_plain_record_stream(b"A$sB$SC", &font, placement, 5, |code, _glyph| {
+                u32::from(code)
+            })
+            .unwrap();
+
+        assert_eq!(stream.glyph_count, 3);
+        assert_eq!(stream.records[0].field_0c, 0x20);
+        assert_eq!(stream.records[1].field_0c, 0x20 | FENNEL_EFFECT_GLYPH_FLAG);
+        assert_eq!(stream.records[2].field_0c, 0x20);
     }
 
     #[test]
