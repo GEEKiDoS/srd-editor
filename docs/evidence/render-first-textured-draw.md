@@ -65,3 +65,4 @@ diagnostic FNV = 408934AC672702F9
 
 所以 identity `FirstCalcMatrix` 是编辑器 smoke 的显式宿主输入，不等价于任意游戏调用现场。下一阶段必须闭环一个实际 Chusan 调用点的外部 camera/scene-node 变换，或把预览 placement 明确作为用户可见的宿主参数；不能通过视觉试错擅自加入横向缩放。
 
+后续已进一步证明 Advertise 的空 `TargetScene` packet 进入全局队列，并由所有注册 target 分别以自身 Camera 和 draw-mask/visibility 配置过滤；它不会隐式 fallback 到某个命名 Scene。详见 [`render-target-routing.md`](render-target-routing.md)。这使当前竖线的根因边界更明确：`CeylonSrdFixedShaderConstants::initial_2d` 直接使用 SRD CAM `Projection*View` 不符合游戏的 target-local shader 环境，但独立 SRD 也不能自行给出唯一替代 Camera。修正必须等待明确的宿主预览策略，而不是加入视觉补偿矩阵。

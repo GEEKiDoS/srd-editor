@@ -118,6 +118,8 @@ mtxPrjView = Projection * View
 
 结果写入 `sea::AllEnvBasic+0x40` 对应的 shader resource，参数注册函数把它以名字 `mtxPrjView` 放到逻辑 slot 2。选定 Simple VS 的 `c10..c13` 正是这个矩阵，因而不再是未证明的占位常量。
 
+该 Camera 属于实际渲染 target，而不是 SRD 文件本身。空 `TargetScene` 的 packet 会进入全局队列，再由当帧所有注册 target 分别过滤；每个基础 Scene 的虚表 `+0x58` 返回自己的 `target+0x90` Camera。完整路由证据见 [`render-target-routing.md`](render-target-routing.md)。因此同一份 SRD 在不同宿主 target 中可以得到不同的 `mtxPrjView`，不能把 SRD CAM 的 `Projection*View` 无条件直接写入 2D draw 的 `c10..c13`。
+
 ## SrPlayer 的 FirstCalcMatrix 输入边界
 
 顶层 runtime layer 不直接以 identity 作为 CAST 根。`srd_update_runtime_layer` (`0xABE710`) 在没有 owning RefCast 时执行：
@@ -183,6 +185,7 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 
 ## 尚未闭环
 
-- 外部 camera context 的具体类名，以及每个实际 Chusan SRD 使用点提供的 camera/scene-node 数值。
+- 编辑器打开独立 SRD 时应采用哪一种宿主预览 target/camera；游戏语义允许同一全局 packet 被多个注册 target 分别过滤，不存在可由 SRD 单独推出的唯一值。
+- 各个实际 Chusan 画面在具体时刻注册了哪些 target，以及其 camera/scene-node 数值。
 - 3D CAST 提交阶段的深度值和最终 D3D9 顶点/裁剪路径。
 - Camera OffsetX/OffsetY 是否存在 SRD renderer 之外的运行时写入者。
