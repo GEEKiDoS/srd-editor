@@ -33,6 +33,7 @@
 - 编辑器原生 D3D9Ex device、Dear ImGui renderer、HiDPI/ResetEx 生命周期与 AE 风格工作区：[`evidence/editor-d3d9-backend.md`](evidence/editor-d3d9-backend.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
 - Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
+- 首个 fixture 的证据完整 CPU draw list 与明确排除边界：[`evidence/render-first-draw.md`](evidence/render-first-draw.md)
 
 下述尚未附带该等级证据的 SRD 语义仍按“待验证线索”处理。
 

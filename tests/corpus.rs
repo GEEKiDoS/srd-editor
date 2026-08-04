@@ -7,6 +7,7 @@ use srd_editor::csli::CsliDefinition;
 use srd_editor::dds::{
     D3d9Direct2dUpload, D3d9TextureCreation, DdsDescriptor, DdsLoadPolicy, GameTextureFormat,
 };
+use srd_editor::editor_document::EditorDocument;
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
@@ -16,6 +17,8 @@ use srd_editor::render::{
 };
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
+use srd_editor::shader_bytecode::FIRST_FIXTURE_SIMPLE_KEY;
+use srd_editor::srd_draw::build_evidence_complete_initial_image_draws;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -117,6 +120,51 @@ fn validates_complete_game_simple_shader_key_collection() {
     assert_eq!(multi_tex0_counts[10], 1);
     assert_eq!(multi_tex0_counts[11], 10);
     assert_eq!(multi_tex0_counts[12], 11);
+}
+
+#[test]
+fn builds_the_first_evidence_complete_srd_draw() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/system/CHU_UI_System_00_v10.srd")).unwrap();
+    let draws = build_evidence_complete_initial_image_draws(
+        &document.project,
+        &document.textures,
+        0,
+        Affine3x4::IDENTITY,
+        1920.0,
+    )
+    .unwrap();
+    assert_eq!(draws.len(), 1);
+    let draw = draws[0];
+    assert_eq!((draw.layer_index, draw.node_index), (0, 1));
+    assert_eq!(draw.shader_key, FIRST_FIXTURE_SIMPLE_KEY);
+    assert_eq!(
+        draw.quad.vertices.map(|vertex| vertex.position),
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1080.0, 0.0],
+            [1920.0, 0.0, 0.0],
+            [1920.0, 1080.0, 0.0],
+        ]
+    );
+    assert!(
+        draw.quad
+            .vertices
+            .iter()
+            .all(|vertex| vertex.primary_color == [0, 0, 0, 255])
+    );
+    assert!(
+        draw.quad
+            .vertices
+            .iter()
+            .all(|vertex| vertex.secondary_color == [0; 4])
+    );
+    assert_eq!(draw.raster.color_write_mask, 0x0f);
+    assert!(!draw.depth.z_enabled);
 }
 
 #[test]
