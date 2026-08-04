@@ -595,13 +595,17 @@ pub struct CeylonSrdFixedShaderConstants {
 }
 
 impl CeylonSrdFixedShaderConstants {
-    pub fn initial_2d(projection_view: Matrix4x4) -> Self {
+    /// Builds the fixed constants for a 2D SRD packet after it has reached a
+    /// concrete render target. `target_projection_view` is the target Camera
+    /// value supplied through `sea::AllEnvBasic::mtxPrjView`; it is not the
+    /// CAM record embedded in the SRD project.
+    pub fn initial_2d_for_target(target_projection_view: Matrix4x4) -> Self {
         Self {
             vertex_c0_c3_world: identity_matrix4x4_game(),
             vertex_c4_c7: identity_matrix4x4_game(),
             vertex_c8_fixed_param0: [0.0; 4],
             vertex_c9_fixed_param1: [0.0; 4],
-            vertex_c10_c13_projection_view: projection_view,
+            vertex_c10_c13_projection_view: target_projection_view,
             pixel_c0_fixed_param0: [0.0, 0.0, 1.0, 0.0],
         }
     }
@@ -1158,7 +1162,7 @@ mod tests {
         let projection_view = Matrix4x4 {
             rows: [[2.0; 4]; 4],
         };
-        let constants = CeylonSrdFixedShaderConstants::initial_2d(projection_view);
+        let constants = CeylonSrdFixedShaderConstants::initial_2d_for_target(projection_view);
         assert_eq!(constants.vertex_c0_c3_world, identity_matrix4x4_game());
         assert_eq!(constants.vertex_c4_c7, identity_matrix4x4_game());
         assert_eq!(constants.vertex_c8_fixed_param0, [0.0; 4]);

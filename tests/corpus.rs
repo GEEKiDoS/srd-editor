@@ -10,6 +10,7 @@ use srd_editor::dds::{
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
+use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
 use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
 use srd_editor::render::{
     CeylonDrawPacketPresetState, apply_srd_image_field_0c_shader_bits,
@@ -18,7 +19,7 @@ use srd_editor::render::{
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
 use srd_editor::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY};
-use srd_editor::srd_draw::build_evidence_complete_initial_image_draws;
+use srd_editor::srd_draw::{SrdHostDrawContext, build_evidence_complete_initial_image_draws};
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -27,6 +28,10 @@ use srd_editor::vtbf::{Block, SrdFile};
 enum CorpusProfile {
     Legacy53,
     Complete91,
+}
+
+fn identity_host_context() -> SrdHostDrawContext {
+    SrdHostDrawContext::new(Affine3x4::IDENTITY, identity_matrix4x4_game())
 }
 
 fn srd_corpus_profile(file_count: usize) -> CorpusProfile {
@@ -134,8 +139,7 @@ fn builds_the_first_evidence_complete_srd_draw() {
         &document.project,
         &document.textures,
         0,
-        Affine3x4::IDENTITY,
-        1920.0,
+        identity_host_context(),
     )
     .unwrap();
     assert_eq!(draws.len(), 1);
@@ -168,6 +172,18 @@ fn builds_the_first_evidence_complete_srd_draw() {
     assert!(!draw.blend.alpha_test_enabled);
     assert_eq!(draw.packet.flags_0c & 0x100, 0);
     assert_eq!(draw.texture_bindings, [None; 3]);
+    assert_eq!(
+        draw.fixed_constants.vertex_c10_c13_projection_view,
+        identity_matrix4x4_game()
+    );
+    assert_ne!(
+        draw.fixed_constants.vertex_c10_c13_projection_view,
+        document
+            .project
+            .camera
+            .runtime_matrices(1920.0)
+            .projection_view
+    );
 }
 
 #[test]
@@ -178,13 +194,21 @@ fn builds_evidence_complete_single_texture_draws() {
     };
     let document =
         EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
-    let scene = &document.project.scenes[0];
     let draws = build_evidence_complete_initial_image_draws(
         &document.project,
         &document.textures,
         0,
-        Affine3x4::IDENTITY,
-        scene.width,
+        SrdHostDrawContext::new(
+            Affine3x4::IDENTITY,
+            Matrix4x4 {
+                rows: [
+                    [2.0, 0.0, 0.0, 0.0],
+                    [0.0, 3.0, 0.0, 0.0],
+                    [0.0, 0.0, 4.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+            },
+        ),
     )
     .unwrap();
     let textured = draws
@@ -203,6 +227,10 @@ fn builds_evidence_complete_single_texture_draws() {
         .find(|draw| (draw.layer_index, draw.node_index) == (4, 4))
         .expect("advertise C_movie_dummy fixture draw");
     assert_eq!(fixture.texture_bindings[0].unwrap().texture_index, 5);
+    assert_eq!(
+        fixture.fixed_constants.vertex_c10_c13_projection_view.rows[0][0],
+        2.0
+    );
     assert_ne!(
         fixture.quad.vertices[0].position,
         fixture.quad.vertices[3].position

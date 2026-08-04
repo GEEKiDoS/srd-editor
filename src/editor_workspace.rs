@@ -26,6 +26,7 @@ pub struct EditorWorkspace {
     selected_layer: usize,
     selected_node: Option<usize>,
     composition_texture: Option<(TextureId, [u32; 2])>,
+    composition_unavailable_reason: Option<String>,
 }
 
 impl EditorWorkspace {
@@ -47,6 +48,7 @@ impl EditorWorkspace {
             selected_layer: 0,
             selected_node: None,
             composition_texture: None,
+            composition_unavailable_reason: None,
         }
     }
 
@@ -81,7 +83,14 @@ impl EditorWorkspace {
     }
 
     pub fn set_composition_texture(&mut self, texture: Option<(TextureId, [u32; 2])>) {
+        if texture.is_some() {
+            self.composition_unavailable_reason = None;
+        }
         self.composition_texture = texture;
+    }
+
+    pub fn set_composition_unavailable_reason(&mut self, reason: Option<String>) {
+        self.composition_unavailable_reason = reason;
     }
 
     fn draw_menu(&mut self, ui: &Ui) {
@@ -204,14 +213,21 @@ impl EditorWorkspace {
             ui.invisible_button("composition-canvas", size);
         } else {
             let center = [origin[0] + size[0] * 0.5, origin[1] + size[1] * 0.5];
+            let message = if self.document.is_some() {
+                self.composition_unavailable_reason
+                    .as_deref()
+                    .unwrap_or("No evidence-complete GPU draw for this scene")
+            } else {
+                "No SRD loaded"
+            };
+            let text_size = ui.calc_text_size(message);
             draw_list.add_text(
-                [center[0] - 54.0, center[1] - 8.0],
+                [
+                    center[0] - text_size[0] * 0.5,
+                    center[1] - text_size[1] * 0.5,
+                ],
                 [0.58, 0.60, 0.64, 1.0],
-                if self.document.is_some() {
-                    "No evidence-complete GPU draw for this scene"
-                } else {
-                    "No SRD loaded"
-                },
+                message,
             );
             ui.invisible_button("composition-canvas", size);
         }

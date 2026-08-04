@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::image::{ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource};
+use crate::projection::Matrix4x4;
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
     CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw,
@@ -47,6 +48,24 @@ pub struct EvidenceSrdTextureBinding {
     pub sampler: TextureSamplerState,
 }
 
+/// Inputs owned by the scene/target hosting an SrPlayer, rather than by the
+/// SRD file itself. There is deliberately no `Default`: an independent SRD
+/// does not identify a unique game target, Camera, or scene-node placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SrdHostDrawContext {
+    pub first_calc_matrix: Affine3x4,
+    pub target_projection_view: Matrix4x4,
+}
+
+impl SrdHostDrawContext {
+    pub const fn new(first_calc_matrix: Affine3x4, target_projection_view: Matrix4x4) -> Self {
+        Self {
+            first_calc_matrix,
+            target_projection_view,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct InitialWorldColorState {
     multiply: [u8; 4],
@@ -62,16 +81,14 @@ pub fn build_evidence_complete_initial_image_draws(
     project: &Project,
     textures: &TextureList,
     scene_index: usize,
-    first_calc_matrix: Affine3x4,
-    target_width: f32,
+    host: SrdHostDrawContext,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
     let scene = project
         .scenes
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
-    let camera_matrices = project.camera.runtime_matrices(target_width);
     let fixed_constants =
-        CeylonSrdFixedShaderConstants::initial_2d(camera_matrices.projection_view);
+        CeylonSrdFixedShaderConstants::initial_2d_for_target(host.target_projection_view);
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
@@ -85,7 +102,7 @@ pub fn build_evidence_complete_initial_image_draws(
             continue;
         }
         let world_matrices = layer
-            .compose_world_matrices_with_csli_layout(&transforms, first_calc_matrix, false)
+            .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
             .map_err(|error| SrdDrawError(error.to_string()))?;
         let world_colors = compose_initial_world_colors(layer, &transforms)?;
 

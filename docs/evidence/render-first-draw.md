@@ -16,13 +16,13 @@
 
 ## FirstCalcMatrix 边界
 
-`build_evidence_complete_initial_image_draws` 要求调用者显式提供 `FirstCalcMatrix`。语料测试传入 identity，只是在独立宿主输入固定为 identity 时验证确定结果；它不声称原游戏任意调用现场都使用 identity。该矩阵来自 SrPlayer 所在的外部 scene graph，不在 SRD 文件中，详见 [`projection.md`](projection.md)。
+`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix` 和 target Camera 的 `Projection*View`。语料测试对两者传入 identity，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用 identity。两者都不在独立 SRD 文件中，详见 [`projection.md`](projection.md) 与 [`render-target-routing.md`](render-target-routing.md)。
 
 编辑器未来的 fit-to-view 属于 Composition 显示变换，必须与这个游戏根矩阵分层保存。HiDPI 只改变窗口/backbuffer 的物理像素和 ImGui 的逻辑到物理比例，也不能进入 SRD 的 `FirstCalcMatrix`。
 
 ## 当前生成结果
 
-在 `FirstCalcMatrix = identity`、target width `1920` 时，Rust 生成一个 draw：
+在 `FirstCalcMatrix = identity`、显式 target `Projection*View = identity` 时，Rust 生成一个 draw：
 
 ```text
 scene/layer/node = 0/0/1
@@ -59,7 +59,7 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 
 material scissor 在二进制中是外部 context，而不是 SRD 属性，所以 renderer API 要求显式传入 `SrdDx9ExternalContext`。独立 smoke 明确使用 disabled scissor；这只是测试宿主输入，不外推为游戏任意调用现场的状态。当前首个 GPU 子集同样排除需要未知基础 alpha function/reference 的 alpha-test 或 stencil draw。
 
-`--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`，提交 identity-host draw，`EndScene` 后用 `GetRenderTargetData` 复制到 SYSTEMMEM surface，并在 fixture 内部采样点验证 B/G/R 为零。随后它进入 ImGui draw 和 `PresentEx`，再强制 `ResetEx`、释放并重建 SRD/ImGui DEFAULT-pool 资源，第二帧重复同一像素断言。该验证已经通过；它证明真实像素被 shader draw 改写，而不只证明 D3D9 API 返回成功。
+`--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`。为保留既有 GPU 诊断，它只在 smoke flag 下显式构造“SRD CAM 作为 target Camera”的诊断 host；该 host 不会用于普通编辑器预览，也不声称等于游戏 target。`EndScene` 后用 `GetRenderTargetData` 复制到 SYSTEMMEM surface，并在 fixture 内部采样点验证 B/G/R 为零。随后它进入 ImGui draw 和 `PresentEx`，再强制 `ResetEx`、释放并重建 SRD/ImGui DEFAULT-pool 资源，第二帧重复同一像素断言。
 
 Composition 现已创建与 SCN 尺寸一致、格式取自实际 backbuffer 的 DEFAULT-pool render-target texture，并把它注册到 ImGui texture table。面板按可用逻辑尺寸保持宽高比居中显示；HiDPI framebuffer scale 只作用于 ImGui 最终顶点与 scissor。`ResetEx` 前会先从 texture table 移除 COM 引用并释放 target，reset 后重建和重新注册。
 

@@ -19,7 +19,9 @@ use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::shader_bytecode::{
     FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
 };
-use crate::srd_draw::{EvidenceCompleteSrdDraw, build_evidence_complete_initial_image_draws};
+use crate::srd_draw::{
+    EvidenceCompleteSrdDraw, SrdHostDrawContext, build_evidence_complete_initial_image_draws,
+};
 use crate::transform::Affine3x4;
 
 const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
@@ -152,20 +154,34 @@ impl EditorWindow {
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
         let workspace_path = (!dds_device_audit).then_some(document_path).flatten();
         let mut workspace = EditorWorkspace::new(build_default_layout, workspace_path);
-        let draw_result = workspace.document().and_then(|document| {
-            let scene = document.project.scenes.first()?;
-            Some((
-                build_evidence_complete_initial_image_draws(
-                    &document.project,
-                    &document.textures,
-                    0,
-                    Affine3x4::IDENTITY,
-                    scene.width.max(1.0),
-                ),
-                [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
-            ))
-        });
         let require_srd_draw = srd_draw_smoke || srd_texture_smoke;
+        let draw_result = if require_srd_draw {
+            workspace.document().and_then(|document| {
+                let scene = document.project.scenes.first()?;
+                eprintln!(
+                    "SRD smoke host=diagnostic-project-camera first_calc=identity target_width={}",
+                    scene.width.max(1.0)
+                );
+                let host =
+                    diagnostic_project_camera_smoke_host(&document.project, scene.width.max(1.0));
+                Some((
+                    build_evidence_complete_initial_image_draws(
+                        &document.project,
+                        &document.textures,
+                        0,
+                        host,
+                    ),
+                    [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
+                ))
+            })
+        } else {
+            if workspace.document().is_some() {
+                workspace.set_composition_unavailable_reason(Some(
+                    "Host target/camera profile not selected".to_string(),
+                ));
+            }
+            None
+        };
         let (mut srd_renderer, mut srd_draws, composition_size) = match draw_result {
             Some((Ok(draws), size)) if !draws.is_empty() => {
                 let renderer = SrdDx9Renderer::new(d3d9.device())
@@ -423,6 +439,22 @@ impl EditorWindow {
         render_result?;
         present_result
     }
+}
+
+/// Preserves the existing GPU smoke as an explicit diagnostic host. This is
+/// intentionally restricted to smoke flags: the SRD CAM is not a game target
+/// Camera and must never become the editor's implicit preview default.
+fn diagnostic_project_camera_smoke_host(
+    project: &crate::scene::Project,
+    target_width: f32,
+) -> SrdHostDrawContext {
+    SrdHostDrawContext::new(
+        Affine3x4::IDENTITY,
+        project
+            .camera
+            .runtime_matrices(target_width)
+            .projection_view,
+    )
 }
 
 fn editor_ini_path() -> Option<PathBuf> {

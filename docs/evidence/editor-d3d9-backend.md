@@ -67,7 +67,7 @@ Windows 上 winit 优先调用 Per-Monitor V2 DPI awareness，系统不支持时
 - 右侧 `Properties`；
 - 下方 `Layers & Timeline`，固定的层/状态列和可横向滚动的时间轴位于同一张 table，因此共享垂直滚动和行选择。
 
-命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。首个无贴图 SRD draw 现在提交到与 SCN 尺寸一致的 D3D9 render-target texture，并由中央 Composition 通过 ImGui texture ID 显示；不满足证据完整边界的场景会明确显示没有可用 GPU draw，不输出近似画面。
+命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。普通编辑器打开独立 SRD 时不会再把 SRD CAM 冒充为 target Camera；在用户选择宿主 profile 前，Composition 明确显示 `Host target/camera profile not selected`。已有 GPU smoke 仍可用，但其 project-camera host 只在 smoke flag 下显式构造并标记为诊断输入。
 
 Composition texture 使用当前 D3D9Ex backbuffer 的实际格式创建，属于编辑器集成选择，不被表述为 SRD 文件格式语义。面板以 ImGui 逻辑坐标计算保持宽高比的居中显示矩形，renderer 再使用 `display_framebuffer_scale` 把顶点和 scissor 转为物理像素。因此跨显示器 DPI 变化只改变 UI 栅格化与显示尺寸，不改变固定 SCN 像素纹理、CAM 或 `FirstCalcMatrix`。
 
