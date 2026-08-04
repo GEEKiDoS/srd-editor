@@ -291,7 +291,17 @@ Rust 已按原始偏移名保存为 `FENNEL_FONT_MANAGER_SET_E0/E4`，并精确�
 - U range 精确取 record `uv1.u-uv0.u`，V range 取 `uv2.v-uv0.v`；每个裁后角使用 `(clipped-original_near)/(original_far-original_near)` 从共同 `uv0` 重算 UV；
 - 裁后四角再走与无裁剪分支相同的 4x4 perspective divide、颜色转换、`[1,0,2,3,1,2]` 三角顺序和 UV bias。
 
-Rust 还保留 MAXSS 在 NaN/相等输入时选择第二操作数的语义，以免把 signed zero 边界悄悄改写。该函数目前是证据完整的纯顶点分支；静态 `build_fennel_static_unclipped_vertex_batches` 仍只处理构造 mode 0，因为动态 mode `2..6` 的实际运行时写入来源尚未闭环。
+Rust 还保留 MAXSS 在 NaN/相等输入时选择第二操作数的语义，以免把 signed zero 边界悄悄改写。该函数是证据完整的纯顶点分支；静态 `build_fennel_static_unclipped_vertex_batches` 仍只处理构造 mode 0，另由显式 runtime 入口承接调用方已经掌握的 flags 与 clip size。
+
+随后对 SrTextCast 自身 `+0x1F4` 状态指针的所有直接消费者继续审计，定位到未被 IDA 自动建函数的 `0xADA300..0xADA348`。这是一条精确的显式 mode-6 控制方法：
+
+- 参数顺序为 `enabled, value_to_state_130, value_to_state_134, value_to_state_12C`；
+- 启用时先清除 `*(SrTextCast+0x1F4) flags bit 0`，再写 `SrTextCast+0x324/+0x328/+0x320`，最后写 `SrTextCast+0x2FC = 6`；
+- 关闭时只设置该 flags bit 0 并写 mode 0，三个值保持不变；
+- state `+0x130/+0x134` 随后由 `sub_AC5740` 进入三个非负提交量：`max((state.F4-state.130)*state.FC,0)`、`max(state.130*state.FC,0)`、`max(state.134*state.FC,0)`；state `+0x12C` 在 `sub_AD8D50` 的失败分支被复制到 state `+0xFC`。在更高层名字闭合前，Rust 保留这些偏移名，不把它们猜成通用 crop/scroll 属性；
+- `off_190E210` 的 SrTextCast 虚表不含此方法。当前 IDB 对 `0xADA300` 仅有 jump-island `0x45335F` 的跳转引用，而该 thunk 本身无代码或数据引用。因此现有游戏内部没有已证明的调用点，不能把它接到 SRD 首帧或动画轨道。
+
+Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固化上述完整状态变更，并增加 `build_fennel_normal_vertex_batches`：调用方必须显式提供 TextBox runtime flags 与 `+0x2E4/+0x2E8` clip size，函数才会在已经证明的 clipped/unclipped 顶点分支间选择。原有静态包装器仍固定 mode-zero 非裁剪行为；mode `2..5` 的写入源和任何自动属性映射仍留作证据 TODO。
 
 静态 mode-zero SrTextCast 的 normal-glyph 调用输入也已闭合：
 
@@ -390,4 +400,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 - `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- SrTextCast state `+0x108` 从构造 mode 0 切换为 `2..6` 的实际写入来源，以及 `0x40000` 第二 glyph/effect 的具体来源；
+- SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源、mode 6 显式 API 的真实调用点，以及 `0x40000` 第二 glyph/effect 的具体来源；

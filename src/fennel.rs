@@ -61,6 +61,49 @@ pub const fn fennel_fresh_srd_textbox_flags(text_flags: u32, mode: u32) -> u32 {
     }
 }
 
+/// The exact state touched by the non-virtual SrTextCast method at
+/// `0xADA300..0xADA348`. Field names retain their offsets within the text
+/// state at `SrTextCast+0x1F4`; their higher-level authoring names are not yet
+/// proven.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelSrdMode6ControlState {
+    /// The first DWORD of the referenced TEXT definition.
+    pub text_flags: u32,
+    /// Text state `+0x108` (`SrTextCast+0x2FC`).
+    pub mode_108: u32,
+    /// Text state `+0x12C` (`SrTextCast+0x320`).
+    pub field_12c: i32,
+    /// Text state `+0x130` (`SrTextCast+0x324`).
+    pub field_130: i32,
+    /// Text state `+0x134` (`SrTextCast+0x328`).
+    pub field_134: i32,
+}
+
+/// Reproduces the complete state mutation at `0xADA300..0xADA348`.
+///
+/// Enabling clears TEXT flags bit zero, stores the three arguments in the
+/// binary's `+0x130`, `+0x134`, `+0x12C` order, and selects mode 6. Disabling
+/// sets TEXT flags bit zero and restores mode 0 without clearing the three
+/// retained values.
+pub fn fennel_apply_srd_mode6_control(
+    state: &mut FennelSrdMode6ControlState,
+    enabled: bool,
+    field_130: i32,
+    field_134: i32,
+    field_12c: i32,
+) {
+    if enabled {
+        state.text_flags &= !1;
+        state.field_130 = field_130;
+        state.field_134 = field_134;
+        state.mode_108 = 6;
+        state.field_12c = field_12c;
+    } else {
+        state.text_flags |= 1;
+        state.mode_108 = 0;
+    }
+}
+
 /// The 45 UTF-16 values copied from `word_1940AB8` into the FontManager
 /// implementation's `+0xE0` lookup by `sub_F33C30`.
 pub const FENNEL_FONT_MANAGER_SET_E0: [u16; 45] = [
@@ -657,6 +700,24 @@ pub struct FennelStaticUnclippedDrawInput {
     pub secondary_color: u32,
 }
 
+/// Evidence-complete normal-glyph inputs shared by the clipped and unclipped
+/// branches of `sub_7C7F90 -> sub_7C10B0`.
+///
+/// The runtime state source remains explicit: this type does not infer a mode
+/// from SRD properties or animation data. `textbox_flags` selects the branch
+/// exactly as the game does; `clip_size` is TextBoxObject `+0x2E4/+0x2E8`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelNormalDrawInput {
+    pub is_2d: bool,
+    pub textbox_position: [f32; 3],
+    pub textbox_scale: [f32; 2],
+    pub textbox_vertical_offset: f32,
+    pub textbox_transform: Matrix4x4,
+    pub secondary_color: u32,
+    pub textbox_flags: u32,
+    pub clip_size: [f32; 2],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FennelOwnedTextureBatch {
     pub texture_token: u32,
@@ -734,6 +795,37 @@ pub fn build_fennel_static_unclipped_vertex_batches<F>(
     stream: &FennelPlainRecordStream,
     maximum_glyphs: i32,
     input: FennelStaticUnclippedDrawInput,
+    runtime_glyph: F,
+) -> Result<FennelStaticUnclippedBatchBuild, FennelStaticUnclippedBatchError>
+where
+    F: FnMut(u32) -> Option<RuhunaRuntimeGlyphRecord>,
+{
+    build_fennel_normal_vertex_batches(
+        stream,
+        maximum_glyphs,
+        FennelNormalDrawInput {
+            is_2d: input.is_2d,
+            textbox_position: input.textbox_position,
+            textbox_scale: input.textbox_scale,
+            textbox_vertical_offset: input.textbox_vertical_offset,
+            textbox_transform: input.textbox_transform,
+            secondary_color: input.secondary_color,
+            // Fresh TextBoxObject low bits. Both possible initial values, 3
+            // and 7, select the same non-clipping branch.
+            textbox_flags: 3,
+            clip_size: [0.0; 2],
+        },
+        runtime_glyph,
+    )
+}
+
+/// Reproduces the normal-glyph portion of `sub_7C7F90` and selects the exact
+/// clipped or unclipped `sub_7C10B0` branch from caller-supplied runtime state.
+/// The separate `record+0x0C & 0x40000` effect glyph remains rejected.
+pub fn build_fennel_normal_vertex_batches<F>(
+    stream: &FennelPlainRecordStream,
+    maximum_glyphs: i32,
+    input: FennelNormalDrawInput,
     mut runtime_glyph: F,
 ) -> Result<FennelStaticUnclippedBatchBuild, FennelStaticUnclippedBatchError>
 where
@@ -790,13 +882,27 @@ where
                 record.x + (glyph.bearing_x.wrapping_sub(enabled) as f32) * effective_scale[0],
                 record.y + (correction_y.wrapping_sub(enabled) as f32) * effective_scale[1],
             ];
-            vertices.extend_from_slice(&build_fennel_unclipped_vertices(
-                record,
-                origin,
-                effective_scale,
-                &cpu_transform,
-                input.secondary_color,
-            ));
+            let glyph_vertices = if input.textbox_flags & FENNEL_TEXTBOX_CLIP_FLAG != 0 {
+                build_fennel_clipped_vertices(
+                    record,
+                    origin,
+                    effective_scale,
+                    &cpu_transform,
+                    input.secondary_color,
+                    input.textbox_flags,
+                    input.clip_size[0],
+                    input.clip_size[1],
+                )
+            } else {
+                build_fennel_unclipped_vertices(
+                    record,
+                    origin,
+                    effective_scale,
+                    &cpu_transform,
+                    input.secondary_color,
+                )
+            };
+            vertices.extend_from_slice(&glyph_vertices);
         }
         batches.push(FennelOwnedTextureBatch {
             texture_token: batch.texture_token,
@@ -1896,6 +2002,36 @@ mod tests {
     }
 
     #[test]
+    fn srd_mode6_control_matches_ada300_and_preserves_values_when_disabled() {
+        let mut state = FennelSrdMode6ControlState {
+            text_flags: 0x35,
+            mode_108: 4,
+            field_12c: -1,
+            field_130: -2,
+            field_134: -3,
+        };
+
+        fennel_apply_srd_mode6_control(&mut state, true, 11, 22, 33);
+        assert_eq!(
+            state,
+            FennelSrdMode6ControlState {
+                text_flags: 0x34,
+                mode_108: 6,
+                field_12c: 33,
+                field_130: 11,
+                field_134: 22,
+            }
+        );
+
+        fennel_apply_srd_mode6_control(&mut state, false, 101, 202, 303);
+        assert_eq!(state.text_flags, 0x35);
+        assert_eq!(state.mode_108, 0);
+        assert_eq!(state.field_12c, 33);
+        assert_eq!(state.field_130, 11);
+        assert_eq!(state.field_134, 22);
+    }
+
+    #[test]
     fn fitting_layout_applies_center_alignment_and_binary_metric_order() {
         let mut stream = one_line_stream(&[1, 2]);
         let result = layout_fennel_static_fitting_lines(
@@ -2391,6 +2527,81 @@ mod tests {
             )
             .unwrap_err(),
             FennelStaticUnclippedBatchError::EffectGlyphUnsupported { record_index: 0 }
+        );
+    }
+
+    #[test]
+    fn normal_batches_select_the_runtime_clipping_branch() {
+        let mut stream = one_line_stream(&[1]);
+        stream.records[0] = FennelGlyphLayoutRecord {
+            kind: 1,
+            glyph_token: 1,
+            texture_token: 7,
+            x: -1.0,
+            y: -4.0,
+            width: 4.0,
+            height: 4.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            colors: [0xFFFF_FFFF; 4],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 0.0],
+            uv2: [0.0, 1.0],
+            uv3: [1.0, 1.0],
+            ..Default::default()
+        };
+        let build = build_fennel_normal_vertex_batches(
+            &stream,
+            -1,
+            FennelNormalDrawInput {
+                is_2d: true,
+                textbox_position: [0.0; 3],
+                textbox_scale: [1.0; 2],
+                textbox_vertical_offset: 0.0,
+                textbox_transform: identity_matrix4x4_game(),
+                secondary_color: 0,
+                textbox_flags: FENNEL_TEXTBOX_CLIP_FLAG | FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
+                clip_size: [2.0, 2.0],
+            },
+            |_| {
+                Some(RuhunaRuntimeGlyphRecord {
+                    texture_token: 7,
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(build.batches.len(), 1);
+        assert_eq!(
+            build.batches[0]
+                .vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>(),
+            vec![
+                [2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ]
+        );
+        assert_eq!(
+            build.batches[0]
+                .vertices
+                .iter()
+                .map(|vertex| vertex.texture_coordinates)
+                .collect::<Vec<_>>(),
+            vec![
+                [0.75 + FENNEL_UV_BIAS, 0.25 + FENNEL_UV_BIAS],
+                [0.25 + FENNEL_UV_BIAS, 0.25 + FENNEL_UV_BIAS],
+                [0.25 + FENNEL_UV_BIAS, 0.75 + FENNEL_UV_BIAS],
+                [0.75 + FENNEL_UV_BIAS, 0.75 + FENNEL_UV_BIAS],
+                [0.75 + FENNEL_UV_BIAS, 0.25 + FENNEL_UV_BIAS],
+                [0.25 + FENNEL_UV_BIAS, 0.75 + FENNEL_UV_BIAS],
+            ]
         );
     }
 
