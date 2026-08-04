@@ -107,9 +107,9 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 
 ## 投影与视口
 
-`surfride::SrPlayer -> SrPlayer::Impl -> SrRenderer` 的运行时对象链、`SrRenderer+0x48` 屏幕矩阵、Width/Height 属性、D3D 风格视口矩阵、精确 row-major 4x4 乘法以及 CAST 四角的二维直通/三维透视除法已经完成二进制闭环并实现，详见 [`evidence/projection.md`](evidence/projection.md)。
+`PROJ` 直接子块 `CAM ` 的 position、target、angle units、near/far 已闭环到解析后的 `SrProject+0x58`，并继续闭环到全局 `sea::Camera` 的 RH View、Perspective、`Projection*View` 与 shader `mtxPrjView` provider。`SCN 0x40/0x41` 也已证明为 scene width/height。完整证据和 Rust 实现见 [`evidence/projection.md`](evidence/projection.md)。
 
-游戏在构造 `SrRenderer+0x48` 时已经乘入 `[0,width] x [0,height]` 的像素视口映射和 Y 反转，因此三维 CAST 在除以 W 后得到最终屏幕 X/Y，不存在另一个尚未执行的 NDC-to-viewport 步骤。上游 camera/backend 两个输入矩阵的类方法语义仍待继续命名和追踪。
+游戏在构造 `SrRenderer+0x48` 时已经乘入 `[0,width] x [0,height]` 的像素视口映射和 Y 反转，因此三维 CAST 在除以 W 后得到最终屏幕 X/Y，不存在另一个尚未执行的 NDC-to-viewport 步骤。全局 Camera 输入已命名并实现；另一个 backend context 的逆/组合变换仍待追踪。
 
 ## 图像与特殊 CAST
 
@@ -127,6 +127,6 @@ NODE `0x3C/0x3D` 的首子/同级链以及根节点选择已经闭环并实现�
 1. VTBF/SRFF 文件头、块长度、子块布局和全部属性编码。
 2. 各标签的构造/解析分派函数及运行时对象类型。
 3. 引用层根 CAST 的附加抑制条件，以及递归绘制进入实际 draw submission 后的完整状态恢复。
-4. 投影屏幕矩阵上游 camera/backend 输入及 3D 深度、裁剪提交逻辑。
+4. 投影屏幕矩阵中另一个 backend context 的逆/组合变换，以及 3D 深度、裁剪提交逻辑。
 5. CNUM 历史 glyph 动画、TEXT 与 shader/固定管线中的双 UV 消费流程。
 6. CNUM 历史 glyph 动画、CAST tint/default color 与最终 D3D9 绘制语义；ANIM/TRK 已证明没有独立的 Number 数值目标。

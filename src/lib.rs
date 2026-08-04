@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod attribute;
+pub mod camera;
 pub mod csli;
 pub mod d3d9_backend;
 pub mod dds;
@@ -15,6 +16,7 @@ pub mod reference_runtime;
 pub mod render;
 pub mod scene;
 pub mod shader;
+pub mod shader_bytecode;
 pub mod texture;
 pub mod transform;
 pub mod vtbf;

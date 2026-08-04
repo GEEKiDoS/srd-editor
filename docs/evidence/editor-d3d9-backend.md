@@ -14,6 +14,8 @@
 
 运行时不链接、不加载也不调用 D3DX 或 NVIDIA Cg。Cg 仅存在于隔离的离线 shader 取证流程中，详见 [`render-shader-bytecode.md`](render-shader-bytecode.md)。
 
+初始化还会把首个证据闭环 fixture 的嵌入式 `vs_3_0/ps_3_0` token 直接交给同一个 `IDirect3DDevice9Ex::CreateVertexShader/CreatePixelShader`。创建失败会中止编辑器启动或 smoke test；这一验证不加载 Cg/D3DX。
+
 ## Dear ImGui renderer
 
 `src/imgui_dx9.rs` 是针对 imgui-rs draw data 的原生 Rust D3D9 renderer，接收 D3D9Ex device 的 `IDirect3DDevice9` 基接口，行为以 Dear ImGui 官方 DX9 backend 为基础。实现包括：
@@ -74,9 +76,9 @@ cargo run -- --d3d9ex-smoke
 cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 ```
 
-两条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，生成并以 `PresentEx` 提交第一帧 ImGui draw data；随后显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。第二条命令还在帧生成前实际解析指定 SRD 并构建文档面板。
+两条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。第二条命令还在帧生成前实际解析指定 SRD 并构建文档面板。
 
-同次检查还执行完整回归：88 个单元测试及 18 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
+同次检查还执行完整回归：95 个单元测试及 18 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 
@@ -84,6 +86,6 @@ cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_
 
 - DDS 解码/上传与 stage 0/1 资源绑定；
 - format 14 顶点提交；
-- 精确 shader key 到已验证 bytecode 的 runtime 选择；
-- shader 常量、sampler、blend/depth/stencil/scissor；
+- 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
+- 已建模 shader 常量的实际上传，以及 sampler、blend/depth/stencil/scissor；
 - scene、reference cast 和动画状态到实际 draw ordering。

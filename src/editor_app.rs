@@ -14,6 +14,7 @@ use winit::window::{Window, WindowId};
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
 use crate::imgui_dx9::ImguiDx9Renderer;
+use crate::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair};
 
 const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
 
@@ -83,6 +84,10 @@ impl EditorWindow {
         platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
         let dpi_factor = platform.hidpi_factor();
         configure_imgui_fonts(&mut imgui, dpi_factor);
+        let shader_pair = embedded_simple_shader_pair(&FIRST_FIXTURE_SIMPLE_KEY)
+            .ok_or_else(|| "embedded first-fixture shader pair is missing".to_string())?;
+        d3d9.validate_shader_pair(&shader_pair)
+            .map_err(|error| format!("D3D9 failed to create embedded SRD shaders: {error}"))?;
         let imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
 

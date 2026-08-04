@@ -1,3 +1,4 @@
+use crate::projection::{Matrix4x4, identity_matrix4x4_game};
 use crate::shader::{CeylonShadowParallelParameters, CeylonSimpleShaderBits};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +499,29 @@ pub struct CeylonDrawPacketPresetState {
     pub field_2c: i32,
     pub flags_58: u32,
     pub flags_60: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CeylonSrdFixedShaderConstants {
+    pub vertex_c0_c3_world: Matrix4x4,
+    pub vertex_c4_c7: Matrix4x4,
+    pub vertex_c8_fixed_param0: [f32; 4],
+    pub vertex_c9_fixed_param1: [f32; 4],
+    pub vertex_c10_c13_projection_view: Matrix4x4,
+    pub pixel_c0_fixed_param0: [f32; 4],
+}
+
+impl CeylonSrdFixedShaderConstants {
+    pub fn initial_2d(projection_view: Matrix4x4) -> Self {
+        Self {
+            vertex_c0_c3_world: identity_matrix4x4_game(),
+            vertex_c4_c7: identity_matrix4x4_game(),
+            vertex_c8_fixed_param0: [0.0; 4],
+            vertex_c9_fixed_param1: [0.0; 4],
+            vertex_c10_c13_projection_view: projection_view,
+            pixel_c0_fixed_param0: [0.0, 0.0, 1.0, 0.0],
+        }
+    }
 }
 
 impl CeylonDrawPacketPresetState {
@@ -1045,6 +1069,20 @@ impl SrdQuadDraw {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_2d_fixed_shader_constants_match_the_packet_and_provider_chain() {
+        let projection_view = Matrix4x4 {
+            rows: [[2.0; 4]; 4],
+        };
+        let constants = CeylonSrdFixedShaderConstants::initial_2d(projection_view);
+        assert_eq!(constants.vertex_c0_c3_world, identity_matrix4x4_game());
+        assert_eq!(constants.vertex_c4_c7, identity_matrix4x4_game());
+        assert_eq!(constants.vertex_c8_fixed_param0, [0.0; 4]);
+        assert_eq!(constants.vertex_c9_fixed_param1, [0.0; 4]);
+        assert_eq!(constants.vertex_c10_c13_projection_view, projection_view);
+        assert_eq!(constants.pixel_c0_fixed_param0, [0.0, 0.0, 1.0, 0.0]);
+    }
 
     #[test]
     fn shader_key_maps_every_binary_packet_field_and_texture_count() {

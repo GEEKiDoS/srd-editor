@@ -32,6 +32,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut candidate_count = 0usize;
     let mut rejected_count = 0usize;
 
+    let camera = document.project.camera;
+    println!(
+        "camera position={:?} target={:?} angle_units={} angle_degrees={} near={} far={}",
+        camera.position,
+        camera.target,
+        camera.angle_units,
+        camera.angle_degrees(),
+        camera.near,
+        camera.far,
+    );
+    for (scene_index, scene) in document.project.scenes.iter().enumerate() {
+        println!(
+            "scene={scene_index}:{} composition={}x{}",
+            display_srd_name(&scene.name),
+            scene.width,
+            scene.height,
+        );
+    }
+
     for (scene_index, scene) in document.project.scenes.iter().enumerate() {
         for (layer_index, layer) in scene.layers.iter().enumerate() {
             for node_index in 0..layer.nodes.len() {

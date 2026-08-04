@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::animation::AnimationDefinition;
 use crate::attribute::{CastAttributeList, ExtParamData};
+use crate::camera::CameraDefinition;
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
 use crate::number::NumberDefinition;
@@ -54,6 +55,8 @@ pub struct Scene {
     pub name: Vec<u8>,
     pub declared_layer_count: u32,
     pub declared_animation_set_count: u32,
+    pub width: f32,
+    pub height: f32,
     pub layers: Vec<Layer>,
 }
 
@@ -66,6 +69,8 @@ impl Scene {
         let name = fixed_name(file, block, 0x03, 64, "SCN  0x03")?;
         let declared_layer_count = read_unsigned(file, block, 0x10)?;
         let declared_animation_set_count = read_unsigned(file, block, 0x17)?;
+        let width = optional_float(file, block, 0x40)?;
+        let height = optional_float(file, block, 0x41)?;
         let layers = block
             .children
             .iter()
@@ -95,6 +100,8 @@ impl Scene {
             name,
             declared_layer_count,
             declared_animation_set_count,
+            width,
+            height,
             layers,
         })
     }
@@ -104,6 +111,7 @@ impl Scene {
 pub struct Project {
     pub name: Vec<u8>,
     pub declared_scene_count: u32,
+    pub camera: CameraDefinition,
     pub scenes: Vec<Scene>,
 }
 
@@ -130,6 +138,8 @@ impl Project {
             .transpose()?
             .unwrap_or_default();
         let declared_scene_count = read_unsigned(file, block, 0x00)?;
+        let camera = CameraDefinition::from_project_block(file, block)
+            .map_err(|error| SceneError(error.to_string()))?;
         let scenes = block
             .children
             .iter()
@@ -146,6 +156,7 @@ impl Project {
         Ok(Self {
             name,
             declared_scene_count,
+            camera,
             scenes,
         })
     }
@@ -833,6 +844,18 @@ fn read_unsigned(file: &SrdFile, block: &Block, code: u8) -> Result<u32, SceneEr
     required_property(block, code)?
         .read_unsigned_scalar(file)
         .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+}
+
+fn optional_float(file: &SrdFile, block: &Block, code: u8) -> Result<f32, SceneError> {
+    block
+        .last_property(code)
+        .map(|property| {
+            property
+                .read_scalar_as_f32(file)
+                .ok_or_else(|| SceneError(format!("invalid property {code:#04x}")))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(0.0))
 }
 
 fn cvtt_f32_to_i32(value: f32) -> i32 {

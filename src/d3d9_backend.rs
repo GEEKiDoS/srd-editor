@@ -14,6 +14,8 @@ use windows::core::{BOOL, Error, HRESULT, Result};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+use crate::shader_bytecode::EmbeddedSimpleShaderPair;
+
 const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
 const D3DERR_DEVICELOST: HRESULT = HRESULT(0x8876_0868_u32 as i32);
 
@@ -94,6 +96,16 @@ impl D3d9ExDevice {
 
     pub fn device(&self) -> &IDirect3DDevice9 {
         &self.device
+    }
+
+    pub fn validate_shader_pair(&self, pair: &EmbeddedSimpleShaderPair) -> Result<()> {
+        unsafe {
+            let _vertex_shader = self
+                .device
+                .CreateVertexShader(pair.vertex_shader.as_ptr())?;
+            let _pixel_shader = self.device.CreatePixelShader(pair.pixel_shader.as_ptr())?;
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {

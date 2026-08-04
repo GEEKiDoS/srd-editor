@@ -193,8 +193,24 @@ impl EditorWorkspace {
     fn draw_properties(&self, ui: &Ui) {
         ui.text_disabled("PROPERTIES");
         ui.separator();
+        if let Some(document) = &self.document {
+            let camera = document.project.camera;
+            ui.text_disabled("PROJECT CAMERA");
+            ui.text(format!("Position: {:?}", camera.position));
+            ui.text(format!("Target: {:?}", camera.target));
+            ui.text(format!(
+                "FovY: {} units / {:.6}°",
+                camera.angle_units,
+                camera.angle_degrees()
+            ));
+            ui.text(format!("Near / Far: {} / {}", camera.near, camera.far));
+            if let Some(scene) = self.selected_scene() {
+                ui.text(format!("Composition: {} × {}", scene.width, scene.height));
+            }
+            ui.separator();
+        }
         let Some((layer, node_index)) = self.selected_layer_and_node() else {
-            ui.text("Nothing selected");
+            ui.text_disabled("Select a node for CAST properties");
             return;
         };
         let node = &layer.nodes[node_index];
@@ -298,13 +314,15 @@ impl EditorWorkspace {
     }
 
     fn selected_layer(&self) -> Option<&Layer> {
+        self.selected_scene()?.layers.get(self.selected_layer)
+    }
+
+    fn selected_scene(&self) -> Option<&crate::scene::Scene> {
         self.document
             .as_ref()?
             .project
             .scenes
-            .get(self.selected_scene)?
-            .layers
-            .get(self.selected_layer)
+            .get(self.selected_scene)
     }
 
     fn selected_layer_and_node(&self) -> Option<(&Layer, usize)> {

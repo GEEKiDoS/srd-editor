@@ -40,6 +40,8 @@
 
 所有 VS bytecode 首 token 为 `0xFFFE0300` (`vs_3_0`)，所有 PS 首 token 为 `0xFFFF0300` (`ps_3_0`)，全部以 `0x0000FFFF` 结束。82 个键因部分 feature 只影响单一 stage，最终折叠为 14 个不同 VS bytecode hash 和 24 个不同 PS bytecode hash。
 
+首个无贴图渲染 fixture 使用的 key `AAEBABBAAAGAAAAAAA` 已单独嵌入 Rust：VS 332 bytes、SHA-256 `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61`；PS 216 bytes、SHA-256 `B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F`。运行时只按精确 key 返回该 pair，不调用 Cg/D3DX，也不为其他 key 猜测替代品。
+
 collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 | stage | assembly bytes | bytecode bytes | SHA-256 |

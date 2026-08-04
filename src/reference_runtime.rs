@@ -723,10 +723,13 @@ mod tests {
         Project {
             name: Vec::new(),
             declared_scene_count: 1,
+            camera: crate::camera::CameraDefinition::default(),
             scenes: vec![Scene {
                 name: b"scene".to_vec(),
                 declared_layer_count: layers.len() as u32,
                 declared_animation_set_count: 0,
+                width: 0.0,
+                height: 0.0,
                 layers,
             }],
         }
