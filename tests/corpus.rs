@@ -16,6 +16,7 @@ use srd_editor::render::{
     CeylonDrawPacketPresetState, apply_srd_image_field_0c_shader_bits,
     select_srd_image_render_preset,
 };
+use srd_editor::ruhuna::RuhunaFont;
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
 use srd_editor::shader_bytecode::{
@@ -81,6 +82,66 @@ fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
             collect_dds_files(&path, output);
         } else if path.extension().is_some_and(|extension| extension == "dds") {
             output.push(path);
+        }
+    }
+}
+
+#[test]
+fn parses_complete_game_ruhuna_font_archives_and_embedded_dds_pages() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let expected = [
+        ("14pt", 10, 7_161, 1, 1_024),
+        ("18pt", 14, 7_161, 1, 2_048),
+        ("24pt", 18, 7_161, 2, 512),
+        ("32pt", 24, 7_161, 2, 2_048),
+        ("60pt", 45, 7_161, 7, 256),
+        ("240pt", 180, 201, 2, 1_024),
+    ];
+    for (suffix, point, glyph_count, page_count, last_height) in expected {
+        let path = root
+            .join("A000/font")
+            .join(format!("RFO_SEGAKAKUGOTHIC_DB_{suffix}.rfz"));
+        let bytes = fs::read(&path).unwrap();
+        let font = RuhunaFont::from_rfz(&bytes)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(font.database.point, point, "{}", path.display());
+        assert_eq!(font.glyphs.len(), glyph_count, "{}", path.display());
+        assert_eq!(
+            font.database.glyph_count as usize,
+            glyph_count,
+            "{}",
+            path.display()
+        );
+        assert_eq!(font.textures.len(), 1, "{}", path.display());
+        assert_eq!(font.database.texture_width, 2_048, "{}", path.display());
+        assert_eq!(font.database.texture_height, 2_048, "{}", path.display());
+        assert_eq!(
+            font.database.texture_last_height,
+            last_height,
+            "{}",
+            path.display()
+        );
+        let pages = font
+            .atlas_pages(&font.textures[0])
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(pages.len(), page_count, "{}", path.display());
+        for page in pages {
+            assert_eq!(
+                page.descriptor.format,
+                GameTextureFormat::A4_R4_G4_B4,
+                "{} page {}",
+                path.display(),
+                page.page_index
+            );
+            assert!(
+                font.atlas_page_bytes(&page).starts_with(b"DDS "),
+                "{} page {}",
+                path.display(),
+                page.page_index
+            );
         }
     }
 }

@@ -16,6 +16,13 @@ const COMPOSITION_WINDOW: &CStr = c"Composition";
 const PROPERTIES_WINDOW: &CStr = c"Properties";
 const TIMELINE_WINDOW: &CStr = c"Layers & Timeline";
 
+// Current Chusan cabinet profile: the target camera renders in portrait while
+// ShapeEnv2D receives the unrotated 1920x1080 screen source dimensions.
+const DEFAULT_PRESENT_WIDTH: i32 = 1080;
+const DEFAULT_PRESENT_HEIGHT: i32 = 1920;
+const DEFAULT_TARGET_SCREEN_WIDTH: i32 = 1920;
+const DEFAULT_TARGET_SCREEN_HEIGHT: i32 = 1080;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewTargetSelection {
     Unselected,
@@ -84,10 +91,10 @@ impl EditorWorkspace {
             composition_texture: None,
             composition_unavailable_reason: None,
             preview_target: PreviewTargetSelection::Unselected,
-            preview_present_width: 0,
-            preview_present_height: 0,
-            preview_screen_width: 0,
-            preview_screen_height: 0,
+            preview_present_width: DEFAULT_PRESENT_WIDTH,
+            preview_present_height: DEFAULT_PRESENT_HEIGHT,
+            preview_screen_width: DEFAULT_TARGET_SCREEN_WIDTH,
+            preview_screen_height: DEFAULT_TARGET_SCREEN_HEIGHT,
             preview_scissor: PreviewScissorSelection::Unselected,
         }
     }
@@ -745,5 +752,20 @@ unsafe fn build_after_effects_layout(dock_id: sys::ImGuiID) {
         sys::igDockBuilderDockWindow(TIMELINE_WINDOW.as_ptr(), bottom);
         sys::igDockBuilderDockWindow(COMPOSITION_WINDOW.as_ptr(), center);
         sys::igDockBuilderFinish(dock_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_starts_with_current_chusan_host_dimensions() {
+        let workspace = EditorWorkspace::new(false, None);
+        let settings = workspace.preview_host_settings();
+        assert_eq!(settings.present_width, 1080);
+        assert_eq!(settings.present_height, 1920);
+        assert_eq!(settings.screen_width, 1920);
+        assert_eq!(settings.screen_height, 1080);
     }
 }

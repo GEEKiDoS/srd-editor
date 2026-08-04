@@ -22,7 +22,8 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 只读 VTBF/SRFF 结构解析，按游戏读取器保留未知头字段和属性原始编码。
 - `ANIM → MOT → TRK → KEY` 记录读取。
 - `SCN -> ANMS -> SANM` 场景动画集：逐 LAYR enable gate、命名 ANIM、初始 frame 与 runtime duration；正常 Composition 只提交显式选择的动画集，不再同时绘制互斥页面。
-- CIMG/TEXT 与 PROJ FONT/CHAR 记录解析、TEXT 到同一项目 FONT 下标解析，以及 SrTextCast 的实际构造/字符串初始化。完整语料的字体来自 `A000/font/*.rfz`；游戏已证明使用 BinaryLZW `YS` v2 容器和 `RHFONTDB` 根类型，当前不会用系统字体伪装游戏字形。
+- CIMG/TEXT 与 PROJ FONT/CHAR 记录解析、TEXT 到同一项目 FONT 下标解析，以及 SrTextCast 的实际构造/字符串初始化。完整语料的字体来自 `A000/font/*.rfz`；BinaryLZW `YS` v2、YABX schema/CRC/对象 ID、`RHFONTDB` Database/Glyph/TextureResource 和 AVTS 目录均已按游戏读取逻辑实现。六套字体的全部 glyph 引用与内嵌 DDS 页已闭环；不会用系统字体伪装游戏字形。
+- 字体 AVTS 不重写贴图解码：目录中的 `.svo` 是 Stevia YABX 元数据，其余条目是完整 DDS。当前六套字体共 15 个 A4R4G4B4 atlas 页，尺寸、末页高度、mip、数据长度与 Ruhuna Database 全部交叉验证，并直接复用现有 DDS 解析/库解码/D3D9 上传路径。
 - 游戏标量轨道的时间区间、端点、线性、保持和三次曲线求值。
 - LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
 - `SRFF -> SRCK -> PROJ -> SCN  -> LAYR` 项目场景表，以及 CRFD 在同文件 SCN/LAYR 表中的首次完整名称解析。
@@ -51,7 +52,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
 - 可运行的原生 D3D9Ex 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 的 `Direct3DCreate9Ex`/`IDirect3DDevice9Ex` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 `PresentEx`/`ResetEx` 冒烟测试。
 - Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。Windows 优先使用 Per-Monitor V2；窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。smoke 会实际断言逻辑尺寸乘 framebuffer scale 等于物理 backbuffer。
-- After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、ANMS 页面选择、层、NODE、变换、纹理和动画帧会进入这些面板，时间轴 frame 会重新求值当前动画集。
+- After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、ANMS 页面选择、层、NODE、变换、纹理和动画帧会进入这些面板，时间轴 frame 会重新求值当前动画集。Properties 的宿主尺寸默认使用当前 Chusan 配置的 Present `1080x1920` 与 ShapeEnv2D screen source `1920x1080`，两组值仍保持独立可编辑。
 - Composition 已接入与 SCN 尺寸一致的 D3D9 DEFAULT-pool render-target texture，并通过 ImGui texture ID 在面板中按宽高比居中缩放显示。纹理保持场景像素尺寸，面板布局使用逻辑单位，最终 ImGui 顶点/scissor 再按 framebuffer scale 转到 HiDPI 物理像素；显示缩放不修改 SRD 矩阵或 `FirstCalcMatrix`。
 - 首个二维单贴图 runtime draw 已接入：CAST 二维标志精确进入 packet `+0x60` bit 7，选择 `EAEBABBAABGAAAAAAA`/`ShapeEnv2D` VS，并把显式 target screen size 的半宽半高上传为 `c10 screenParam`。实际 AdvertiseLogo fixture 在强制 `ResetEx` 前后稳定覆盖 `(346,194)..(1573,885)`；runtime 仍不依赖 Cg、D3DX 或 D3DCompiler。
 - Chusan `AdvertiseLogoObject` 的具体宿主已闭环：嵌入式 SrPlayer 位于 Impl `+0x68`，common init 写入 `DrawTargetSceneOnly=true`、`2DLayer=100` 并保持空 `TargetScene`；其 GraphNode 父节点始终为 null，故实际 `FirstCalcMatrix` 是构造 identity。Rust profile 与编辑器 Properties 已能把该矩阵同显式 `MainScene`/`BgScene`、present size、screen source size 和外部 scissor 输入组合，仍不会猜测当帧 active target。
@@ -83,7 +84,7 @@ cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_Syste
 cargo run --release -- --srd-texture-smoke --advertise-logo-host=MainScene@1080x1920@1920x1080 "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_Advertise_00_v10.srd"
 ```
 
-`--advertise-logo-host` 的两个尺寸分别是 target Camera present size 与 ShapeEnv2D filter source size。二进制尚未证明二者恒等，因此 CLI 和编辑器 Properties 面板都要求分别显式输入。
+`--advertise-logo-host` 的两个尺寸分别是 target Camera present size 与 ShapeEnv2D filter source size。二进制尚未证明二者恒等，因此 CLI 仍分别传入；编辑器 Properties 也保留两个独立输入框，并以当前 Chusan 配置的 `1080x1920` / `1920x1080` 预填。
 
 执行整个目录的真实 D3D9Ex DDS 创建/上传审计：
 
