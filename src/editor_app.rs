@@ -12,24 +12,31 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
+use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
 use crate::editor_workspace::{EditorWorkspace, apply_editor_style};
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::shader_bytecode::{FIRST_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair};
+use crate::srd_draw::{EvidenceCompleteSrdDraw, build_evidence_complete_initial_image_draws};
+use crate::transform::Affine3x4;
 
 const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let smoke_test = arguments
+    let srd_draw_smoke = arguments
         .iter()
-        .any(|argument| argument == "--d3d9ex-smoke" || argument == "--d3d9-smoke");
+        .any(|argument| argument == "--srd-draw-smoke");
+    let smoke_test = srd_draw_smoke
+        || arguments
+            .iter()
+            .any(|argument| argument == "--d3d9ex-smoke" || argument == "--d3d9-smoke");
     let document_path = arguments
         .iter()
         .find(|argument| !argument.starts_with("--"))
         .map(PathBuf::from);
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut application = EditorApplication::new(smoke_test, document_path);
+    let mut application = EditorApplication::new(smoke_test, srd_draw_smoke, document_path);
     event_loop.run_app(&mut application)?;
     if let Some(error) = application.fatal_error {
         return Err(io::Error::other(error).into());
@@ -41,6 +48,7 @@ struct EditorApplication {
     window: Option<EditorWindow>,
     fatal_error: Option<String>,
     smoke_test: bool,
+    srd_draw_smoke: bool,
     document_path: Option<PathBuf>,
 }
 
@@ -50,17 +58,21 @@ struct EditorWindow {
     imgui: Context,
     platform: WinitPlatform,
     imgui_renderer: ImguiDx9Renderer,
+    srd_renderer: Option<SrdDx9Renderer>,
+    srd_draws: Vec<EvidenceCompleteSrdDraw>,
+    verify_srd_pixels: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
     last_frame: Instant,
 }
 
 impl EditorApplication {
-    fn new(smoke_test: bool, document_path: Option<PathBuf>) -> Self {
+    fn new(smoke_test: bool, srd_draw_smoke: bool, document_path: Option<PathBuf>) -> Self {
         Self {
             window: None,
             fatal_error: None,
             smoke_test,
+            srd_draw_smoke,
             document_path,
         }
     }
@@ -71,6 +83,7 @@ impl EditorWindow {
         window: Window,
         d3d9: D3d9ExDevice,
         smoke_test: bool,
+        srd_draw_smoke: bool,
         document_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let mut imgui = Context::create();
@@ -90,6 +103,28 @@ impl EditorWindow {
             .map_err(|error| format!("D3D9 failed to create embedded SRD shaders: {error}"))?;
         let imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
+        let workspace = EditorWorkspace::new(build_default_layout, document_path);
+        let (srd_renderer, srd_draws) = if srd_draw_smoke {
+            let document = workspace.document().ok_or_else(|| {
+                "--srd-draw-smoke requires a successfully loaded SRD path".to_string()
+            })?;
+            let draws = build_evidence_complete_initial_image_draws(
+                &document.project,
+                &document.textures,
+                0,
+                Affine3x4::IDENTITY,
+                1920.0,
+            )
+            .map_err(|error| format!("failed to build evidence-complete SRD draws: {error}"))?;
+            if draws.is_empty() {
+                return Err("the selected SRD did not produce an evidence-complete draw".into());
+            }
+            let renderer = SrdDx9Renderer::new(d3d9.device())
+                .map_err(|error| format!("failed to create the SRD D3D9 renderer: {error}"))?;
+            (Some(renderer), draws)
+        } else {
+            (None, Vec::new())
+        };
 
         Ok(Self {
             window,
@@ -97,7 +132,10 @@ impl EditorWindow {
             imgui,
             platform,
             imgui_renderer,
-            workspace: EditorWorkspace::new(build_default_layout, document_path),
+            srd_renderer,
+            srd_draws,
+            verify_srd_pixels: srd_draw_smoke,
+            workspace,
             dpi_factor,
             last_frame: Instant::now(),
         })
@@ -121,10 +159,18 @@ impl EditorWindow {
             D3d9ExDeviceStatus::NeedsReset => {
                 self.imgui_renderer
                     .invalidate_device_objects(&mut self.imgui);
+                if let Some(renderer) = &mut self.srd_renderer {
+                    renderer.invalidate_device_objects();
+                }
                 self.d3d9.reset().map_err(|error| error.to_string())?;
                 self.imgui_renderer
                     .create_device_objects(&mut self.imgui)
                     .map_err(|error| error.to_string())?;
+                if let Some(renderer) = &mut self.srd_renderer {
+                    renderer
+                        .create_device_objects()
+                        .map_err(|error| error.to_string())?;
+                }
             }
             D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
             D3d9ExDeviceStatus::Minimized => return Ok(D3d9ExFrameStatus::Minimized),
@@ -144,6 +190,28 @@ impl EditorWindow {
         self.d3d9
             .clear_and_begin_scene(CLEAR_COLOR_ARGB)
             .map_err(|error| error.to_string())?;
+        if let Some(renderer) = &mut self.srd_renderer {
+            renderer
+                .render(
+                    &self.srd_draws,
+                    SrdDx9ExternalContext::smoke_without_scissor(),
+                )
+                .map_err(|error| format!("SRD D3D9 draw submission failed: {error}"))?;
+        }
+        if self.verify_srd_pixels {
+            self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let size = self.window.inner_size();
+            let pixel = self
+                .d3d9
+                .read_backbuffer_pixel(size.width / 2 + 1, size.height / 4)
+                .map_err(|error| format!("SRD backbuffer readback failed: {error}"))?;
+            if pixel[..3] != [0, 0, 0] {
+                return Err(format!(
+                    "SRD draw smoke expected a black identity-host sample pixel, got raw BGRA/XRGB {pixel:02X?}"
+                ));
+            }
+            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+        }
         let render_result = self
             .imgui_renderer
             .render(draw_data)
@@ -194,7 +262,13 @@ impl ApplicationHandler for EditorApplication {
                 D3d9ExDevice::new(&window)
                     .map_err(|error| error.to_string())
                     .and_then(|d3d9| {
-                        EditorWindow::new(window, d3d9, self.smoke_test, self.document_path.clone())
+                        EditorWindow::new(
+                            window,
+                            d3d9,
+                            self.smoke_test,
+                            self.srd_draw_smoke,
+                            self.document_path.clone(),
+                        )
                     })
             });
         match result {

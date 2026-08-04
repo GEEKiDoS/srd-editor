@@ -1,0 +1,344 @@
+use std::ffi::c_void;
+use std::mem;
+use std::ptr;
+
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Direct3D9::{
+    D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE,
+    D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE,
+    D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE,
+    D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE,
+    D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSBT_ALL, D3DUSAGE_DYNAMIC,
+    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, IDirect3DDevice9, IDirect3DPixelShader9,
+    IDirect3DStateBlock9, IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9,
+    IDirect3DVertexShader9,
+};
+use windows::core::{Error, HRESULT, Result};
+
+use crate::render::CeylonRenderScissorState;
+use crate::render::{SRD_D3D9_VERTEX_DECLARATION, SrdRenderVertex};
+use crate::shader_bytecode::{EmbeddedSimpleShaderPair, embedded_simple_shader_pair};
+use crate::srd_draw::EvidenceCompleteSrdDraw;
+
+const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
+const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057_u32 as i32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SrdDx9ExternalContext {
+    pub scissor: CeylonRenderScissorState,
+}
+
+impl SrdDx9ExternalContext {
+    /// Explicit context used by the standalone smoke harness. This is not
+    /// inferred from SRD and is not claimed to be every game caller's state.
+    pub const fn smoke_without_scissor() -> Self {
+        Self {
+            scissor: CeylonRenderScissorState {
+                enabled: false,
+                rectangle: crate::render::D3d9Rect {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            },
+        }
+    }
+}
+
+/// Native D3D9 submission for the evidence-complete SRD subset.
+///
+/// The dynamic vertex buffer is a DEFAULT-pool resource and must be released
+/// before ResetEx. Shader objects and the vertex declaration are recreated as
+/// well so reset behavior does not depend on undocumented editor assumptions.
+pub struct SrdDx9Renderer {
+    device: IDirect3DDevice9,
+    vertex_declaration: Option<IDirect3DVertexDeclaration9>,
+    vertex_shader: Option<IDirect3DVertexShader9>,
+    pixel_shader: Option<IDirect3DPixelShader9>,
+    vertex_buffer: Option<IDirect3DVertexBuffer9>,
+}
+
+impl SrdDx9Renderer {
+    pub fn new(device: &IDirect3DDevice9) -> Result<Self> {
+        let mut renderer = Self {
+            device: device.clone(),
+            vertex_declaration: None,
+            vertex_shader: None,
+            pixel_shader: None,
+            vertex_buffer: None,
+        };
+        renderer.create_device_objects()?;
+        Ok(renderer)
+    }
+
+    pub fn invalidate_device_objects(&mut self) {
+        self.vertex_buffer = None;
+        self.pixel_shader = None;
+        self.vertex_shader = None;
+        self.vertex_declaration = None;
+    }
+
+    pub fn create_device_objects(&mut self) -> Result<()> {
+        let elements = SRD_D3D9_VERTEX_DECLARATION.map(|element| D3DVERTEXELEMENT9 {
+            Stream: element.stream,
+            Offset: element.offset,
+            Type: element.declaration_type,
+            Method: element.method,
+            Usage: element.usage,
+            UsageIndex: element.usage_index,
+        });
+        let pair = embedded_simple_shader_pair(&crate::shader_bytecode::FIRST_FIXTURE_SIMPLE_KEY)
+            .ok_or_else(|| {
+            Error::new(E_FAIL, "embedded first-fixture shader pair is missing")
+        })?;
+        unsafe {
+            self.vertex_declaration = Some(self.device.CreateVertexDeclaration(elements.as_ptr())?);
+            self.vertex_shader = Some(
+                self.device
+                    .CreateVertexShader(pair.vertex_shader.as_ptr())?,
+            );
+            self.pixel_shader = Some(self.device.CreatePixelShader(pair.pixel_shader.as_ptr())?);
+        }
+        self.vertex_buffer = Some(create_vertex_buffer(&self.device)?);
+        Ok(())
+    }
+
+    pub fn render(
+        &mut self,
+        draws: &[EvidenceCompleteSrdDraw],
+        external: SrdDx9ExternalContext,
+    ) -> Result<()> {
+        if draws.is_empty() {
+            return Ok(());
+        }
+        let state = StateBlockGuard::capture(&self.device)?;
+        for draw in draws {
+            self.render_draw(draw, external)?;
+        }
+        state.restore()
+    }
+
+    fn render_draw(
+        &mut self,
+        draw: &EvidenceCompleteSrdDraw,
+        external: SrdDx9ExternalContext,
+    ) -> Result<()> {
+        if draw.blend.alpha_test_enabled || draw.packet.flags_0c & 0x100 != 0 {
+            return Err(Error::new(
+                E_INVALIDARG,
+                "SRD draw requires an alpha/stencil base context that is not part of the first GPU subset",
+            ));
+        }
+        let pair = embedded_simple_shader_pair(&draw.shader_key).ok_or_else(|| {
+            Error::new(
+                E_INVALIDARG,
+                "SRD draw requested a shader key without embedded D3D9 bytecode",
+            )
+        })?;
+        self.require_loaded_pair(&pair)?;
+        let declaration = self
+            .vertex_declaration
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex declaration is not available"))?;
+        let vertex_shader = self
+            .vertex_shader
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex shader is not available"))?;
+        let pixel_shader = self
+            .pixel_shader
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 pixel shader is not available"))?;
+        let vertex_buffer = self
+            .vertex_buffer
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex buffer is not available"))?;
+
+        upload_vertices(vertex_buffer, &draw.quad.vertices)?;
+        let constants = draw.fixed_constants;
+        let cull = draw
+            .raster
+            .cull_mode()
+            .ok_or_else(|| Error::new(E_INVALIDARG, "invalid internal SRD cull mode"))?;
+        let z_function = draw
+            .depth
+            .z_function()
+            .ok_or_else(|| Error::new(E_INVALIDARG, "invalid internal SRD Z comparison"))?;
+
+        unsafe {
+            self.device.SetVertexDeclaration(declaration)?;
+            self.device
+                .SetStreamSource(0, vertex_buffer, 0, SrdRenderVertex::STRIDE as u32)?;
+            self.device.SetVertexShader(vertex_shader)?;
+            self.device.SetPixelShader(pixel_shader)?;
+
+            self.device.SetVertexShaderConstantF(
+                0,
+                constants.vertex_c0_c3_world.rows.as_ptr().cast(),
+                4,
+            )?;
+            self.device.SetVertexShaderConstantF(
+                4,
+                constants.vertex_c4_c7.rows.as_ptr().cast(),
+                4,
+            )?;
+            self.device.SetVertexShaderConstantF(
+                8,
+                constants.vertex_c8_fixed_param0.as_ptr(),
+                1,
+            )?;
+            self.device.SetVertexShaderConstantF(
+                9,
+                constants.vertex_c9_fixed_param1.as_ptr(),
+                1,
+            )?;
+            self.device.SetVertexShaderConstantF(
+                10,
+                constants
+                    .vertex_c10_c13_projection_view
+                    .rows
+                    .as_ptr()
+                    .cast(),
+                4,
+            )?;
+            self.device
+                .SetPixelShaderConstantF(0, constants.pixel_c0_fixed_param0.as_ptr(), 1)?;
+
+            self.device.SetRenderState(
+                D3DRS_ALPHABLENDENABLE,
+                u32::from(draw.blend.alpha_blend_enabled),
+            )?;
+            self.device
+                .SetRenderState(D3DRS_SRCBLEND, draw.blend.source_blend as u32)?;
+            self.device
+                .SetRenderState(D3DRS_DESTBLEND, draw.blend.destination_blend as u32)?;
+            self.device
+                .SetRenderState(D3DRS_BLENDOP, draw.blend.blend_operation as u32)?;
+            self.device.SetRenderState(
+                D3DRS_ALPHATESTENABLE,
+                u32::from(draw.blend.alpha_test_enabled),
+            )?;
+            self.device.SetRenderState(
+                D3DRS_SEPARATEALPHABLENDENABLE,
+                u32::from(draw.blend.separate_alpha_blend_enabled),
+            )?;
+            self.device
+                .SetRenderState(D3DRS_SRCBLENDALPHA, draw.blend.source_blend_alpha as u32)?;
+            self.device.SetRenderState(
+                D3DRS_DESTBLENDALPHA,
+                draw.blend.destination_blend_alpha as u32,
+            )?;
+            self.device
+                .SetRenderState(D3DRS_BLENDOPALPHA, draw.blend.blend_operation_alpha as u32)?;
+            self.device.SetRenderState(D3DRS_CULLMODE, cull as u32)?;
+            self.device
+                .SetRenderState(D3DRS_FILLMODE, draw.raster.fill_mode() as u32)?;
+            self.device
+                .SetRenderState(D3DRS_COLORWRITEENABLE, draw.raster.color_write_mask)?;
+            self.device
+                .SetRenderState(D3DRS_ZENABLE, u32::from(draw.depth.z_enabled))?;
+            self.device
+                .SetRenderState(D3DRS_ZWRITEENABLE, u32::from(draw.depth.z_write_enabled))?;
+            self.device.SetRenderState(D3DRS_ZFUNC, z_function as u32)?;
+
+            // This first subset has no packet stencil override. Scissor is a
+            // proven external material context input and is therefore passed
+            // explicitly instead of being inferred from SRD.
+            self.device.SetRenderState(D3DRS_STENCILENABLE, 0)?;
+            self.device
+                .SetRenderState(D3DRS_SCISSORTESTENABLE, u32::from(external.scissor.enabled))?;
+            if external.scissor.enabled {
+                let rectangle = RECT {
+                    left: external.scissor.rectangle.left,
+                    top: external.scissor.rectangle.top,
+                    right: external.scissor.rectangle.right,
+                    bottom: external.scissor.rectangle.bottom,
+                };
+                self.device.SetScissorRect(&rectangle)?;
+            }
+            self.device.DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2)?;
+        }
+        Ok(())
+    }
+
+    fn require_loaded_pair(&self, pair: &EmbeddedSimpleShaderPair) -> Result<()> {
+        if self.vertex_shader.is_none() || self.pixel_shader.is_none() {
+            return Err(Error::new(
+                E_FAIL,
+                "SRD D3D9 shader objects are not available",
+            ));
+        }
+        if pair.vertex_shader.is_empty() || pair.pixel_shader.is_empty() {
+            return Err(Error::new(
+                E_INVALIDARG,
+                "SRD D3D9 shader bytecode is empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn create_vertex_buffer(device: &IDirect3DDevice9) -> Result<IDirect3DVertexBuffer9> {
+    let mut buffer = None;
+    unsafe {
+        device.CreateVertexBuffer(
+            (4 * SrdRenderVertex::STRIDE) as u32,
+            (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32,
+            0,
+            D3DPOOL_DEFAULT,
+            &mut buffer,
+            ptr::null_mut(),
+        )?;
+    }
+    buffer.ok_or_else(|| Error::new(E_FAIL, "CreateVertexBuffer returned null for SRD format 14"))
+}
+
+fn upload_vertices(buffer: &IDirect3DVertexBuffer9, vertices: &[SrdRenderVertex; 4]) -> Result<()> {
+    debug_assert_eq!(mem::size_of::<SrdRenderVertex>(), SrdRenderVertex::STRIDE);
+    let mut destination: *mut c_void = ptr::null_mut();
+    unsafe {
+        buffer.Lock(
+            0,
+            (vertices.len() * SrdRenderVertex::STRIDE) as u32,
+            &mut destination,
+            D3DLOCK_DISCARD as u32,
+        )?;
+        ptr::copy_nonoverlapping(
+            vertices.as_ptr().cast::<u8>(),
+            destination.cast::<u8>(),
+            vertices.len() * SrdRenderVertex::STRIDE,
+        );
+        buffer.Unlock()?;
+    }
+    Ok(())
+}
+
+struct StateBlockGuard {
+    block: IDirect3DStateBlock9,
+    restored: bool,
+}
+
+impl StateBlockGuard {
+    fn capture(device: &IDirect3DDevice9) -> Result<Self> {
+        let block = unsafe { device.CreateStateBlock(D3DSBT_ALL)? };
+        unsafe { block.Capture()? };
+        Ok(Self {
+            block,
+            restored: false,
+        })
+    }
+
+    fn restore(mut self) -> Result<()> {
+        unsafe { self.block.Apply()? };
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl Drop for StateBlockGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = unsafe { self.block.Apply() };
+        }
+    }
+}

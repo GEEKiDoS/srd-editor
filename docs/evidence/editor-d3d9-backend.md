@@ -65,7 +65,7 @@
 - 右侧 `Properties`；
 - 下方 `Layers & Timeline`，固定的层/状态列和可横向滚动的时间轴位于同一张 table，因此共享垂直滚动和行选择。
 
-命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。中央 Composition 尚未连接 SRD GPU draw submission，界面会明确显示 pending，不输出近似画面。
+命令行第一个非选项参数作为 SRD 路径。文档加载使用当前 Rust `SrdFile`、`Project` 和 `TextureList` 解析器；面板显示真实 scene/layer/NODE、变换、纹理记录，以及选中 layer 第一个动画中的实际 key frame。首个无贴图 SRD draw 已能提交实际 D3D9Ex backbuffer，但中央 Composition 尚未连接独立 SRD render target，界面仍明确显示 pending，不把后台 smoke 画面冒充成完成的预览器。
 
 ## 本机验证
 
@@ -74,18 +74,19 @@
 ```powershell
 cargo run -- --d3d9ex-smoke
 cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
+cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 ```
 
-两条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。第二条命令还在帧生成前实际解析指定 SRD 并构建文档面板。
+三条命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。后两条命令还在帧生成前实际解析指定 SRD 并构建文档面板；第三条另外提交 format 14 SRD draw，并在 reset 前后各完成一次 SYSTEMMEM 像素回读断言。
 
 同次检查后继续加入首个证据完整 draw-list 语料测试；当前完整回归为 97 个单元测试及 19 个本地语料测试全部通过，其中完整游戏数据根为 `D:\sdhd\assets\data`。
 
 ## 当前边界
 
-本页证明的是可运行编辑器窗口、D3D9Ex device、HiDPI ImGui draw 与 ResetEx 生命周期。它尚不证明 SRD 像素渲染完成。仍需在独立证据闭环后接入：
+本页证明的是可运行编辑器窗口、D3D9Ex device、HiDPI ImGui draw、ResetEx 生命周期，以及首个无贴图 fixture 的实际 format 14 shader draw 和像素回读。它尚不证明完整 SRD 像素渲染完成。仍需在独立证据闭环后接入：
 
 - DDS 解码/上传与 stage 0/1 资源绑定；
-- format 14 顶点提交；
+- Composition 离屏 render target 与 ImGui 图像显示；
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
-- 已建模 shader 常量的实际上传，以及 sampler、blend/depth/stencil/scissor；
+- sampler、带外部 base context 的 alpha/stencil/scissor 组合；
 - scene、reference cast 和动画状态到实际 draw ordering。

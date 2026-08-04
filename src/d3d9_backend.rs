@@ -2,13 +2,13 @@ use std::ffi::c_void;
 use std::ptr;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct3D9::{
     D3D_SDK_VERSION, D3DADAPTER_DEFAULT, D3DCLEAR_STENCIL, D3DCLEAR_TARGET, D3DCLEAR_ZBUFFER,
     D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING, D3DDEVTYPE_HAL,
-    D3DFMT_D24S8, D3DFMT_UNKNOWN, D3DMULTISAMPLE_NONE, D3DPRESENT_INTERVAL_ONE,
-    D3DPRESENT_PARAMETERS, D3DSWAPEFFECT_DISCARD, Direct3DCreate9Ex, IDirect3D9Ex,
-    IDirect3DDevice9, IDirect3DDevice9Ex,
+    D3DFMT_D24S8, D3DFMT_UNKNOWN, D3DLOCKED_RECT, D3DMULTISAMPLE_NONE, D3DPOOL_SYSTEMMEM,
+    D3DPRESENT_INTERVAL_ONE, D3DPRESENT_PARAMETERS, D3DSURFACE_DESC, D3DSWAPEFFECT_DISCARD,
+    Direct3DCreate9Ex, IDirect3D9Ex, IDirect3DDevice9, IDirect3DDevice9Ex,
 };
 use windows::core::{BOOL, Error, HRESULT, Result};
 use winit::dpi::PhysicalSize;
@@ -164,8 +164,65 @@ impl D3d9ExDevice {
         }
     }
 
+    pub fn begin_scene(&self) -> Result<()> {
+        unsafe { self.device.BeginScene() }
+    }
+
+    pub fn end_scene(&self) -> Result<()> {
+        unsafe { self.device.EndScene() }
+    }
+
+    /// Reads one raw BGRA/XRGB backbuffer texel through the documented
+    /// render-target -> SYSTEMMEM transfer path. This is used only by the
+    /// invisible SRD draw smoke test, after EndScene and before PresentEx.
+    pub fn read_backbuffer_pixel(&self, x: u32, y: u32) -> Result<[u8; 4]> {
+        let render_target = unsafe { self.device.GetRenderTarget(0)? };
+        let mut description = D3DSURFACE_DESC::default();
+        unsafe { render_target.GetDesc(&mut description)? };
+        if x >= description.Width || y >= description.Height {
+            return Err(Error::new(
+                E_FAIL,
+                format!(
+                    "backbuffer pixel ({x}, {y}) is outside {}x{}",
+                    description.Width, description.Height
+                ),
+            ));
+        }
+
+        let mut staging = None;
+        unsafe {
+            self.device.CreateOffscreenPlainSurface(
+                description.Width,
+                description.Height,
+                description.Format,
+                D3DPOOL_SYSTEMMEM,
+                &mut staging,
+                ptr::null_mut(),
+            )?;
+        }
+        let staging = staging.ok_or_else(|| {
+            Error::new(
+                E_FAIL,
+                "CreateOffscreenPlainSurface returned null for backbuffer readback",
+            )
+        })?;
+        unsafe { self.device.GetRenderTargetData(&render_target, &staging)? };
+
+        let rectangle = RECT {
+            left: x as i32,
+            top: y as i32,
+            right: x as i32 + 1,
+            bottom: y as i32 + 1,
+        };
+        let mut locked = D3DLOCKED_RECT::default();
+        unsafe { staging.LockRect(&mut locked, &rectangle, 0)? };
+        let pixel = unsafe { *(locked.pBits.cast::<[u8; 4]>()) };
+        unsafe { staging.UnlockRect()? };
+        Ok(pixel)
+    }
+
     pub fn end_scene_and_present(&mut self) -> Result<D3d9ExFrameStatus> {
-        unsafe { self.device.EndScene()? };
+        self.end_scene()?;
 
         match unsafe {
             self.device

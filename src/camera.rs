@@ -262,6 +262,7 @@ fn tan_game(angle: f32) -> f64 {
     }
 }
 
+#[allow(clippy::assign_op_pattern)] // Preserve the binary's multiply/store/add sequence.
 fn tan_polynomial(turn_fraction: f64) -> f64 {
     const PI: f64 = f64::from_bits(0x4009_21fb_5444_2d18);
     const COEFFICIENTS: [f64; 11] = [

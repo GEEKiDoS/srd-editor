@@ -49,7 +49,8 @@ struct InitialWorldColorState {
 
 /// Builds only the initial ImageCast subset whose complete Simple shader pair
 /// and packet/device inputs are proven. TEXT, textures, special CAST matrix
-/// branches and unsupported shader keys are rejected or excluded explicitly.
+/// branches, alpha-test/stencil base contexts and unsupported shader keys are
+/// rejected or excluded explicitly.
 pub fn build_evidence_complete_initial_image_draws(
     project: &Project,
     textures: &TextureList,
@@ -139,6 +140,10 @@ pub fn build_evidence_complete_initial_image_draws(
             if embedded_simple_shader_pair(&shader_key).is_none() {
                 continue;
             }
+            let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
+            if blend.alpha_test_enabled || packet.flags_0c & 0x100 != 0 {
+                continue;
+            }
 
             let local_positions = image
                 .build_quad_with_geometry(image_state.geometry, layer.is_2d())
@@ -163,7 +168,7 @@ pub fn build_evidence_complete_initial_image_draws(
                 quad,
                 packet,
                 fixed_constants,
-                blend: ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id())),
+                blend,
                 raster,
                 depth: CeylonDepthState::from_draw_flags(packet.draw_flags_00),
             });

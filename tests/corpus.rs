@@ -165,6 +165,8 @@ fn builds_the_first_evidence_complete_srd_draw() {
     );
     assert_eq!(draw.raster.color_write_mask, 0x0f);
     assert!(!draw.depth.z_enabled);
+    assert!(!draw.blend.alpha_test_enabled);
+    assert_eq!(draw.packet.flags_0c & 0x100, 0);
 }
 
 #[test]
@@ -711,22 +713,22 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
                 // draw reaches a particular runtime context. Keep membership
                 // differences diagnostic-only until the executable provider
                 // chain has established every runtime contribution.
-                if let Some(shader_collection) = &shader_collection {
-                    if !shader_collection.contains(&direct_simple_key) {
-                        let mut position_2_bits =
-                            CeylonSimpleShaderBits::from_compact_key(direct_simple_key);
-                        position_2_bits.set(2, true);
-                        let position_2_key = position_2_bits.compact_key();
-                        let target = if shader_collection.contains(&position_2_key) {
-                            &mut position_2_only_simple_keys
-                        } else {
-                            &mut uncovered_simple_keys
-                        };
-                        let entry = target
-                            .entry(direct_simple_key)
-                            .or_insert_with(|| (0usize, path.clone(), node_index));
-                        entry.0 += 1;
-                    }
+                if let Some(shader_collection) = &shader_collection
+                    && !shader_collection.contains(&direct_simple_key)
+                {
+                    let mut position_2_bits =
+                        CeylonSimpleShaderBits::from_compact_key(direct_simple_key);
+                    position_2_bits.set(2, true);
+                    let position_2_key = position_2_bits.compact_key();
+                    let target = if shader_collection.contains(&position_2_key) {
+                        &mut position_2_only_simple_keys
+                    } else {
+                        &mut uncovered_simple_keys
+                    };
+                    let entry = target
+                        .entry(direct_simple_key)
+                        .or_insert_with(|| (0usize, path.clone(), node_index));
+                    entry.0 += 1;
                 }
                 *field_0c_counts.entry(state.field_0c).or_insert(0usize) += 1;
                 *texture_presence_counts

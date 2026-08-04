@@ -44,12 +44,13 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - 默认及逐 packet 的 VS `c0..c9`、PS `c0` 常量提交，以及选定无贴图 fixture 的 VS `c10..c13 = Projection*View` provider。
 - draw packet 到 D3D9 cull/fill/color-write 的精确覆盖：首个 fixture 为 `CULL_NONE`、`SOLID`、四通道写入，不依赖编辑器侧显示性兜底。
 - 首个证据完整的 CPU draw list：`CHU_UI_System_00_v10.srd` 的 scene 0/layer 0/node 1 `C_fill` 在显式 identity `FirstCalcMatrix` 和 1920 宽目标下生成唯一无贴图 ImageCast draw，包含精确四顶点、世界色、packet、Simple key、固定常量、blend/raster/depth；TEXT、贴图、特殊 CAST 矩阵分支和未注册 bytecode 的 key 不会被伪装为已支持。
+- 首个真实 D3D9Ex SRD draw submission：创建 format 14 顶点声明与动态 DEFAULT-pool 顶点缓冲，上传已验证 VS/PS、VS `c0..c13`、PS `c0` 和精确 blend/raster/depth 状态，执行非索引 `D3DPT_TRIANGLESTRIP`；不可见 smoke 在 `EndScene` 后通过 `GetRenderTargetData` 回读 identity-host fixture 内部像素，并在强制 `ResetEx` 后重复验证。外部 material scissor 作为显式 context 输入，不从 SRD 猜测。
 - 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
 - 可运行的原生 D3D9Ex 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 的 `Direct3DCreate9Ex`/`IDirect3DDevice9Ex` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 `PresentEx`/`ResetEx` 冒烟测试。
 - Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、层、NODE、变换、纹理和首个动画的实际关键帧会进入这些面板。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、投影屏幕矩阵中另一个 backend context 的组合语义、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request、SRD GPU texture draw submission、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择、实际逐 draw GPU 常量上传和 sampler 设备接入。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器将使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、投影屏幕矩阵中另一个 backend context 的组合语义、CNUM 历史 glyph 动画、TEXT、DDS 内部格式转换/cube request、SRD GPU texture draw submission、Composition 离屏目标与 fit-to-view 显示、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择和 sampler 设备接入。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码不自行重写；编辑器将使用独立解码库并直接上传到 D3D9，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 
@@ -61,6 +62,12 @@ cargo run -- "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 
 ```powershell
 cargo run -- --d3d9ex-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
+```
+
+执行首个无贴图 SRD draw、物理 backbuffer 像素回读及强制 `ResetEx` 冒烟测试：
+
+```powershell
+cargo run -- --srd-draw-smoke "D:\sdhd\assets\data\surfboard\system\CHU_UI_System_00_v10.srd"
 ```
 
 调查证据和待验证假设记录在 [`docs/srd-format.md`](docs/srd-format.md)。

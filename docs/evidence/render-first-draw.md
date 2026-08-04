@@ -45,3 +45,20 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 - CNUM、CSLI 与引用层递归尚未进入这个首个 draw list。
 
 因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。当前 97 个单元测试和 19 个本地/完整游戏语料测试均通过；其中本页 fixture 测试断言 draw 数量、节点、shader key、四顶点、两组顶点色、color-write 和深度状态。
+
+## 实际 D3D9Ex 提交与像素验证
+
+`src/d3d9_srd.rs` 已把这个 draw 接到真实 D3D9Ex device：
+
+- 由 `SRD_D3D9_VERTEX_DECLARATION` 创建 format 14 vertex declaration；
+- 在 DEFAULT pool dynamic/write-only vertex buffer 中按原始 36 字节布局写入四顶点；
+- 选择嵌入式 key 对应 VS/PS，上传 VS `c0..c13` 与 PS `c0`；
+- 提交已闭合 blend、cull、fill、color-write 和 depth state；
+- 执行 `DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2)`；
+- 用 state block 恢复编辑器调用前的 D3D9 状态。
+
+material scissor 在二进制中是外部 context，而不是 SRD 属性，所以 renderer API 要求显式传入 `SrdDx9ExternalContext`。独立 smoke 明确使用 disabled scissor；这只是测试宿主输入，不外推为游戏任意调用现场的状态。当前首个 GPU 子集同样排除需要未知基础 alpha function/reference 的 alpha-test 或 stencil draw。
+
+`--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`，提交 identity-host draw，`EndScene` 后用 `GetRenderTargetData` 复制到 SYSTEMMEM surface，并在 fixture 内部采样点验证 B/G/R 为零。随后它进入 ImGui draw 和 `PresentEx`，再强制 `ResetEx`、释放并重建 SRD/ImGui DEFAULT-pool 资源，第二帧重复同一像素断言。该验证已经通过；它证明真实像素被 shader draw 改写，而不只证明 D3D9 API 返回成功。
+
+当前 Composition 仍未连接离屏 render target。后续 fit-to-view 会作为 ImGui 显示层变换实现，不会回写或替代 `FirstCalcMatrix`。

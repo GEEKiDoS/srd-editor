@@ -3,6 +3,7 @@ pub mod attribute;
 pub mod camera;
 pub mod csli;
 pub mod d3d9_backend;
+pub mod d3d9_srd;
 pub mod dds;
 pub mod editor_app;
 pub mod editor_document;

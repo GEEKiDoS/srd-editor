@@ -72,6 +72,10 @@ impl EditorWorkspace {
             .build(|| self.draw_timeline(ui));
     }
 
+    pub fn document(&self) -> Option<&EditorDocument> {
+        self.document.as_ref()
+    }
+
     fn draw_menu(&mut self, ui: &Ui) {
         ui.main_menu_bar(|| {
             ui.menu("File", || {
@@ -449,27 +453,9 @@ unsafe fn build_after_effects_layout(dock_id: sys::ImGuiID) {
         let mut left = 0;
         let mut right = 0;
         let mut bottom = 0;
-        sys::igDockBuilderSplitNode(
-            center,
-            sys::ImGuiDir_Left as i32,
-            0.20,
-            &mut left,
-            &mut center,
-        );
-        sys::igDockBuilderSplitNode(
-            center,
-            sys::ImGuiDir_Right as i32,
-            0.24,
-            &mut right,
-            &mut center,
-        );
-        sys::igDockBuilderSplitNode(
-            center,
-            sys::ImGuiDir_Down as i32,
-            0.32,
-            &mut bottom,
-            &mut center,
-        );
+        sys::igDockBuilderSplitNode(center, sys::ImGuiDir_Left, 0.20, &mut left, &mut center);
+        sys::igDockBuilderSplitNode(center, sys::ImGuiDir_Right, 0.24, &mut right, &mut center);
+        sys::igDockBuilderSplitNode(center, sys::ImGuiDir_Down, 0.32, &mut bottom, &mut center);
 
         sys::igDockBuilderDockWindow(PROJECT_WINDOW.as_ptr(), left);
         sys::igDockBuilderDockWindow(SCENE_WINDOW.as_ptr(), left);
