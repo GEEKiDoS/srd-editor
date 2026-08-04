@@ -177,9 +177,12 @@ FontManager 构造路径 `0x7B719C..0x7B71A4` 依次压入 `0x20` 和 `0`，调�
 | `$N` / `$n` | type `3` 换行 |
 | `$t[x:y]` / `$T[x:y]` | T/t switch 的十进制有符号参数分支；把 x/y 写到 iterator 与 token `+0x20/+0x24`，不单独产生 glyph record |
 | `$s` / `$S` | S/s switch 无参数切换 iterator `+0x820` bit `0x40000`，不单独产生 glyph record；后续普通 glyph 的输出状态拷贝把该 DWORD 放到 token `+0x10` |
+| `$C` / `$c` | 无 `[` 时恢复 iterator 初始化时保存的四角颜色；`[hex]` 设置同一颜色到四角，`[h0:h1:h2:h3]` 分别设置四角。输入 DWORD 按高字节到低字节依次写入颜色对象 byte `0..3`，即 Rust 保存为 `value.swap_bytes()`；控制本身输出 type `2` 状态 token，不产生 glyph record |
 | NUL、`U+001A` | iterator 结束 |
 
 其他 `$` 命令仍明确返回 unsupported，不会被当作普通文字。当前完整 `surfboard` 语料的 1292 条 RFZ TEXT 全部通过游戏模式的 UTF-8 解码与上述 token 子集，因此当前实际输入覆盖为 1292/1292；未出现的控制命令仍不会被默认为普通文本。
+
+颜色分支 `0xF3C5EF..0xF3C873` 使用 `sub_F3CB50` 以 radix 16 读取 `:`/`]` 分隔值，再通过 `sub_F25D30/sub_F25CE0/sub_F25C90/sub_F25BE0` 依次写颜色 byte `0..3`。短列表的实际 fallback 也已保留：两个值且第二个直接以 `]` 结束时第二值不提交，结果四角全取第一值；三个值时第三值不提交，结果为 `[first, second, first, first]`。Rust 只接受 1 到 8 位十六进制的闭合 bracket 形式；这覆盖已证明的正常格式，同时对 `strtoul` 的空串、符号、前导空白和超长异常输入继续明确拒绝，不把未审计的 CRT 边缘行为伪装成已支持语法。
 
 `sub_7C90A0` 的 record stream 边界也已复现：普通 glyph 每个一条 116 字节记录；显式换行写 kind `-1`，超过 128 项 line-start 表时写 `-254`；iterator 结束后再写一个 kind `-1` 和最终 kind `-255`。缺字时游戏会尝试名为 `fennel_npc` 的 EmbeddedSprite；该 fallback 尚未闭环，因此 Rust 当前明确报缺字，不伪造替代 glyph。
 
@@ -411,5 +414,5 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 - `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
-- Fennel 其余控制 token（颜色、font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
+- Fennel 其余控制 token（font slot、EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源与 mode 6 显式 API 的真实调用点；

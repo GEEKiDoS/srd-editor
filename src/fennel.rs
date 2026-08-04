@@ -20,6 +20,8 @@ const FENNEL_POSITION_COMMAND_UPPER: u16 = b'T' as u16;
 const FENNEL_POSITION_COMMAND_LOWER: u16 = b't' as u16;
 const FENNEL_EFFECT_COMMAND_UPPER: u16 = b'S' as u16;
 const FENNEL_EFFECT_COMMAND_LOWER: u16 = b's' as u16;
+const FENNEL_COLOR_COMMAND_UPPER: u16 = b'C' as u16;
+const FENNEL_COLOR_COMMAND_LOWER: u16 = b'c' as u16;
 
 pub const FENNEL_RECORD_LINE_END: i32 = -1;
 pub const FENNEL_RECORD_ZERO_WIDTH_GLYPH: i32 = -2;
@@ -230,6 +232,8 @@ pub enum FennelPlainToken {
     NewLine,
     SetPosition { x: i32, y: i32 },
     ToggleEffect,
+    SetColors([u32; 4]),
+    ResetColors,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,8 +268,10 @@ impl std::error::Error for UnsupportedFennelControl {}
 /// literal dollar glyph. The `$t[x:y]` branch writes signed decimal x/y values
 /// to iterator/output offsets +0x20/+0x24. `$s`/`$S` toggles iterator state
 /// `+0x820` bit `0x40000`, which the normal-glyph output copy places at token
-/// `+0x10`. Other commands are rejected until their parameter grammar and
-/// state writes are closed from the binary.
+/// `+0x10`. `$C` restores the iterator's saved colors, while bracketed `$C`
+/// parses the binary's colon-separated hexadecimal color state. Other
+/// commands are rejected until their parameter grammar and state writes are
+/// closed from the binary.
 pub fn tokenize_fennel_plain_text(
     units: &[u16],
 ) -> Result<Vec<FennelPlainToken>, UnsupportedFennelControl> {
@@ -311,6 +317,23 @@ pub fn tokenize_fennel_plain_text(
                     FENNEL_EFFECT_COMMAND_UPPER | FENNEL_EFFECT_COMMAND_LOWER => {
                         tokens.push(FennelPlainToken::ToggleEffect);
                         index += 1;
+                    }
+                    FENNEL_COLOR_COMMAND_UPPER | FENNEL_COLOR_COMMAND_LOWER => {
+                        if units.get(index + 2) == Some(&(b'[' as u16)) {
+                            let Some((colors, end_index)) =
+                                parse_fennel_color_control(units, index)
+                            else {
+                                return Err(UnsupportedFennelControl {
+                                    unit_index: index,
+                                    command: Some(command),
+                                });
+                            };
+                            tokens.push(FennelPlainToken::SetColors(colors));
+                            index = end_index;
+                        } else {
+                            tokens.push(FennelPlainToken::ResetColors);
+                            index += 1;
+                        }
                     }
                     _ => {
                         return Err(UnsupportedFennelControl {
@@ -365,6 +388,65 @@ fn parse_fennel_signed_decimal(units: &[u16]) -> Option<i32> {
             .checked_add(i32::from(unit - b'0' as u16))?;
     }
     negative.then_some(value.checked_neg()?).or(Some(value))
+}
+
+fn parse_fennel_color_control(units: &[u16], prefix_index: usize) -> Option<([u32; 4], usize)> {
+    let mut cursor = prefix_index.checked_add(3)?;
+    let (first, first_delimiter, first_end) = parse_fennel_hex_until_delimiter(units, cursor)?;
+    let first = first.swap_bytes();
+    cursor = first_end + 1;
+    if first_delimiter == b']' as u16 {
+        return Some(([first; 4], first_end));
+    }
+
+    let (second, second_delimiter, second_end) = parse_fennel_hex_until_delimiter(units, cursor)?;
+    cursor = second_end + 1;
+    if second_delimiter == b']' as u16 {
+        // `0xF3C68C -> 0xF3C82C` does not commit the second parsed value.
+        return Some(([first; 4], second_end));
+    }
+    let second = second.swap_bytes();
+
+    let (third, third_delimiter, third_end) = parse_fennel_hex_until_delimiter(units, cursor)?;
+    cursor = third_end + 1;
+    if third_delimiter == b']' as u16 {
+        // `0xF3C6F9 -> 0xF3C7EA` preserves color 1 but fills 2 and 3 from 0.
+        return Some(([first, second, first, first], third_end));
+    }
+    let third = third.swap_bytes();
+
+    let close_offset = units[cursor..]
+        .iter()
+        .position(|unit| *unit == b']' as u16)?;
+    let close_index = cursor + close_offset;
+    let fourth = parse_fennel_hex(&units[cursor..close_index])?.swap_bytes();
+    Some(([first, second, third, fourth], close_index))
+}
+
+fn parse_fennel_hex_until_delimiter(units: &[u16], start: usize) -> Option<(u32, u16, usize)> {
+    let delimiter_offset = units[start..]
+        .iter()
+        .position(|unit| *unit == b':' as u16 || *unit == b']' as u16)?;
+    let delimiter_index = start + delimiter_offset;
+    let value = parse_fennel_hex(&units[start..delimiter_index])?;
+    Some((value, units[delimiter_index], delimiter_index))
+}
+
+fn parse_fennel_hex(units: &[u16]) -> Option<u32> {
+    if units.is_empty() || units.len() > 8 {
+        return None;
+    }
+    let mut value = 0u32;
+    for &unit in units {
+        let digit = match unit {
+            unit @ 0x30..=0x39 => u32::from(unit - 0x30),
+            unit @ 0x41..=0x46 => u32::from(unit - 0x41 + 10),
+            unit @ 0x61..=0x66 => u32::from(unit - 0x61 + 10),
+            _ => return None,
+        };
+        value = value.checked_mul(16)?.checked_add(digit)?;
+    }
+    Some(value)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1504,7 +1586,10 @@ where
         .filter(|token| {
             !matches!(
                 token,
-                FennelPlainToken::SetPosition { .. } | FennelPlainToken::ToggleEffect
+                FennelPlainToken::SetPosition { .. }
+                    | FennelPlainToken::ToggleEffect
+                    | FennelPlainToken::SetColors(_)
+                    | FennelPlainToken::ResetColors
             )
         })
         .count()
@@ -1555,6 +1640,12 @@ where
             }
             FennelPlainToken::ToggleEffect => {
                 current_placement.field_0c ^= FENNEL_EFFECT_GLYPH_FLAG;
+            }
+            FennelPlainToken::SetColors(colors) => {
+                current_placement.colors = colors;
+            }
+            FennelPlainToken::ResetColors => {
+                current_placement.colors = placement.colors;
             }
         }
     }
@@ -2883,12 +2974,12 @@ mod tests {
 
     #[test]
     fn rejects_unclosed_control_grammars() {
-        let units = "$C[FFFFFFFF]".encode_utf16().collect::<Vec<_>>();
+        let units = "$Z[FFFFFFFF]".encode_utf16().collect::<Vec<_>>();
         assert_eq!(
             tokenize_fennel_plain_text(&units).unwrap_err(),
             UnsupportedFennelControl {
                 unit_index: 0,
-                command: Some(b'C' as u16),
+                command: Some(b'Z' as u16),
             }
         );
         assert!(
@@ -2951,6 +3042,78 @@ mod tests {
         assert_eq!(stream.records[0].field_0c, 0x20);
         assert_eq!(stream.records[1].field_0c, 0x20 | FENNEL_EFFECT_GLYPH_FLAG);
         assert_eq!(stream.records[2].field_0c, 0x20);
+    }
+
+    #[test]
+    fn color_control_updates_and_restores_the_iterator_colors() {
+        let units = "A$C[01020304]B$C[11223344:55667788:99AABBCC:DDEEFF00]C$CD"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tokenize_fennel_plain_text(&units).unwrap(),
+            vec![
+                FennelPlainToken::Glyph(b'A' as u16),
+                FennelPlainToken::SetColors([0x0403_0201; 4]),
+                FennelPlainToken::Glyph(b'B' as u16),
+                FennelPlainToken::SetColors([0x4433_2211, 0x8877_6655, 0xCCBB_AA99, 0x00FF_EEDD,]),
+                FennelPlainToken::Glyph(b'C' as u16),
+                FennelPlainToken::ResetColors,
+                FennelPlainToken::Glyph(b'D' as u16),
+            ]
+        );
+
+        let font = RuhunaRuntimeFont {
+            minimum_code: b'A' as u16,
+            maximum_code: b'D' as u16,
+            dense_glyph_indices: vec![0, 1, 2, 3],
+            glyph_pages: vec![Some(0), Some(0), Some(0), Some(0)],
+            glyphs: (b'A'..=b'D')
+                .map(|code| RuhunaRuntimeGlyphRecord {
+                    code: u16::from(code),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let placement = input();
+        let stream = build_fennel_plain_record_stream(
+            b"A$C[01020304]B$C[11223344:55667788:99AABBCC:DDEEFF00]C$CD",
+            &font,
+            placement,
+            6,
+            |code, _glyph| u32::from(code),
+        )
+        .unwrap();
+
+        assert_eq!(stream.glyph_count, 4);
+        assert_eq!(stream.records[0].colors, placement.colors);
+        assert_eq!(stream.records[1].colors, [0x0403_0201; 4]);
+        assert_eq!(
+            stream.records[2].colors,
+            [0x4433_2211, 0x8877_6655, 0xCCBB_AA99, 0x00FF_EEDD]
+        );
+        assert_eq!(stream.records[3].colors, placement.colors);
+    }
+
+    #[test]
+    fn color_control_preserves_the_binary_partial_list_fallbacks() {
+        let two = "$C[01020304:11121314]".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(
+            tokenize_fennel_plain_text(&two).unwrap(),
+            vec![FennelPlainToken::SetColors([0x0403_0201; 4])]
+        );
+
+        let three = "$C[01020304:11121314:21222324]"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tokenize_fennel_plain_text(&three).unwrap(),
+            vec![FennelPlainToken::SetColors([
+                0x0403_0201,
+                0x1413_1211,
+                0x0403_0201,
+                0x0403_0201,
+            ])]
+        );
     }
 
     #[test]
