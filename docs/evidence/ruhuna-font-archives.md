@@ -81,6 +81,8 @@ Every page is one-mip `A4R4G4B4`. The DDS page count equals `Database.tex_page`,
 
 `sub_F47700` is the post-load Database lookup builder called by both RFZ loaders. It takes the first and last glyph codes from the serialized glyph-reference order, allocates one `u16` entry for every code in that inclusive range, zero-fills the table, and writes each glyph index at `code - minimum_code`. Consequently an in-range hole remains index zero; Rust preserves that value rather than inventing a missing-glyph sentinel.
 
+The full-binary 128-byte stride scan isolates `sub_F41C50` as the corresponding runtime getter. It checks code against Impl `+0x14/+0x16`, reads the `u16` dense entry from `+0x0C`, addresses `+0x10 + (index << 7)`, and finally requires record `+0x06` to equal the requested code. That final comparison is how a zero-filled in-range hole is rejected even though its table entry is zero. Rust now exposes the same checked lookup through `RuhunaRuntimeFont::glyph`.
+
 `sub_7CB9B0` is called after the AVTS texture archive has loaded. It copies the dense table and converts every referenced Ruhuna glyph into a fixed 128-byte record. The record boundaries are independently confirmed by allocation `glyph_count << 7`, construction stride 128, and the zeroing constructor `sub_7CB6F0`.
 
 Important proven fields are:

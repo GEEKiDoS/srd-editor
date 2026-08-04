@@ -170,6 +170,15 @@ impl RuhunaRuntimeFont {
             .get(usize::from(code - self.minimum_code))
             .copied()
     }
+
+    /// Reproduces `sub_F41C50`: range-check, read the dense index, address the
+    /// 128-byte record, then reject a zero-filled hole unless its code matches.
+    pub fn glyph(&self, code: u16) -> Option<&RuhunaRuntimeGlyphRecord> {
+        let glyph_index = usize::from(self.dense_glyph_index(code)?);
+        self.glyphs
+            .get(glyph_index)
+            .filter(|glyph| glyph.code == code)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -898,5 +907,30 @@ mod tests {
         assert_eq!(record.uv1, [0.0; 2]);
         assert_eq!(record.uv2, [0.0; 2]);
         assert_eq!(record.uv3, [0.0; 2]);
+    }
+
+    #[test]
+    fn runtime_lookup_rejects_zero_filled_dense_table_holes() {
+        let glyph_a = RuhunaRuntimeGlyphRecord {
+            code: 0x41,
+            ..Default::default()
+        };
+        let glyph_c = RuhunaRuntimeGlyphRecord {
+            code: 0x43,
+            ..Default::default()
+        };
+        let font = RuhunaRuntimeFont {
+            minimum_code: 0x41,
+            maximum_code: 0x43,
+            dense_glyph_indices: vec![0, 0, 1],
+            glyph_pages: vec![Some(0), Some(0)],
+            glyphs: vec![glyph_a, glyph_c],
+        };
+
+        assert_eq!(font.glyph(0x41).map(|glyph| glyph.code), Some(0x41));
+        assert!(font.glyph(0x42).is_none());
+        assert_eq!(font.glyph(0x43).map(|glyph| glyph.code), Some(0x43));
+        assert!(font.glyph(0x40).is_none());
+        assert!(font.glyph(0x44).is_none());
     }
 }
