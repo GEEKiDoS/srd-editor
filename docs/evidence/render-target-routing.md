@@ -1,5 +1,7 @@
 # SrPlayer target 路由、全局队列与宿主相机边界
 
+Chusan `AdvertiseLogoObject` 的具体 SrPlayer 成员、common-init 属性和 identity 根节点证据见 [`chusan-advertise-logo-player.md`](chusan-advertise-logo-player.md)。
+
 本页记录 `projView::SrPlayer` 生成的 Ceylon draw packet 如何进入命名 target 或全局队列，以及空 `TargetScene` 时为何不存在唯一的游戏相机。结论只来自当前游戏二进制。
 
 - `chusanApp.exe` SHA-256：`28EBB4580A4CAE8ED0605B37F2F7C16460497412FE352E020A43D3A082FFEB67`

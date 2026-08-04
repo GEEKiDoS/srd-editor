@@ -52,8 +52,9 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、层、NODE、变换、纹理和首个动画的实际关键帧会进入这些面板。
 - Composition 已接入与 SCN 尺寸一致的 D3D9 DEFAULT-pool render-target texture，并通过 ImGui texture ID 在面板中按宽高比居中缩放显示。纹理保持场景像素尺寸，面板布局使用逻辑单位，最终 ImGui 顶点/scissor 再按 framebuffer scale 转到 HiDPI 物理像素；显示缩放不修改 SRD 矩阵或 `FirstCalcMatrix`。
 - 首个单贴图 runtime draw 已接入：按精确 `AAEBABBAABGAAAAAAA` key 选择已验证 VS/PS，加载 `surfboard/texture` 下实际 DDS，提交 CREF stage 0 与 Wrap/Clamp、Linear/Point sampler，并在强制 `ResetEx` 前后通过完整 Composition 回读确认产生非清屏色像素。当前 identity 宿主矩阵只得到竖线，已证明原因涉及游戏外部 camera 与 `FirstCalcMatrix`，因此尚未冒充完整画面。
+- Chusan `AdvertiseLogoObject` 的具体宿主已闭环：嵌入式 SrPlayer 位于 Impl `+0x68`，common init 写入 `DrawTargetSceneOnly=true`、`2DLayer=100` 并保持空 `TargetScene`；其 GraphNode 父节点始终为 null，故实际 `FirstCalcMatrix` 是构造 identity。Rust profile 已能把该矩阵与显式选择的 `MainScene`/`BgScene` target Camera 组合，仍不会猜测当帧 active target 或 present 尺寸。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、实际游戏调用点的外部 camera/`FirstCalcMatrix` 宿主变换、CNUM 历史 glyph 动画、TEXT、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、把已证明的 Advertise identity 根节点与显式 Chusan target/present profile 接入编辑器预览选择、CNUM 历史 glyph 动画、TEXT、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 
