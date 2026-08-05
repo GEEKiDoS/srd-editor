@@ -2,6 +2,10 @@
 
 本页只记录已经有明确二进制边界、但证据尚未闭合的问题。这里的候选解释不得直接进入渲染实现。
 
+## 空 `TargetScene` 的空键 target 与可见性矩形
+
+property 2 的空字符串会执行精确 map lookup，但“没有 fallback”不等于“结果必为 null”。`SrRenderer+0x24C..+0x258` 只在 target 非空时由 Width/Height 写入，构造器和 `_aligned_malloc` 分配链都不初始化它；`sub_AC6660` 却在每个 ImageCast 前无条件读取该矩形。当前已审计 18 个注册调用点，剩余关键来源是 AFB 描述符驱动的 `star::SglScene` (`0x12B68E0`) 名称。必须闭合 AFB loader/实际描述符值，确认是否注册空字符串 key；在此之前不得把 Advertise/Common 的空属性直接等同于 null target。已闭合的命名-target 四角投影与 AABB 见 [`evidence/render-visibility-culling.md`](evidence/render-visibility-culling.md)。
+
 ## Chusan target 的后续生命周期
 
 仍未闭合的是游戏模式切换之后 MainScene/BgScene Enable、manager current-target、其他专用 target 的注册/移除和当帧组合时序。当前 profile 只描述已证明的构造完成状态，不外推到所有运行阶段。

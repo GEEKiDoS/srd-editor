@@ -177,7 +177,7 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 (lhs.y * rhs.row1 + lhs.x * rhs.row0)
 ```
 
-`srd_project_cast_corners_to_screen` (`0xAD3B00`) 对二维 CAST 直接复制 world X/Y。三维 CAST 使用 `SrRenderer+0x48` 的第 0、1、3 行计算 homogeneous X/Y/W，然后乘 `1/W`。该函数的唯一实际调用方 `sub_AD40B0` 用结果做可见性/相交测试；它不生成最终 ImageCast draw vertex。非空 target 时 `+0x48` 已包含 viewport；空 target 时它保持 identity。
+`srd_project_cast_corners_to_screen` (`0xAD3B00`) 对二维 CAST 直接复制 world X/Y。三维 CAST 使用 `SrRenderer+0x48` 的第 0、1、3 行计算 homogeneous X/Y/W，然后乘 `1/W`。该函数的唯一实际调用方 `sub_AD40B0` 用结果做可见性/相交测试；它不生成最终 ImageCast draw vertex。命名 target 成功解析时 `+0x48` 已包含 viewport；查找结果为 null 时它保持 identity，但对应可见性矩形的初始化仍未闭环。
 
 最终 ImageCast 顶点由 `srd_render_image_cast` (`0xAD77D0`) 直接写入 world XYZ。`srd_begin_quad_draw` (`0xAC5320`) 对三维 CAST 把 `SrRenderer+0x08` 复制到 packet world matrix；接收 target 的 `Projection*View` 则从 `sea::AllEnvBasic` 单独进入 `c10..c13`。详见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
 
@@ -189,5 +189,5 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 
 - 编辑器打开独立 SRD 时应采用哪一种宿主预览 target/camera；游戏语义允许同一全局 packet 被多个注册 target 分别过滤，不存在可由 SRD 单独推出的唯一值。
 - 各个实际 Chusan 画面在具体时刻注册了哪些 target，以及其 camera/scene-node 数值。
-- 3D CAST 的 world XYZ、packet world matrix 与 target `Projection*View` 提交链已闭环；仍待闭合的是空 target 下 renderer 初始零尺寸相交矩形对所有实际 CAST 的精确剔除结果，以及特殊 depth/stencil 分支。
+- 3D CAST 的 world XYZ、packet world matrix 与 target `Projection*View` 提交链已闭环；命名 target 下 ImageCast 四角投影与 AABB 剔除也已实现。仍待闭合的是空字符串是否命中空 key target、Fennel/Slice/Number 的同类剔除接线，以及特殊 depth/stencil 分支。
 - Camera OffsetX/OffsetY 是否存在 SRD renderer 之外的运行时写入者。

@@ -187,9 +187,9 @@ impl ChusanAdvertiseLogoPlayerProfile {
     /// Combines the proven root-node matrix with an explicitly selected Chusan
     /// receiving target. `AdvertiseLogoObject` leaves the embedded SrPlayer
     /// parent null, so its composite matrix remains constructor identity. Its
-    /// empty `TargetScene` also means renderer preparation has no project
-    /// target; the selected Scene Camera is used only when the global packet is
-    /// submitted.
+    /// The current profile uses the explicit null-lookup diagnostic branch.
+    /// The empty `TargetScene` string itself does not yet prove that result:
+    /// AFB `star::SglScene` empty-key registration remains under audit.
     pub fn host_context_for_target(
         self,
         target: ChusanAirSceneTargetProfile,
@@ -230,8 +230,9 @@ impl ChusanCommonBackgroundPlayerProfile {
     /// CommonBackGroundObject is globally registered and looked up by name;
     /// its audited class methods never attach the embedded SrPlayer to a
     /// GraphNode parent. The root FirstCalc matrix therefore remains identity.
-    /// Its empty `TargetScene` leaves renderer project matrices at identity;
-    /// `target` is the Scene that later receives the global packet.
+    /// The current profile uses the explicit null-lookup diagnostic branch;
+    /// `target` is the Scene that later receives the global packet. Empty-key
+    /// AFB target registration remains unresolved.
     pub fn host_context_for_target(
         self,
         target: ChusanAirSceneTargetProfile,
@@ -355,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn advertise_logo_host_context_keeps_identity_root_and_explicit_target_camera() {
+    fn advertise_logo_host_context_uses_the_explicit_null_lookup_diagnostic() {
         let context = CHUSAN_ADVERTISE_LOGO_PLAYER
             .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
             .unwrap();

@@ -171,6 +171,89 @@ pub fn project_cast_corners_to_screen(
     Ok(world_corners.map(|point| project_point_to_screen_game(point, screen_matrix)))
 }
 
+/// Reproduces `sub_AC6660 -> sub_1049940` for the renderer visibility test
+/// when `SrRenderer+0x24C` has been initialized from a resolved render target.
+/// The target rectangle is `[width/2, height/2, width/2, height/2]`; the CAST
+/// rectangle is built from the four projected corners as center/half extents.
+pub fn cast_overlaps_render_target_game(
+    world_corners: &[[f32; 3]; 4],
+    is_2d: bool,
+    screen_matrix: Option<&Matrix4x4>,
+    width: i32,
+    height: i32,
+) -> Result<bool, ProjectionError> {
+    let projected = project_cast_corners_to_screen(world_corners, is_2d, screen_matrix)?;
+    let [minimum_x, maximum_x] = sse_bounds(projected.map(|point| point[0]));
+    let [minimum_y, maximum_y] = sse_bounds(projected.map(|point| point[1]));
+
+    let half = 0.5f32;
+    let cast_rectangle = [
+        (minimum_x - maximum_x) * half + maximum_x,
+        (minimum_y - maximum_y) * half + maximum_y,
+        (maximum_x - minimum_x) * half,
+        (maximum_y - minimum_y) * half,
+    ];
+    let target_half_width = (width as f32) * half;
+    let target_half_height = (height as f32) * half;
+    let target_rectangle = [
+        target_half_width,
+        target_half_height,
+        target_half_width,
+        target_half_height,
+    ];
+    Ok(center_half_rectangles_overlap_game(
+        target_rectangle,
+        cast_rectangle,
+    ))
+}
+
+fn sse_bounds(values: [f32; 4]) -> [f32; 2] {
+    let mut minimum = 9_999_999.0f32;
+    let mut maximum = -9_999_999.0f32;
+    for value in values {
+        minimum = sse_min(value, minimum);
+        maximum = sse_max(value, maximum);
+    }
+    [minimum, maximum]
+}
+
+/// MINSS/MAXSS return the second operand for unordered and equal inputs.
+/// Operand order is kept identical to `sub_AC6660`, preserving signed zero
+/// and the binary's NaN behavior.
+fn sse_min(left: f32, right: f32) -> f32 {
+    if left.is_nan() || right.is_nan() || left >= right {
+        right
+    } else {
+        left
+    }
+}
+
+fn sse_max(left: f32, right: f32) -> f32 {
+    if left.is_nan() || right.is_nan() || left <= right {
+        right
+    } else {
+        left
+    }
+}
+
+fn center_half_rectangles_overlap_game(left: [f32; 4], right: [f32; 4]) -> bool {
+    let mut delta_x = left[0] - right[0];
+    if delta_x < 0.0 {
+        delta_x = -delta_x;
+    }
+    if delta_x > left[2] + right[2] {
+        return false;
+    }
+
+    let mut delta_y = left[1] - right[1];
+    if delta_y < 0.0 {
+        delta_y = -delta_y;
+    }
+    // COMISS + SETBE treats unordered inputs as overlap. Writing this as the
+    // negation of `>` reproduces that behavior, unlike Rust's direct `<=`.
+    !(delta_y > left[3] + right[3])
+}
+
 pub fn project_point_to_screen_game(point: [f32; 3], screen_matrix: &Matrix4x4) -> [f32; 2] {
     let [x, y, z] = point;
     let rows = &screen_matrix.rows;
@@ -233,6 +316,45 @@ mod tests {
             [3.0, 10.0]
         );
         assert!(project_cast_corners_to_screen(&[[0.0; 3]; 4], false, None).is_err());
+    }
+
+    #[test]
+    fn cast_visibility_uses_inclusive_center_half_aabb_overlap() {
+        let touching = [
+            [100.0, 10.0, 0.0],
+            [110.0, 10.0, 0.0],
+            [100.0, 20.0, 0.0],
+            [110.0, 20.0, 0.0],
+        ];
+        assert!(cast_overlaps_render_target_game(&touching, true, None, 100, 100).unwrap());
+
+        let outside = touching.map(|mut point| {
+            point[0] += 11.0;
+            point
+        });
+        assert!(!cast_overlaps_render_target_game(&outside, true, None, 100, 100).unwrap());
+    }
+
+    #[test]
+    fn cast_visibility_projects_3d_corners_through_renderer_screen_matrix() {
+        let corners = [
+            [-1.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+        ];
+        let screen = viewport_matrix_game(1920, 1080);
+        assert!(
+            cast_overlaps_render_target_game(&corners, false, Some(&screen), 1920, 1080,).unwrap()
+        );
+    }
+
+    #[test]
+    fn cast_visibility_preserves_unordered_comiss_overlap_behavior() {
+        assert!(center_half_rectangles_overlap_game(
+            [0.0, 0.0, 1.0, 1.0],
+            [f32::NAN, f32::NAN, 1.0, 1.0],
+        ));
     }
 
     #[test]

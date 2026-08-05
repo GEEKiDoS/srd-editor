@@ -16,7 +16,7 @@
 
 ## FirstCalcMatrix 边界
 
-`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix`、可选的 renderer project target、最终接收 target Camera 的 `Projection*View` 与 target screen size。语料测试对命名 target 与接收 target 都传 identity、screen size 传 `1920x1080`，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用这些值。空 `TargetScene` profile 则把 renderer project target 设为 `None`。详见 [`projection.md`](projection.md)、[`render-target-routing.md`](render-target-routing.md)、[`render-empty-target-matrices.md`](render-empty-target-matrices.md) 与 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
+`build_evidence_complete_initial_image_draws` 要求调用者显式提供无默认值的 `SrdHostDrawContext`，其中分别保存 `FirstCalcMatrix`、可选的 renderer project target、最终接收 target Camera 的 `Projection*View` 与 target screen size。语料测试对命名 target 与接收 target 都传 identity、screen size 传 `1920x1080`，只是在独立宿主输入固定时验证确定结果；它不声称原游戏任意调用现场都使用这些值。`renderer_project_target=None` 现在只表示显式 null-branch 诊断，不再由空 `TargetScene` 字符串自动推出。详见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 编辑器未来的 fit-to-view 属于 Composition 显示变换，必须与这个游戏根矩阵分层保存。HiDPI 只改变窗口/backbuffer 的物理像素和 ImGui 的逻辑到物理比例，也不能进入 SRD 的 `FirstCalcMatrix`。
 

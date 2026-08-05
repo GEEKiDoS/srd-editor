@@ -47,18 +47,18 @@ root key    = 0x00008680
 Common 与 Advertise 一样满足：
 
 - `DrawTargetSceneOnly=true`；
-- `TargetScene` 为空；
+- `TargetScene` 字符串为空；
 - `DrawMask=0xFFFF`。
 
-空名称查找返回空 target，packet 进入全局队列，再由每个已注册 target 过滤。Chusan MainScene/BgScene 构造完成状态的 Enable 都为 true，Attribute 都为 0，DrawIndex 分别为 0/16，所以 Common 的初始普通 packet 被 MainScene 接纳、被 BgScene 拒绝。后续模式可能改变 Scene Enable/current-target；这里不把构造完成状态外推到所有帧。
+空名称执行精确 map lookup，但当前尚未证明 map 中不存在 AFB `star::SglScene` 注册的空 key。若结果为 null，packet 进入全局队列，再由每个已注册 target 过滤；在该条件分支下，Chusan MainScene/BgScene 构造完成状态使 Common 的普通 packet 被 MainScene 接纳、被 BgScene 拒绝。空 key 未决点见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 ## 实际样本回归
 
-对 `CHU_UI_Common_BK_00_v11.srd` 的 `yellow_loop` 第 0 帧，使用上述 Common/MainScene profile：
+对 `CHU_UI_Common_BK_00_v11.srd` 的 `yellow_loop` 第 0 帧，使用 Common/MainScene 的显式 null-branch 诊断：
 
-- 产生 100 个证据完整普通 runtime draw；
+- 产生 100 个普通 runtime draw；
 - 100 个 draw 的 renderer key 全部为 `0x8680`；
 - 按 `ceylon_enqueue_draw_packet` 的精确相邻比较与 triangle-strip 退化连接规则合并为 9 个 record；
 - 100 个逻辑 source 全部仍可从 9 个 record 反查，不发生丢失或跨 key 合并。
 
-空 `TargetScene` 的矩阵链现已进一步闭环：`srd_renderer_configure_project_camera` 不进入 Width/Height/Camera 分支，`SrRenderer+0x08/+0x48` 保持构造 identity；三维 ImageCast 把 world XYZ 写入顶点，packet `c0..c3` 使用该 identity，最终 MainScene Camera 只从 target-local ShapeEnv 写入 `c10..c13`。精确 Common/MainScene D3D9Ex smoke 覆盖完整 `1920x1080`，ResetEx 前后哈希一致。详见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
+该诊断中 `srd_renderer_configure_project_camera` 不进入 Width/Height/Camera 分支，`SrRenderer+0x08/+0x48` 保持构造 identity；三维 ImageCast 把 world XYZ 写入顶点，packet `c0..c3` 使用该 identity，最终 MainScene Camera 只从 target-local ShapeEnv 写入 `c10..c13`。D3D9Ex smoke 覆盖完整 `1920x1080`，ResetEx 前后哈希一致，但不再冒充空字符串查找结果已经闭环。

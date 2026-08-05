@@ -45,9 +45,9 @@ vertex builder 的该虚函数进入 `ceylon_submit_vertex_batch` (`0x6DF020`) �
 - target 非空：调用该 target 虚表 `+0x60`；
 - target 为空：调用全局管理器 `unk_1CA0BE8` 的 `sub_6314F0`。
 
-`TargetScene` 的查找是精确字符串 map lookup，没有空键 fallback；Advertise 没有设置该属性。因此即使 `DrawTargetSceneOnly=true`，传到 vertex builder 的 target 仍是空指针，packet 明确进入全局管理器，而不是自动改投 `MainScene`、`BgScene` 或其他命名 target。
+`TargetScene` 的查找是精确字符串 map lookup，没有 fallback；Advertise 没有设置该属性。这里仍不能从“字符串为空”推出“target 指针为空”，因为注册 map 没有拒绝空 key，而 AFB 驱动的 `star::SglScene` 名称尚未闭环。只有查找结果实际为 null 时，packet 才进入全局管理器；若命中空 key target，则走命名 target 分支。
 
-同一 null 还使 `srd_renderer_configure_project_camera` 跳过整个 target Width/Height/Camera 分支，保留 `SrRenderer+0x08/+0x48` 的构造 identity。最终接收全局 packet 的 Scene Camera 是 target-local shader environment 的另一路输入，不能反过来冒充 renderer preparation 的命名 target。完整矩阵与 ImageCast 顶点证据见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
+查找结果为 null 时，`srd_renderer_configure_project_camera` 跳过整个 target Width/Height/Camera 分支，保留 `SrRenderer+0x08/+0x48` 的构造 identity。最终接收全局 packet 的 Scene Camera 是 target-local shader environment 的另一路输入，不能反过来冒充 renderer preparation 的命名 target。null 分支矩阵见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)，空 key 与可见性矛盾见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 ## 全局命令记录布局
 
@@ -71,7 +71,7 @@ vertex builder 的该虚函数进入 `ceylon_submit_vertex_batch` (`0x6DF020`) �
 2. 第二轮调用虚表 `+0x3C`，随后把全局 `+0x118` 队列传给虚表 `+0x44`；
 3. 所有 target 处理结束后，调用 `sub_63E370` 清空全局队列。
 
-所以空 target packet 的语义是“交给每个注册 target 做自己的过滤与入队”，不是“选择一个隐藏的默认 target”。
+所以 target pointer 为 null 的 packet 语义是“交给每个注册 target 做自己的过滤与入队”，不是“选择一个隐藏的默认 target”。property 字符串为空是否产生该 null pointer 仍待闭环。
 
 RTTI 和虚表交叉引用证明共享这套基础处理的类型至少包括：
 

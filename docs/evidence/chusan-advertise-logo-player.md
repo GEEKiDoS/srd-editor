@@ -62,6 +62,8 @@ Impl `+0x438` 的 `projView::GameObjectBase` 保存 SrPlayer 指针并执行延�
 
 ## 仍然显式的 target 边界
 
+> 更正：下面旧段落中“空 `TargetScene` 直接进入全局队列”的结论已经撤销。精确 lookup 没有 fallback，但 map 允许空 key；AFB `star::SglScene` 的实际名称仍待闭环。见 [`render-visibility-culling.md`](render-visibility-culling.md)。
+
 空 `TargetScene` 不会 fallback 到某个命名 target；packet 进入全局队列，随后由当帧已注册且启用的 target 各自过滤。`MainScene` 与 `BgScene` 的创建和 Camera 见 [`chusan-air-scene-profiles.md`](chusan-air-scene-profiles.md)，完整路由见 [`render-target-routing.md`](render-target-routing.md)。
 
 构造完成状态下的 target filter 已进一步闭环：MainScene/BgScene 的 Enable 都是 true、Attribute 都是 0，DrawIndex 分别为 0/16；Advertise 的 `DrawMask=0xFFFF` 因此接纳 MainScene、拒绝 BgScene。Rust profile 可以用这一初始结论生成过滤后的 MainScene target-local 顺序；present 宽高仍必须显式提供，也不会把这一时刻外推为后续所有模式/帧的 Enable 状态。

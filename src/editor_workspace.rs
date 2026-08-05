@@ -497,7 +497,7 @@ impl EditorWorkspace {
                     "CommonBackGround: FirstCalc identity, 2DLayer 6, root key 0x8680 (game binary evidence)",
                 );
                 ui.text_wrapped(
-                    "Its empty TargetScene keeps the renderer project matrices at identity; the selected receiving scene supplies the final Camera.",
+                    "This preview currently uses the explicit null-lookup diagnostic branch. Empty TargetScene may still resolve an AFB-registered empty-key target; the selected receiving scene supplies the final Camera only for this diagnostic.",
                 );
             }
             PreviewPlayerSelection::Unselected => {

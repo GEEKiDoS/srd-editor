@@ -17,7 +17,8 @@ use crate::image::{
     premultiply_additive_color_game,
 };
 use crate::projection::{
-    Matrix4x4, identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
+    Matrix4x4, cast_overlaps_render_target_game, compose_screen_matrix_game,
+    identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
 };
 use crate::reference_runtime::{
     ProjectLayerRuntimeState, ProjectRuntime, ReferenceLayerParent, RuntimeWorldState,
@@ -575,8 +576,8 @@ pub struct SrdHostDrawContext {
     pub renderer_layer_key: u32,
     /// Target resolved from the player's `TargetScene` property during
     /// renderer preparation. This is independent from the scene that later
-    /// receives a globally queued packet. `None` leaves SrRenderer+0x08 and
-    /// +0x48 at their constructor identity values.
+    /// receives a globally queued packet. `None` explicitly models the null
+    /// lookup branch; an empty property string alone does not yet prove it.
     pub renderer_project_target: Option<SrdRendererProjectTargetContext>,
     /// Projection*View of the scene that actually receives and submits the
     /// packet, including packets routed through the global queue.
@@ -703,6 +704,7 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
     }
 
     let camera_bridge = renderer_project_camera_bridge(project, host);
+    let project_screen = renderer_project_screen_matrix(host, camera_bridge)?;
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -742,6 +744,7 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
             image_state,
             host,
             camera_bridge,
+            project_screen.as_ref(),
             identity,
             &mut packet_current_matrix,
         )? {
@@ -1079,6 +1082,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
         )));
     }
     let camera_bridge = renderer_project_camera_bridge(project, host);
+    let project_screen = renderer_project_screen_matrix(host, camera_bridge)?;
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -1118,6 +1122,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             image_state,
             host,
             camera_bridge,
+            project_screen.as_ref(),
             identity,
             &mut packet_current_matrix,
         )? {
@@ -1819,6 +1824,52 @@ fn renderer_project_camera_bridge(project: &Project, host: SrdHostDrawContext) -
     mul_matrix4x4_game(&external_inverse, &srd_projection_view)
 }
 
+fn renderer_project_screen_matrix(
+    host: SrdHostDrawContext,
+    camera_bridge: Matrix4x4,
+) -> Result<Option<(Matrix4x4, [i32; 2])>, SrdDrawError> {
+    let Some(target) = host.renderer_project_target else {
+        return Ok(None);
+    };
+    let width = i32::try_from(target.render_size[0]).map_err(|_| {
+        SrdDrawError(format!(
+            "renderer project target width {} exceeds the game's signed i32 domain",
+            target.render_size[0]
+        ))
+    })?;
+    let height = i32::try_from(target.render_size[1]).map_err(|_| {
+        SrdDrawError(format!(
+            "renderer project target height {} exceeds the game's signed i32 domain",
+            target.render_size[1]
+        ))
+    })?;
+    Ok(Some((
+        compose_screen_matrix_game(width, height, &target.projection_view, &camera_bridge),
+        [width, height],
+    )))
+}
+
+fn runtime_image_passes_renderer_visibility(
+    positions: [[f32; 3]; 4],
+    is_2d: bool,
+    project_screen: Option<&(Matrix4x4, [i32; 2])>,
+) -> Result<bool, SrdDrawError> {
+    let Some((screen_matrix, [width, height])) = project_screen else {
+        // The binary reads SrRenderer+0x24C even on this path, but its
+        // initialization source for an unresolved/empty target is not yet
+        // proven. Do not invent a rectangle here.
+        return Ok(true);
+    };
+    cast_overlaps_render_target_game(
+        &positions,
+        is_2d,
+        (!is_2d).then_some(screen_matrix),
+        *width,
+        *height,
+    )
+    .map_err(|error| SrdDrawError(error.to_string()))
+}
+
 fn runtime_image_state_for_owner(
     runtime: &ProjectRuntime,
     owner: ReferenceLayerParent,
@@ -1857,6 +1908,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
     image_state: crate::image::RuntimeImageState,
     host: SrdHostDrawContext,
     camera_bridge: Matrix4x4,
+    project_screen: Option<&(Matrix4x4, [i32; 2])>,
     identity: Matrix4x4,
     packet_current_matrix: &mut Matrix4x4,
 ) -> Result<Option<EvidenceCompleteSrdDraw>, SrdDrawError> {
@@ -1960,6 +2012,9 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
         .build_quad_with_geometry(image_state.geometry, is_2d)
         .positions;
     let positions = local_positions.map(|point| world.matrix.transform_point_game(point));
+    if !runtime_image_passes_renderer_visibility(positions, is_2d, project_screen)? {
+        return Ok(None);
+    }
     let quad = image.build_render_quad_from_positions(
         positions,
         image_state.coordinate_state(ImageReferenceChannel::Cref),
@@ -2001,6 +2056,7 @@ fn build_evidence_complete_image_draws(
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
     let camera_bridge = renderer_project_camera_bridge(project, host);
+    let project_screen = renderer_project_screen_matrix(host, camera_bridge)?;
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -2160,6 +2216,10 @@ fn build_evidence_complete_image_draws(
                 .positions;
             let positions =
                 local_positions.map(|point| world_matrices[node_index].transform_point_game(point));
+            if !runtime_image_passes_renderer_visibility(positions, is_2d, project_screen.as_ref())?
+            {
+                continue;
+            }
             let quad = image.build_render_quad_from_positions(
                 positions,
                 image_state.coordinate_state(ImageReferenceChannel::Cref),
@@ -2549,6 +2609,27 @@ mod tests {
         assert_eq!((draws[0].scene_index, draws[0].layer_index), (0, 1));
         assert_eq!(draws[0].node_index, 0);
         assert_eq!(draws[0].quad.vertices[0].position, [15.0, 27.0, 0.0]);
+
+        let culled = build_evidence_complete_initial_reference_image_draws(
+            &project,
+            &TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            },
+            0,
+            SrdHostDrawContext::new(
+                Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [10, 10],
+                )),
+                identity_matrix4x4_game(),
+                [10, 10],
+            ),
+        )
+        .unwrap();
+        assert!(culled.is_empty());
     }
 
     #[test]
