@@ -185,9 +185,11 @@ impl ChusanAdvertiseLogoPlayerProfile {
     }
 
     /// Combines the proven root-node matrix with an explicitly selected Chusan
-    /// target. `AdvertiseLogoObject` leaves the embedded SrPlayer parent null,
-    /// so its composite matrix remains the constructor identity. The caller
-    /// must still choose which active target receives the globally queued draw.
+    /// receiving target. `AdvertiseLogoObject` leaves the embedded SrPlayer
+    /// parent null, so its composite matrix remains constructor identity. Its
+    /// empty `TargetScene` also means renderer preparation has no project
+    /// target; the selected Scene Camera is used only when the global packet is
+    /// submitted.
     pub fn host_context_for_target(
         self,
         target: ChusanAirSceneTargetProfile,
@@ -206,8 +208,8 @@ impl ChusanAdvertiseLogoPlayerProfile {
         Ok(SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             srd_renderer_layer_key_for_2d_layer(self.layer_2d),
+            None,
             target_projection_view,
-            [present_width, present_height],
             target_screen_size,
         ))
     }
@@ -228,6 +230,8 @@ impl ChusanCommonBackgroundPlayerProfile {
     /// CommonBackGroundObject is globally registered and looked up by name;
     /// its audited class methods never attach the embedded SrPlayer to a
     /// GraphNode parent. The root FirstCalc matrix therefore remains identity.
+    /// Its empty `TargetScene` leaves renderer project matrices at identity;
+    /// `target` is the Scene that later receives the global packet.
     pub fn host_context_for_target(
         self,
         target: ChusanAirSceneTargetProfile,
@@ -246,8 +250,8 @@ impl ChusanCommonBackgroundPlayerProfile {
         Ok(SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             srd_renderer_layer_key_for_2d_layer(self.layer_2d),
+            None,
             target_projection_view,
-            [present_width, present_height],
             target_screen_size,
         ))
     }
@@ -363,7 +367,7 @@ mod tests {
                 .projection_view_for_present_size(1080, 1920)
                 .unwrap()
         );
-        assert_eq!(context.target_render_size, [1080, 1920]);
+        assert_eq!(context.renderer_project_target, None);
         assert_eq!(context.target_screen_size, [1920, 1080]);
     }
 

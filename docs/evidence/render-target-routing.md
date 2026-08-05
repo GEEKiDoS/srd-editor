@@ -47,6 +47,8 @@ vertex builder 的该虚函数进入 `ceylon_submit_vertex_batch` (`0x6DF020`) �
 
 `TargetScene` 的查找是精确字符串 map lookup，没有空键 fallback；Advertise 没有设置该属性。因此即使 `DrawTargetSceneOnly=true`，传到 vertex builder 的 target 仍是空指针，packet 明确进入全局管理器，而不是自动改投 `MainScene`、`BgScene` 或其他命名 target。
 
+同一 null 还使 `srd_renderer_configure_project_camera` 跳过整个 target Width/Height/Camera 分支，保留 `SrRenderer+0x08/+0x48` 的构造 identity。最终接收全局 packet 的 Scene Camera 是 target-local shader environment 的另一路输入，不能反过来冒充 renderer preparation 的命名 target。完整矩阵与 ImageCast 顶点证据见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
+
 ## 全局命令记录布局
 
 `sub_6314F0` 取得全局管理器 `+0x118` 的队列对象并调用 `sub_63E380`。后者构造固定 `0x38` 字节记录：

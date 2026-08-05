@@ -52,7 +52,7 @@ far         = 100000
 12 OffsetY      default 0
 ```
 
-`0xAC7400` 每次配置 SRD renderer 时执行：
+`0xAC7400` 先把 property 2 解析得到的 target pointer 保存到 `SrRenderer+0x248`。只有该 pointer 非空且 `SrProject` 非空时，才执行以下 Camera 配置：
 
 1. CAM position -> `sea_camera_set_position`；
 2. CAM target -> `sea_camera_set_target`；
@@ -67,7 +67,7 @@ degrees = float(angle_units) * f32::from_bits(0x3BB40000)
 radians = degrees * f32::from_bits(0x3C8EFA35)
 ```
 
-样本 `8191` 得到 `44.994507°`。注意：虚表 `+0x88` 已进一步闭环到 `sea_camera_set_perspective_parameters` (`0x656450`)；它把第二个参数写入名为 `Aspect` 的 property 3，但 `0xAC7400` 在此处传入的是当前渲染目标 Width。函数前面虽然另行取得外部 target/camera aspect 或 override 值并保存到局部变量，该值没有进入这次全局 Camera 调用。Rust API 保留显式的 `projection_width` 参数，没有擅自改成宽高比。
+样本 `8191` 得到 `44.994507°`。注意：虚表 `+0x88` 已进一步闭环到 `sea_camera_set_perspective_parameters` (`0x656450`)；它把第二个参数写入名为 `Aspect` 的 property 3，但 `0xAC7400` 在非空命名 target 分支传入的是该 target Width。函数前面虽然另行取得外部 target/camera aspect 或 override 值并保存到局部变量，该值没有进入这次全局 Camera 调用。Rust API 保留显式的 `projection_width` 参数，没有擅自改成宽高比。空 `TargetScene` 不执行本段，详见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
 
 ## View、Projection 与 Projection*View
 
@@ -136,7 +136,7 @@ layer_world(+0x16C) = SrRenderer(+0xB8) * layer_local(+0x13C)
 
 `srd_construct_player` (`0xAA68B0`) 创建 `surfride::SrPlayer::Impl`，Impl `+0x10` 的 RTTI 类型是 `surfride::SrRenderer`。`srd_construct_renderer` (`0xAC4010`) 把 `SrRenderer+0x08` 和 `+0x48` 初始化为单位矩阵。
 
-`srd_renderer_configure_project_camera` 先分别取得外部 camera 与 SRD 全局 camera 的 Projection/View：
+当 property 2 解析到非空命名 target 时，`srd_renderer_configure_project_camera` 分别取得该 target camera 与 SRD 全局 camera 的 Projection/View：
 
 ```text
 external_projection_view = external_projection * external_view
@@ -154,7 +154,7 @@ screen_matrix = temporary * *(Matrix4x4 *)(SrRenderer + 0x08)
 *(Matrix4x4 *)(SrRenderer + 0x48) = screen_matrix
 ```
 
-因此在可逆且忽略浮点误差时，最终组合代数上约为 `viewport * srd_projection_view`；但 `SrRenderer+0x08` 同时明确记录了当前外部 camera context 到 SRD camera context 的变换，不能在独立宿主中无条件假设为 identity。
+因此在该分支可逆且忽略浮点误差时，最终组合代数上约为 `viewport * srd_projection_view`。若 `TargetScene` 解析为 null，函数在构造这些矩阵前返回，`SrRenderer+0x08/+0x48` 精确保持构造 identity；最终接收全局 packet 的 target Camera 不会回填这两个字段。
 
 Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从单位矩阵构造：
 
@@ -177,7 +177,9 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 (lhs.y * rhs.row1 + lhs.x * rhs.row0)
 ```
 
-`srd_project_cast_corners_to_screen` (`0xAD3B00`) 对二维 CAST 直接复制 world X/Y。三维 CAST 使用 `SrRenderer+0x48` 的第 0、1、3 行计算 homogeneous X/Y/W，然后乘 `1/W`。由于 viewport 已被乘入该矩阵，结果是最终屏幕坐标，不再需要额外 NDC-to-viewport 步骤。
+`srd_project_cast_corners_to_screen` (`0xAD3B00`) 对二维 CAST 直接复制 world X/Y。三维 CAST 使用 `SrRenderer+0x48` 的第 0、1、3 行计算 homogeneous X/Y/W，然后乘 `1/W`。该函数的唯一实际调用方 `sub_AD40B0` 用结果做可见性/相交测试；它不生成最终 ImageCast draw vertex。非空 target 时 `+0x48` 已包含 viewport；空 target 时它保持 identity。
+
+最终 ImageCast 顶点由 `srd_render_image_cast` (`0xAD77D0`) 直接写入 world XYZ。`srd_begin_quad_draw` (`0xAC5320`) 对三维 CAST 把 `SrRenderer+0x08` 复制到 packet world matrix；接收 target 的 `Projection*View` 则从 `sea::AllEnvBasic` 单独进入 `c10..c13`。详见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。
 
 ## Rust 对应实现
 
@@ -187,5 +189,5 @@ Width/Height getter 返回 signed i32，游戏用 `cvtdq2ps` 转成 f32 后从�
 
 - 编辑器打开独立 SRD 时应采用哪一种宿主预览 target/camera；游戏语义允许同一全局 packet 被多个注册 target 分别过滤，不存在可由 SRD 单独推出的唯一值。
 - 各个实际 Chusan 画面在具体时刻注册了哪些 target，以及其 camera/scene-node 数值。
-- 3D CAST 提交阶段的深度值和最终 D3D9 顶点/裁剪路径。
+- 3D CAST 的 world XYZ、packet world matrix 与 target `Projection*View` 提交链已闭环；仍待闭合的是空 target 下 renderer 初始零尺寸相交矩形对所有实际 CAST 的精确剔除结果，以及特殊 depth/stencil 分支。
 - Camera OffsetX/OffsetY 是否存在 SRD renderer 之外的运行时写入者。

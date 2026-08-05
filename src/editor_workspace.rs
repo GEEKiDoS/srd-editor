@@ -496,9 +496,8 @@ impl EditorWorkspace {
                 ui.text_wrapped(
                     "CommonBackGround: FirstCalc identity, 2DLayer 6, root key 0x8680 (game binary evidence)",
                 );
-                ui.text_colored(
-                    [0.92, 0.68, 0.25, 1.0],
-                    "Its final host composition/viewport compensation remains unresolved; the proven SRD camera path stays narrow.",
+                ui.text_wrapped(
+                    "Its empty TargetScene keeps the renderer project matrices at identity; the selected receiving scene supplies the final Camera.",
                 );
             }
             PreviewPlayerSelection::Unselected => {

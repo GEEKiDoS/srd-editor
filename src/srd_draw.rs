@@ -550,12 +550,37 @@ pub fn assign_fennel_font_resource_requests(
 /// SRD file itself. There is deliberately no `Default`: an independent SRD
 /// does not identify a unique game target, Camera, or scene-node placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SrdRendererProjectTargetContext {
+    /// Projection*View of the target resolved from SrPlayer property 2
+    /// `TargetScene` while `srd_renderer_configure_project_camera` runs.
+    pub projection_view: Matrix4x4,
+    /// Width/height read from that resolved target. The width is passed as the
+    /// SRD Camera Aspect property by the original renderer.
+    pub render_size: [u32; 2],
+}
+
+impl SrdRendererProjectTargetContext {
+    pub const fn new(projection_view: Matrix4x4, render_size: [u32; 2]) -> Self {
+        Self {
+            projection_view,
+            render_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SrdHostDrawContext {
     pub first_calc_matrix: Affine3x4,
     /// Root `SrRenderer+0x198` key established by the concrete SrPlayer host.
     pub renderer_layer_key: u32,
+    /// Target resolved from the player's `TargetScene` property during
+    /// renderer preparation. This is independent from the scene that later
+    /// receives a globally queued packet. `None` leaves SrRenderer+0x08 and
+    /// +0x48 at their constructor identity values.
+    pub renderer_project_target: Option<SrdRendererProjectTargetContext>,
+    /// Projection*View of the scene that actually receives and submits the
+    /// packet, including packets routed through the global queue.
     pub target_projection_view: Matrix4x4,
-    pub target_render_size: [u32; 2],
     pub target_screen_size: [u32; 2],
 }
 
@@ -563,15 +588,15 @@ impl SrdHostDrawContext {
     pub const fn new(
         first_calc_matrix: Affine3x4,
         renderer_layer_key: u32,
+        renderer_project_target: Option<SrdRendererProjectTargetContext>,
         target_projection_view: Matrix4x4,
-        target_render_size: [u32; 2],
         target_screen_size: [u32; 2],
     ) -> Self {
         Self {
             first_calc_matrix,
             renderer_layer_key,
+            renderer_project_target,
             target_projection_view,
-            target_render_size,
             target_screen_size,
         }
     }
@@ -677,12 +702,7 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
         )));
     }
 
-    let external_inverse = inverse_matrix4x4_game(&host.target_projection_view);
-    let srd_projection_view = project
-        .camera
-        .runtime_matrices(host.target_render_size[0] as f32)
-        .projection_view;
-    let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+    let camera_bridge = renderer_project_camera_bridge(project, host);
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -1058,12 +1078,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             "scene index {scene_index} is outside the project"
         )));
     }
-    let external_inverse = inverse_matrix4x4_game(&host.target_projection_view);
-    let srd_projection_view = project
-        .camera
-        .runtime_matrices(host.target_render_size[0] as f32)
-        .projection_view;
-    let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+    let camera_bridge = renderer_project_camera_bridge(project, host);
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -1145,18 +1160,7 @@ fn build_evidence_complete_fennel_draws_impl(
     runtime_layers: Option<&[ProjectLayerRuntimeState]>,
     runtime_text_inputs: Option<&BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>>,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
-    if host.target_render_size.contains(&0) {
-        return Err(SrdDrawError(format!(
-            "target render size must be non-zero, got {}x{}",
-            host.target_render_size[0], host.target_render_size[1]
-        )));
-    }
-    if host.target_screen_size.contains(&0) {
-        return Err(SrdDrawError(format!(
-            "target screen size must be non-zero, got {}x{}",
-            host.target_screen_size[0], host.target_screen_size[1]
-        )));
-    }
+    validate_host_draw_context(host)?;
     let scene = project
         .scenes
         .get(scene_index)
@@ -1786,10 +1790,12 @@ fn pack_fennel_record_color([red, green, blue, alpha]: [u8; 4]) -> u32 {
 }
 
 fn validate_host_draw_context(host: SrdHostDrawContext) -> Result<(), SrdDrawError> {
-    if host.target_render_size.contains(&0) {
+    if let Some(target) = host.renderer_project_target
+        && target.render_size.contains(&0)
+    {
         return Err(SrdDrawError(format!(
-            "target render size must be non-zero, got {}x{}",
-            host.target_render_size[0], host.target_render_size[1]
+            "renderer project target size must be non-zero, got {}x{}",
+            target.render_size[0], target.render_size[1]
         )));
     }
     if host.target_screen_size.contains(&0) {
@@ -1799,6 +1805,18 @@ fn validate_host_draw_context(host: SrdHostDrawContext) -> Result<(), SrdDrawErr
         )));
     }
     Ok(())
+}
+
+fn renderer_project_camera_bridge(project: &Project, host: SrdHostDrawContext) -> Matrix4x4 {
+    let Some(target) = host.renderer_project_target else {
+        return identity_matrix4x4_game();
+    };
+    let external_inverse = inverse_matrix4x4_game(&target.projection_view);
+    let srd_projection_view = project
+        .camera
+        .runtime_matrices(target.render_size[0] as f32)
+        .projection_view;
+    mul_matrix4x4_game(&external_inverse, &srd_projection_view)
 }
 
 fn runtime_image_state_for_owner(
@@ -1977,28 +1995,12 @@ fn build_evidence_complete_image_draws(
     host: SrdHostDrawContext,
     runtime_layers: Option<&[ProjectLayerRuntimeState]>,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
-    if host.target_render_size.contains(&0) {
-        return Err(SrdDrawError(format!(
-            "target render size must be non-zero, got {}x{}",
-            host.target_render_size[0], host.target_render_size[1]
-        )));
-    }
-    if host.target_screen_size.contains(&0) {
-        return Err(SrdDrawError(format!(
-            "target screen size must be non-zero, got {}x{}",
-            host.target_screen_size[0], host.target_screen_size[1]
-        )));
-    }
+    validate_host_draw_context(host)?;
     let scene = project
         .scenes
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
-    let external_inverse = inverse_matrix4x4_game(&host.target_projection_view);
-    let srd_projection_view = project
-        .camera
-        .runtime_matrices(host.target_render_size[0] as f32)
-        .projection_view;
-    let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+    let camera_bridge = renderer_project_camera_bridge(project, host);
     let identity = identity_matrix4x4_game();
     let mut packet_current_matrix = identity;
     let mut draws = Vec::new();
@@ -2533,8 +2535,11 @@ mod tests {
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
                 crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [1920, 1080],
+                )),
                 identity_matrix4x4_game(),
-                [1920, 1080],
                 [1920, 1080],
             ),
         )
@@ -2677,8 +2682,11 @@ mod tests {
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
                 crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [1920, 1080],
+                )),
                 identity_matrix4x4_game(),
-                [1920, 1080],
                 [1920, 1080],
             ),
             &font_registry,
@@ -2713,8 +2721,11 @@ mod tests {
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
                 crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [1920, 1080],
+                )),
                 identity_matrix4x4_game(),
-                [1920, 1080],
                 [1920, 1080],
             ),
             &font_registry,

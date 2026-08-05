@@ -116,7 +116,7 @@ scene_width / max(scene_height, 1)
 
 `air::Scene` 构造在 `0x60040E..0x600452` 把 property 6 注册为 `RotationMode`，默认 0。Chusan MainScene 构造 `sub_AE52B0` 在 `0xAE53DC..0xAE53EA` 仅当 `sub_43404F()==1` 时才写 2；BgScene 没有写该属性。
 
-`sub_43404F -> sub_7D7DB0` 只读取全局配置 `0x1CB01B8` 的低字节。完整 xref 只有 ROM setup `sub_7D8390` 写该位置；`0x7D8ABC` 执行 `LOWORD(...)=0x0100`，所以低字节为 0。当前二进制的 MainScene 条件分支因此不执行，MainScene/BgScene 的 RotationMode 都是 0。该属性不能用来解释 Common background 的窄投影，也不能作为编辑器侧旋转补偿。
+`sub_43404F -> sub_7D7DB0` 只读取全局配置 `0x1CB01B8` 的低字节。完整 xref 只有 ROM setup `sub_7D8390` 写该位置；`0x7D8ABC` 执行 `LOWORD(...)=0x0100`，所以低字节为 0。当前二进制的 MainScene 条件分支因此不执行，MainScene/BgScene 的 RotationMode 都是 0。该属性不参与 Common background 已闭环的空-target renderer 矩阵链，也不能作为编辑器侧旋转补偿。
 
 ## Width / Height 的来源边界
 

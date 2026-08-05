@@ -61,4 +61,4 @@ Common 与 Advertise 一样满足：
 - 按 `ceylon_enqueue_draw_packet` 的精确相邻比较与 triangle-strip 退化连接规则合并为 9 个 record；
 - 100 个逻辑 source 全部仍可从 9 个 record 反查，不发生丢失或跨 key 合并。
 
-该回归只闭合宿主 key、路由和普通 packet 合并，不解决 Width-as-Aspect 造成的窄投影。最终 target rotation/offscreen 合成或额外 GPU 常量仍列在 [`../TODO.md`](../TODO.md)。
+空 `TargetScene` 的矩阵链现已进一步闭环：`srd_renderer_configure_project_camera` 不进入 Width/Height/Camera 分支，`SrRenderer+0x08/+0x48` 保持构造 identity；三维 ImageCast 把 world XYZ 写入顶点，packet `c0..c3` 使用该 identity，最终 MainScene Camera 只从 target-local ShapeEnv 写入 `c10..c13`。精确 Common/MainScene D3D9Ex smoke 覆盖完整 `1920x1080`，ResetEx 前后哈希一致。详见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。

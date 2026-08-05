@@ -38,8 +38,8 @@ use srd_editor::shader_bytecode::{
     FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
 };
 use srd_editor::srd_draw::{
-    FennelTextFontRole, SrdHostDrawContext, assign_fennel_font_resource_requests,
-    build_evidence_complete_animation_set_image_draws,
+    FennelTextFontRole, SrdHostDrawContext, SrdRendererProjectTargetContext,
+    assign_fennel_font_resource_requests, build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_complete_initial_reference_fennel_draws,
@@ -62,8 +62,11 @@ fn identity_host_context() -> SrdHostDrawContext {
     SrdHostDrawContext::new(
         Affine3x4::IDENTITY,
         srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+        Some(SrdRendererProjectTargetContext::new(
+            identity_matrix4x4_game(),
+            [1920, 1080],
+        )),
         identity_matrix4x4_game(),
-        [1920, 1080],
         [1920, 1080],
     )
 }
@@ -472,6 +475,22 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
         &BTreeMap::new(),
     )
     .unwrap();
+    assert_eq!(host.renderer_project_target, None);
+    let three_d_images = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            srd_editor::srd_draw::EvidenceCompleteRuntimeCastDraw::Image(draw) if !draw.is_2d => {
+                Some(draw)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!three_d_images.is_empty());
+    assert!(
+        three_d_images
+            .iter()
+            .all(|draw| { draw.fixed_constants.vertex_c0_c3_world == identity_matrix4x4_game() })
+    );
     let mut key_counts = BTreeMap::new();
     for draw in &draws {
         *key_counts
@@ -516,6 +535,17 @@ fn builds_evidence_complete_single_texture_draws() {
         SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+            Some(SrdRendererProjectTargetContext::new(
+                Matrix4x4 {
+                    rows: [
+                        [2.0, 0.0, 0.0, 0.0],
+                        [0.0, 3.0, 0.0, 0.0],
+                        [0.0, 0.0, 4.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                },
+                [1920, 1080],
+            )),
             Matrix4x4 {
                 rows: [
                     [2.0, 0.0, 0.0, 0.0],
@@ -524,7 +554,6 @@ fn builds_evidence_complete_single_texture_draws() {
                     [0.0, 0.0, 0.0, 1.0],
                 ],
             },
-            [1920, 1080],
             [1920, 1080],
         ),
     )

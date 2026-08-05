@@ -56,7 +56,7 @@ diagnostic FNV = 09DF61BBE19B88A5
 
 该结果证明真实 DDS、stage 0、sampler、二维 exact shader key/bytecode、`screenParam=[960,540,0,0]`、draw submission、render target 和 ResetEx 重建路径共同产生了与输入矩形对应的二维覆盖。FNV 只作为当前设备诊断值，不设为跨 GPU 的精确规范。
 
-重新核对 `srd_renderer_configure_project_camera` (`0xAC7400`) 后确认：
+重新核对 `srd_renderer_configure_project_camera` (`0xAC7400`) 后确认，下列 Camera bridge 只在 property 2 成功解析到非空命名 target 时执行：
 
 1. `sea_camera_set_perspective_parameters` (`0x656450`) 的 Aspect 确实接收物理 render-target Width，而不是函数前面另行取得的外部 aspect；
 2. 外部 camera 的 `Projection*View` 先由 `ceylon_inverse_matrix4x4` (`0x6B4170`) 求逆；
@@ -65,4 +65,4 @@ diagnostic FNV = 09DF61BBE19B88A5
 
 `AdvertiseLogoObject` 的实际父节点已进一步证明为 null，所以该具体宿主的 `FirstCalcMatrix` 是 identity；但 target Camera present size 和 ShapeEnv2D filter source size 仍是宿主输入。smoke 分别显式传入 `1080x1920` 与 `1920x1080`，不会把二者静默等同。
 
-Advertise 的空 `TargetScene` packet 进入全局队列，并由所有注册 target 分别以自身 Camera 和 draw-mask/visibility 配置过滤；它不会隐式 fallback 到某个命名 Scene，详见 [`render-target-routing.md`](render-target-routing.md)。此前竖线的直接根因现已由二进制闭环：builder 漏写 CAST 二维标志，错误选择三维 `A...` VS 并向 `c10..c13` 上传 Camera matrix。修复链与 screenParam provider 详见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
+Advertise 的空 `TargetScene` packet 进入全局队列，并由所有注册 target 分别以自身 Camera 和 draw-mask/visibility 配置过滤；它不会隐式 fallback 到某个命名 Scene。空 target 同时使 renderer Camera bridge 保持 identity，详见 [`render-target-routing.md`](render-target-routing.md) 与 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)。此前竖线的直接根因仍是 builder 漏写 CAST 二维标志，错误选择三维 `A...` VS 并向 `c10..c13` 上传 Camera matrix；修复链与 screenParam provider 见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。

@@ -33,7 +33,7 @@ use crate::shader_bytecode::{
 };
 use crate::srd_draw::{
     EvidenceCompleteFennelDraw, EvidenceCompleteSrdDraw, FennelFontResourceAssignment,
-    SrdHostDrawContext, assign_fennel_font_resource_requests,
+    SrdHostDrawContext, SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     collect_fennel_font_resource_requests,
@@ -44,7 +44,7 @@ const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let advertise_logo_host = parse_advertise_logo_host_argument(&arguments)?;
+    let chusan_player_host = parse_chusan_player_host_argument(&arguments)?;
     let srd_draw_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-draw-smoke");
@@ -76,7 +76,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         srd_texture_smoke,
         srd_fennel_smoke,
         dds_device_audit,
-        advertise_logo_host,
+        chusan_player_host,
         document_path,
     );
     event_loop.run_app(&mut application)?;
@@ -94,12 +94,13 @@ struct EditorApplication {
     srd_texture_smoke: bool,
     srd_fennel_smoke: bool,
     dds_device_audit: bool,
-    advertise_logo_host: Option<AdvertiseLogoHostArgument>,
+    chusan_player_host: Option<ChusanPlayerHostArgument>,
     document_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AdvertiseLogoHostArgument {
+struct ChusanPlayerHostArgument {
+    common_background: bool,
     target: PreviewTargetSelection,
     present_width: u32,
     present_height: u32,
@@ -113,7 +114,7 @@ struct EditorSmokeOptions {
     srd_texture: bool,
     srd_fennel: bool,
     dds_device_audit: bool,
-    advertise_logo_host: Option<AdvertiseLogoHostArgument>,
+    chusan_player_host: Option<ChusanPlayerHostArgument>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +154,7 @@ impl EditorApplication {
         srd_texture_smoke: bool,
         srd_fennel_smoke: bool,
         dds_device_audit: bool,
-        advertise_logo_host: Option<AdvertiseLogoHostArgument>,
+        chusan_player_host: Option<ChusanPlayerHostArgument>,
         document_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -164,7 +165,7 @@ impl EditorApplication {
             srd_texture_smoke,
             srd_fennel_smoke,
             dds_device_audit,
-            advertise_logo_host,
+            chusan_player_host,
             document_path,
         }
     }
@@ -183,7 +184,7 @@ impl EditorWindow {
             srd_texture: srd_texture_smoke,
             srd_fennel: srd_fennel_smoke,
             dds_device_audit,
-            advertise_logo_host,
+            chusan_player_host,
         } = smoke;
         let mut imgui = Context::create();
         imgui.io_mut().config_flags |= ConfigFlags::DOCKING_ENABLE;
@@ -222,14 +223,37 @@ impl EditorWindow {
         let draw_result = if require_srd_draw {
             workspace.document().and_then(|document| {
                 let scene = document.project.scenes.first()?;
-                let (host, target_filter) = if let Some(host) = advertise_logo_host {
+                let (host, target_filter) = if let Some(host) = chusan_player_host {
                     let target = match host.target {
                         PreviewTargetSelection::MainScene => CHUSAN_MAIN_SCENE,
                         PreviewTargetSelection::BgScene => CHUSAN_BG_SCENE,
                         PreviewTargetSelection::Unselected => unreachable!(),
                     };
+                    let (player_name, context, filter) = if host.common_background {
+                        (
+                            "CommonBackGround",
+                            CHUSAN_COMMON_BACKGROUND_PLAYER.host_context_for_target(
+                                target,
+                                host.present_width,
+                                host.present_height,
+                                [host.screen_width, host.screen_height],
+                            ),
+                            CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
+                        )
+                    } else {
+                        (
+                            "AdvertiseLogo",
+                            CHUSAN_ADVERTISE_LOGO_PLAYER.host_context_for_target(
+                                target,
+                                host.present_width,
+                                host.present_height,
+                                [host.screen_width, host.screen_height],
+                            ),
+                            CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(target),
+                        )
+                    };
                     eprintln!(
-                        "SRD smoke host=AdvertiseLogo/{} first_calc=identity present={}x{} screen={}x{}",
+                        "SRD smoke host={player_name}/{} first_calc=identity present={}x{} screen={}x{}",
                         target.name,
                         host.present_width,
                         host.present_height,
@@ -237,15 +261,8 @@ impl EditorWindow {
                         host.screen_height
                     );
                     (
-                        CHUSAN_ADVERTISE_LOGO_PLAYER
-                            .host_context_for_target(
-                                target,
-                                host.present_width,
-                                host.present_height,
-                                [host.screen_width, host.screen_height],
-                            )
-                            .expect("validated AdvertiseLogo host dimensions"),
-                        Some(CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(target)),
+                        context.expect("validated Chusan SrPlayer host dimensions"),
+                        Some(filter),
                     )
                 } else {
                     eprintln!(
@@ -331,7 +348,7 @@ impl EditorWindow {
                     srd_draws.len()
                 ));
             }
-            if advertise_logo_host.is_some() {
+            if chusan_player_host.is_some() {
                 eprintln!(
                     "AdvertiseLogo textured smoke vertices={:?}",
                     srd_draws[0].quad.vertices.map(|vertex| vertex.position)
@@ -946,74 +963,90 @@ fn diagnostic_project_camera_smoke_host(
     target_width: f32,
     target_screen_size: [u32; 2],
 ) -> SrdHostDrawContext {
+    let projection_view = project
+        .camera
+        .runtime_matrices(target_width)
+        .projection_view;
+    let render_size = [target_width as u32, target_screen_size[1]];
     SrdHostDrawContext::new(
         Affine3x4::IDENTITY,
         crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
-        project
-            .camera
-            .runtime_matrices(target_width)
-            .projection_view,
-        [target_width as u32, target_screen_size[1]],
+        Some(SrdRendererProjectTargetContext::new(
+            projection_view,
+            render_size,
+        )),
+        projection_view,
         target_screen_size,
     )
 }
 
-fn parse_advertise_logo_host_argument(
+fn parse_chusan_player_host_argument(
     arguments: &[String],
-) -> Result<Option<AdvertiseLogoHostArgument>, String> {
-    let Some(value) = arguments
+) -> Result<Option<ChusanPlayerHostArgument>, String> {
+    let advertise = arguments
         .iter()
-        .find_map(|argument| argument.strip_prefix("--advertise-logo-host="))
-    else {
-        return Ok(None);
+        .find_map(|argument| argument.strip_prefix("--advertise-logo-host="));
+    let common = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--common-background-host="));
+    let (common_background, option_name, value) = match (advertise, common) {
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => {
+            return Err(
+                "choose only one of --advertise-logo-host or --common-background-host".to_string(),
+            );
+        }
+        (Some(value), None) => (false, "--advertise-logo-host", value),
+        (None, Some(value)) => (true, "--common-background-host", value),
     };
     let mut fields = value.split('@');
     let target = fields.next().unwrap_or_default();
     let present_size = fields.next().ok_or_else(|| {
-        "--advertise-logo-host must use TARGET@PRESENT_WIDTHxPRESENT_HEIGHT@SCREEN_WIDTHxSCREEN_HEIGHT, for example MainScene@1080x1920@1920x1080".to_string()
+        format!("{option_name} must use TARGET@PRESENT_WIDTHxPRESENT_HEIGHT@SCREEN_WIDTHxSCREEN_HEIGHT, for example MainScene@1080x1920@1920x1080")
     })?;
     let screen_size = fields.next().ok_or_else(|| {
-        "--advertise-logo-host requires an explicit screenParam source size after the present size"
-            .to_string()
+        format!("{option_name} requires an explicit screenParam source size after the present size")
     })?;
     if fields.next().is_some() {
-        return Err("--advertise-logo-host contains too many @-separated fields".to_string());
+        return Err(format!(
+            "{option_name} contains too many @-separated fields"
+        ));
     }
     let target = match target {
         "MainScene" => PreviewTargetSelection::MainScene,
         "BgScene" => PreviewTargetSelection::BgScene,
         _ => {
             return Err(format!(
-                "unsupported AdvertiseLogo target {target:?}; expected MainScene or BgScene"
+                "unsupported Chusan target {target:?}; expected MainScene or BgScene"
             ));
         }
     };
     let (width, height) = present_size.split_once('x').ok_or_else(|| {
-        "--advertise-logo-host present size must use WIDTHxHEIGHT, for example 1080x1920"
-            .to_string()
+        format!("{option_name} present size must use WIDTHxHEIGHT, for example 1080x1920")
     })?;
     let present_width = width
         .parse::<u32>()
-        .map_err(|_| format!("invalid AdvertiseLogo present width {width:?}"))?;
+        .map_err(|_| format!("invalid Chusan host present width {width:?}"))?;
     let present_height = height
         .parse::<u32>()
-        .map_err(|_| format!("invalid AdvertiseLogo present height {height:?}"))?;
+        .map_err(|_| format!("invalid Chusan host present height {height:?}"))?;
     if present_width == 0 || present_height == 0 {
-        return Err("AdvertiseLogo present dimensions must be non-zero".to_string());
+        return Err("Chusan host present dimensions must be non-zero".to_string());
     }
     let (width, height) = screen_size.split_once('x').ok_or_else(|| {
-        "--advertise-logo-host screen size must use WIDTHxHEIGHT, for example 1920x1080".to_string()
+        format!("{option_name} screen size must use WIDTHxHEIGHT, for example 1920x1080")
     })?;
     let screen_width = width
         .parse::<u32>()
-        .map_err(|_| format!("invalid AdvertiseLogo screen width {width:?}"))?;
+        .map_err(|_| format!("invalid Chusan host screen width {width:?}"))?;
     let screen_height = height
         .parse::<u32>()
-        .map_err(|_| format!("invalid AdvertiseLogo screen height {height:?}"))?;
+        .map_err(|_| format!("invalid Chusan host screen height {height:?}"))?;
     if screen_width == 0 || screen_height == 0 {
-        return Err("AdvertiseLogo screen dimensions must be non-zero".to_string());
+        return Err("Chusan host screen dimensions must be non-zero".to_string());
     }
-    Ok(Some(AdvertiseLogoHostArgument {
+    Ok(Some(ChusanPlayerHostArgument {
+        common_background,
         target,
         present_width,
         present_height,
@@ -1279,7 +1312,7 @@ impl ApplicationHandler for EditorApplication {
                                 srd_texture: self.srd_texture_smoke,
                                 srd_fennel: self.srd_fennel_smoke,
                                 dds_device_audit: self.dds_device_audit,
-                                advertise_logo_host: self.advertise_logo_host,
+                                chusan_player_host: self.chusan_player_host,
                             },
                             self.document_path.clone(),
                         )
@@ -1398,11 +1431,12 @@ mod tests {
     }
 
     #[test]
-    fn advertise_logo_host_argument_requires_explicit_target_present_and_screen_sizes() {
+    fn chusan_player_host_argument_requires_explicit_target_present_and_screen_sizes() {
         let arguments = vec!["--advertise-logo-host=MainScene@1080x1920@1920x1080".to_string()];
         assert_eq!(
-            parse_advertise_logo_host_argument(&arguments).unwrap(),
-            Some(AdvertiseLogoHostArgument {
+            parse_chusan_player_host_argument(&arguments).unwrap(),
+            Some(ChusanPlayerHostArgument {
+                common_background: false,
                 target: PreviewTargetSelection::MainScene,
                 present_width: 1080,
                 present_height: 1920,
@@ -1410,24 +1444,32 @@ mod tests {
                 screen_height: 1080,
             })
         );
+        let common = vec!["--common-background-host=MainScene@1080x1920@1920x1080".to_string()];
+        assert_eq!(
+            parse_chusan_player_host_argument(&common)
+                .unwrap()
+                .unwrap()
+                .common_background,
+            true
+        );
         assert!(
-            parse_advertise_logo_host_argument(&["--advertise-logo-host=MainScene".to_string()])
+            parse_chusan_player_host_argument(&["--advertise-logo-host=MainScene".to_string()])
                 .is_err()
         );
         assert!(
-            parse_advertise_logo_host_argument(&[
+            parse_chusan_player_host_argument(&[
                 "--advertise-logo-host=Unknown@1080x1920@1920x1080".to_string()
             ])
             .is_err()
         );
         assert!(
-            parse_advertise_logo_host_argument(&[
+            parse_chusan_player_host_argument(&[
                 "--advertise-logo-host=BgScene@0x1920@1920x1080".to_string()
             ])
             .is_err()
         );
         assert!(
-            parse_advertise_logo_host_argument(&[
+            parse_chusan_player_host_argument(&[
                 "--advertise-logo-host=BgScene@1080x1920@0x1080".to_string()
             ])
             .is_err()

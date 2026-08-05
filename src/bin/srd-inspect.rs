@@ -8,8 +8,8 @@ use srd_editor::projection::{
     identity_matrix4x4_game, mul_matrix4x4_game, project_point_to_screen_game, viewport_matrix_game,
 };
 use srd_editor::srd_draw::{
-    SrdHostDrawContext, build_evidence_complete_animation_set_image_draws,
-    build_evidence_complete_initial_image_draws,
+    SrdHostDrawContext, SrdRendererProjectTargetContext,
+    build_evidence_complete_animation_set_image_draws, build_evidence_complete_initial_image_draws,
 };
 use srd_editor::transform::Affine3x4;
 
@@ -149,8 +149,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let host = SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
             srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+            Some(SrdRendererProjectTargetContext::new(
+                identity_matrix4x4_game(),
+                screen_size,
+            )),
             identity_matrix4x4_game(),
-            screen_size,
             screen_size,
         );
         let draws = match draw_selection {

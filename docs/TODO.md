@@ -2,31 +2,9 @@
 
 本页只记录已经有明确二进制边界、但证据尚未闭合的问题。这里的候选解释不得直接进入渲染实现。
 
-## `CHU_UI_Common_BK_00_v11.srd` 横向投影异常
+## Chusan target 的后续生命周期
 
-回归样本：
-
-```text
-D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.srd
-```
-
-已证明：
-
-- SCN 为 `1920x1080`，CAM 为 position `(0,0,1000)`、target `(0,0,0)`、约 `45°`、near `10`、far `100000`。
-- 七个 LAYR 的 flags 为 `0x101` 或 `0x1`；`srd_build_runtime_layer`、CAST 初始化和 `srd_cast_is_2d` 的完整链均把它们判为 3D。
-- `srd_renderer_configure_project_camera` (`0xAC7400`) 把 target 的整数 Width 原样传给 `sea_camera_set_perspective_parameters` (`0x656450`) 的 Aspect 属性；`sea_camera_build_projection_matrix` (`0x655630`) 与 `srd_build_perspective_fov_rh` (`0x6B3CD0`) 后续没有再除以 Height。
-- `srd_set_srimage_size_and_origin` (`0xAD2EB0`) 只复制宽高并按九种 origin 系数计算原点，没有屏幕补偿。
-- ImageCast 顶点在提交前只乘 CAST world matrix。CommonBackGroundObject 以全局名称注册/查找；完整类与 object-manager 生命周期审计没有 GraphNode parent setter，也没有写嵌入式 SrPlayer 的 parent/local/composite matrix，因此 FirstCalc 输入已闭环为构造 identity。
-- Common 初始化精确写入 `DrawTargetSceneOnly=true`、空 `TargetScene`、`DrawMask=0xFFFF`、`2DLayer=6`，根 renderer key 为 `0x8680`；MainScene 初始接纳、BgScene 初始拒绝。`yellow_loop` 第 0 帧 100 个普通 draw 全部为该 key，并按原版相邻规则合并成 9 个 record。
-- 在 identity FirstCalc、`1920x1080` 诊断 viewport 下，完整背景 quad `(-960,-540)..(960,540)` 的 Y 基本覆盖全高，但 X 只覆盖约两像素。异常恰好由 Width-as-Aspect 引起，不是纹理尺寸或 origin 引起。
-
-尚未证明：
-
-- 游戏模式切换之后 MainScene/BgScene Enable、manager current-target，以及可能存在的专用 offscreen target 的当帧组合时序。当前只外推到已证明的构造完成状态。
-- 游戏最终 target rotation/offscreen 合成是否在 camera/vertex shader 之后提供额外矩阵；当前证据只证明 target Camera 的 `Projection*View` provider。
-- 原版运行时该样本的最终 GPU 常量与 viewport。SrPlayer parent、local/composite matrix、`FirstCalcMatrix` 选择位及其 renderer 调用点已闭环为 null/identity/false，不再列为未知输入。
-
-恢复调查时应继续追 target rotation/offscreen 合成路径，或取得原版运行时 viewport、最终 VS 常量和 SrPlayer 矩阵捕获。禁止以 `Aspect = Width / Height`、自动 fit-to-view、强制 2D 或任意 X scale 作为游戏逻辑修复。
+仍未闭合的是游戏模式切换之后 MainScene/BgScene Enable、manager current-target、其他专用 target 的注册/移除和当帧组合时序。当前 profile 只描述已证明的构造完成状态，不外推到所有运行阶段。
 
 ## Fennel 行元数据与剩余 effect/crop 输入
 
