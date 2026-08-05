@@ -432,7 +432,9 @@ TextBox +0x2CC = max(float(+0x134) * float(FC), 0)
 
 `sub_7C04F0` 把最终二维 draw offset 作为参数 7 交给 `sub_7C7F90`，后者在 `0x7C84F5/0x7C84F9` 从 normal/effect glyph origin 两轴减去它。其滚动位移现已逐指令闭合：入口仅在 flags 含 `0x20`（横向）或 `0x4000`（纵向）时启用；`0x800` fit guard 横向比较实际几何宽与 clip width，纵向比较 `几何高 - floor(pointY/2)` 与 clip height，命中后临时以 `flags & 0xFFFF835F` 重排版并使用零位移。横向 `0x1000` 为 `fmod(+0x2C4 + clipWidth, clipWidth + textWidth) - clipWidth`；另一支实际重排版 `text + gap + text`，再以 `fmod(+0x2C4, measuredWidth - textWidth)` 循环。`0x2000` 的 gap 是 FontManager `+0x34` 个全角空格，构造默认值为 `3`；常量 CP932 `81 40` 经 `sub_103DC90` 转为 UTF-8 `E3 80 80`。纵向实际重排版 `text + "$n$n$n" + text`；`0x1000` 分支把 overflow、`+0x2C8` wait 与 `+0x2CC` tail 组成三段停留/移动函数，非 `0x1000` 分支只在 `fmod(+0x2C4, clipHeight + repeatedHeight) < repeatedHeight - textHeight` 时采用余数。所有 fmod 均来自 `sub_10461A0 -> UCRT _CIfmod`。
 
-Rust 的 `prepare_fennel_srd_runtime_text`、`build_fennel_srd_repeated_text` 与 `prepare_fennel_srd_draw` 已分别固化上述文本、辅助串和位移/重排版决策；无法证明的 `atoi` 溢出不会伪造 CRT 结果，而是显式报错。完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 输入 `+0x2C4=0`，两轴 draw offset 精确为零。当前剩余接线边界是把 `sub_7BFAB0` 的实际几何测量、fit guard 二次排版和编辑器宿主时钟/8 个替换槽送入 draw-list，而不是再猜测循环公式。
+Rust 的 `prepare_fennel_srd_runtime_text`、`build_fennel_srd_repeated_text` 与 `prepare_fennel_srd_draw` 已分别固化上述文本、辅助串和位移/重排版决策；无法证明的 `atoi` 溢出不会伪造 CRT 结果，而是显式报错。`measure_fennel_srd_text_size_mode0` 进一步按 `sub_7BFAB0` 的 batch 遍历、maximum 截止、bearing/correction、scale、effect-origin 选择和正向最大值比较生成实际几何尺寸；draw-list 现在会按 TextBox 的真实对象状态选择原串、循环串或 `flags & 0xFFFF835F` 的原串二次排版，并在 fit guard 后恢复原 flags 作裁剪/绘制。`build_evidence_complete_fennel_draws_with_runtime_text` 接受每个 `(layer,node)` 的 8 个替换槽、default D、repeat-space count 与当前精确 `F4`；它不会把编辑器 animation frame 猜成游戏 host clock。initial 包装器仍在遇到 `$[0]..$[7]` 时明确拒绝，而不是假定空替换值。
+
+完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 输入 `+0x2C4=0`，两轴 draw offset 精确为零。完整 91 文件回归仍为 551 draw/34326 vertices，Advertise D3D9Ex 像素哈希仍为 `7B466FC4B4E0EC9A`。当前剩余接线边界只是把这些显式 runtime 输入放进编辑器状态/UI，并确定何种已证明的游戏宿主事件驱动其累加。
 
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 

@@ -3,10 +3,13 @@ use std::fmt;
 
 use crate::attribute::CastAttributeValue;
 use crate::fennel::{
-    FennelFontSlotRegistry, FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch,
-    FennelResolvedGlyph, FennelSrdScrollState, FennelStaticTextProperties,
+    FENNEL_DEFAULT_D_VALUE, FENNEL_DEFAULT_REPEAT_SPACE_COUNT, FennelFontSlotRegistry,
+    FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelResolvedGlyph,
+    FennelSrdDrawPreparation, FennelSrdDrawPreparationInput, FennelStaticTextProperties,
     build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
-    fennel_font_param_effect_color, fennel_srd_font_style, layout_fennel_static_srd_font_param,
+    build_fennel_srd_repeated_text, fennel_font_param_effect_color, fennel_srd_font_style,
+    layout_fennel_static_srd_explicit_flags, layout_fennel_static_srd_font_param,
+    measure_fennel_srd_text_size_mode0, prepare_fennel_srd_draw, prepare_fennel_srd_runtime_text,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -310,6 +313,17 @@ pub fn build_evidence_complete_animation_set_image_draws(
 /// the function uses it for both the TextCast primary slot and explicit
 /// `$F[n]` switches. Runtime fonts retain caller-defined opaque texture tokens,
 /// allowing the renderer to route batches across different font atlases.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelSrdRuntimeTextInput {
+    pub substitutions: [Vec<u8>; 8],
+    pub default_d: i32,
+    pub repeat_space_count: i32,
+    /// Exact current SrTextCast text-state field `+0xF4`. Callers may advance
+    /// it with `FennelSrdScrollState::advance`; this API does not infer a game
+    /// tick rate from editor animation frames.
+    pub field_f4: f32,
+}
+
 pub fn build_evidence_complete_initial_fennel_draws(
     project: &Project,
     scene_index: usize,
@@ -317,6 +331,50 @@ pub fn build_evidence_complete_initial_fennel_draws(
     font_registry: &FennelFontSlotRegistry<Vec<u8>>,
     runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
     force_color_update: bool,
+) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
+    build_evidence_complete_fennel_draws_impl(
+        project,
+        scene_index,
+        host,
+        font_registry,
+        runtime_fonts,
+        force_color_update,
+        None,
+    )
+}
+
+/// Builds the same RFZ draw subset with explicit per-node SrTextCast host
+/// inputs. Keys are `(layer_index, node_index)` within `scene_index`; absent
+/// entries retain the strict initial behavior and reject `$[0]..$[7]` rather
+/// than inventing substitution values.
+pub fn build_evidence_complete_fennel_draws_with_runtime_text(
+    project: &Project,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    font_registry: &FennelFontSlotRegistry<Vec<u8>>,
+    runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+    force_color_update: bool,
+    runtime_text_inputs: &BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>,
+) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
+    build_evidence_complete_fennel_draws_impl(
+        project,
+        scene_index,
+        host,
+        font_registry,
+        runtime_fonts,
+        force_color_update,
+        Some(runtime_text_inputs),
+    )
+}
+
+fn build_evidence_complete_fennel_draws_impl(
+    project: &Project,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    font_registry: &FennelFontSlotRegistry<Vec<u8>>,
+    runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+    force_color_update: bool,
+    runtime_text_inputs: Option<&BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>>,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
     if host.target_render_size.contains(&0) {
         return Err(SrdDrawError(format!(
@@ -434,36 +492,141 @@ pub fn build_evidence_complete_initial_fennel_draws(
             let primary_colors = primary_rgba.map(pack_fennel_record_color);
             let secondary_color = pack_fennel_record_color(secondary_rgba);
             let font_style = fennel_srd_font_style(font_param);
-            let resolve_glyph = |font_slot_id: u16, code: u16| {
-                let resource_name = font_registry.resource_for_slot(font_slot_id)?;
-                let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
-                Some(FennelResolvedGlyph {
-                    glyph_token: fennel_slot_code_token(font_slot_id, code),
-                    glyph: *runtime_font.glyph(code)?,
-                })
-            };
-            let mut stream = build_fennel_plain_record_stream_with_font_slots(
-                &text.text,
-                primary_slot,
-                properties.glyph_placement(0, font_style.record_flags, primary_colors),
-                2048,
-                resolve_glyph,
-            )
-            .map_err(|error| SrdDrawError(error.to_string()))?;
-            let layout = layout_fennel_static_srd_font_param(
-                &mut stream,
-                properties.layout,
-                font_param,
-                |token| {
-                    let (font_slot_id, code) = fennel_slot_code_from_token(token);
-                    let resource_name = font_registry.resource_for_slot(font_slot_id)?;
-                    let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
-                    runtime_font.glyph(code).map(Into::into)
-                },
-            )
-            .map_err(|error| SrdDrawError(error.to_string()))?;
             let effect_color = fennel_font_param_effect_color(font_param.shadow_color);
-            let scroll = FennelSrdScrollState::initial_without_controls(font_param).outputs();
+            let effect_offset = [font_param.shadow_x as f32, font_param.shadow_y as f32];
+            let runtime_text_input =
+                runtime_text_inputs.and_then(|inputs| inputs.get(&(layer_index, node_index)));
+            if runtime_text_input.is_none() {
+                for substitution_index in 0..8u8 {
+                    let token = [b'$', b'[', b'0' + substitution_index, b']'];
+                    if text
+                        .text
+                        .windows(token.len())
+                        .any(|candidate| candidate == token)
+                    {
+                        return Err(SrdDrawError(format!(
+                            "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] uses runtime substitution {:?}, but this draw has no SrTextCast substitution host input",
+                            String::from_utf8_lossy(&token)
+                        )));
+                    }
+                }
+            }
+            let substitutions: [&[u8]; 8] = runtime_text_input
+                .map_or([b"".as_slice(); 8], |input| {
+                    std::array::from_fn(|index| input.substitutions[index].as_slice())
+                });
+            let default_d =
+                runtime_text_input.map_or(FENNEL_DEFAULT_D_VALUE, |input| input.default_d);
+            let repeat_space_count = runtime_text_input
+                .map_or(FENNEL_DEFAULT_REPEAT_SPACE_COUNT, |input| {
+                    input.repeat_space_count
+                });
+            let mut prepared_text =
+                prepare_fennel_srd_runtime_text(&text.text, substitutions, default_d, font_param)
+                    .map_err(|error| SrdDrawError(error.to_string()))?;
+            if let Some(input) = runtime_text_input {
+                prepared_text.scroll_state.field_f4 = input.field_f4;
+            }
+            let scroll = prepared_text.scroll_state.outputs();
+            let build_layout = |source: &[u8], explicit_flags: Option<u32>| {
+                let mut stream = build_fennel_plain_record_stream_with_font_slots(
+                    source,
+                    primary_slot,
+                    properties.glyph_placement(0, font_style.record_flags, primary_colors),
+                    2048,
+                    |font_slot_id, code| {
+                        let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                        let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                        Some(FennelResolvedGlyph {
+                            glyph_token: fennel_slot_code_token(font_slot_id, code),
+                            glyph: *runtime_font.glyph(code)?,
+                        })
+                    },
+                )
+                .map_err(|error| SrdDrawError(error.to_string()))?;
+                let layout = if let Some(textbox_flags) = explicit_flags {
+                    layout_fennel_static_srd_explicit_flags(
+                        &mut stream,
+                        properties.layout,
+                        textbox_flags,
+                        |token| {
+                            let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                            let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                            let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                            runtime_font.glyph(code).map(Into::into)
+                        },
+                    )
+                } else {
+                    layout_fennel_static_srd_font_param(
+                        &mut stream,
+                        properties.layout,
+                        font_param,
+                        |token| {
+                            let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                            let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                            let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                            runtime_font.glyph(code).map(Into::into)
+                        },
+                    )
+                }
+                .map_err(|error| SrdDrawError(error.to_string()))?;
+                Ok::<_, SrdDrawError>((stream, layout))
+            };
+            let measure = |stream: &_| {
+                measure_fennel_srd_text_size_mode0(
+                    stream,
+                    scroll.maximum_glyphs,
+                    [properties.layout.scale_x, properties.layout.scale_y],
+                    effect_offset,
+                    |token| {
+                        let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                        let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                        let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                        runtime_font.glyph(code).copied()
+                    },
+                )
+                .map_err(|error| SrdDrawError(error.to_string()))
+            };
+
+            let (initial_stream, initial_layout) = build_layout(&prepared_text.text, None)?;
+            let initial_text_size = measure(&initial_stream)?;
+            let repeated_text = build_fennel_srd_repeated_text(
+                &prepared_text.text,
+                initial_layout.textbox_flags,
+                repeat_space_count,
+            )
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            let repeated = if let Some(repeated_text) = repeated_text {
+                let (stream, layout) =
+                    build_layout(&repeated_text, Some(initial_layout.textbox_flags))?;
+                let size = measure(&stream)?;
+                Some((stream, layout, size))
+            } else {
+                None
+            };
+            let preparation = prepare_fennel_srd_draw(FennelSrdDrawPreparationInput {
+                textbox_flags: initial_layout.textbox_flags,
+                text_size: initial_text_size,
+                clip_size: [properties.layout.box_width, properties.layout.box_height],
+                font_point_y: u16::from(font_style.point_y),
+                scroll,
+                repeated_text_size: repeated.as_ref().map(|(_, _, size)| *size),
+            })
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+            let draw_textbox_flags = initial_layout.textbox_flags;
+            let (stream, layout, draw_offset) = match preparation {
+                FennelSrdDrawPreparation::DrawOffset(draw_offset) => {
+                    if let Some((stream, layout, _)) = repeated {
+                        (stream, layout, draw_offset)
+                    } else {
+                        (initial_stream, initial_layout, draw_offset)
+                    }
+                }
+                FennelSrdDrawPreparation::RelayoutWithoutScrollModes { layout_flags } => {
+                    let (stream, layout) = build_layout(&prepared_text.text, Some(layout_flags))?;
+                    (stream, layout, [0.0; 2])
+                }
+            };
             let vertex_build = build_fennel_normal_vertex_batches(
                 &stream,
                 scroll.maximum_glyphs,
@@ -478,14 +641,13 @@ pub fn build_evidence_complete_initial_fennel_draws(
                     textbox_vertical_offset: layout.layout.textbox_vertical_offset,
                     textbox_transform: affine_to_matrix4x4(world_matrices[node_index]),
                     secondary_color,
-                    textbox_flags: layout.textbox_flags,
+                    // `sub_7C04F0` restores the original word after a fit
+                    // guard relayout and draws with that original clip state.
+                    textbox_flags: draw_textbox_flags,
                     clip_size: [properties.layout.box_width, properties.layout.box_height],
-                    // `sub_AD8D50` starts state +0xF4 at zero. For the proven
-                    // no-$D/$L initial SRD path, both mode-2 and mode-4
-                    // `sub_7C04F0` branches therefore produce (0, 0).
-                    draw_offset: [0.0; 2],
+                    draw_offset,
                     effect_colors: [effect_color; 4],
-                    effect_offset: [font_param.shadow_x as f32, font_param.shadow_y as f32],
+                    effect_offset,
                 },
                 |token| {
                     let (font_slot_id, code) = fennel_slot_code_from_token(token);

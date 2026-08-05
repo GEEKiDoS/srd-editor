@@ -1911,6 +1911,77 @@ where
     )
 }
 
+/// Reproduces the `sub_7BFAB0` geometry maximum used by `sub_7C04F0` for the
+/// SRD-proven correction mode `TextBox+0x98 == 0` and adjustment byte
+/// `TextBox+0x10C == 0`. The function walks the already-built texture batch
+/// membership, so negative records and the maximum-glyph stop match
+/// `sub_7C0D40` before the geometry scan.
+pub fn measure_fennel_srd_text_size_mode0<F>(
+    stream: &FennelPlainRecordStream,
+    maximum_glyphs: i32,
+    textbox_scale: [f32; 2],
+    effect_offset: [f32; 2],
+    mut runtime_glyph: F,
+) -> Result<[f32; 2], FennelStaticUnclippedBatchError>
+where
+    F: FnMut(u32) -> Option<RuhunaRuntimeGlyphRecord>,
+{
+    let membership = build_fennel_texture_batch_membership(stream, maximum_glyphs)?;
+    let mut size = [0.0f32; 2];
+    for batch in &membership.batches {
+        for &record_index in &batch.record_indices {
+            let record = &stream.records[record_index];
+            let glyph = runtime_glyph(record.glyph_token).ok_or(
+                FennelStaticUnclippedBatchError::MissingRuntimeGlyph {
+                    record_index,
+                    glyph_token: record.glyph_token,
+                },
+            )?;
+            if glyph.texture_token != record.texture_token {
+                return Err(FennelStaticUnclippedBatchError::TextureTokenMismatch {
+                    record_index,
+                    record_texture_token: record.texture_token,
+                    glyph_texture_token: glyph.texture_token,
+                });
+            }
+
+            let effective_scale = [
+                record.scale_x * textbox_scale[0],
+                record.scale_y * textbox_scale[1],
+            ];
+            let enabled = glyph.enabled as i32;
+            let correction_y = glyph
+                .bearing_y
+                .wrapping_sub(glyph.flag_mode as i32)
+                .wrapping_sub(glyph.line_height as i32)
+                .wrapping_add(3);
+            let mut origin = [
+                record.x + (glyph.bearing_x.wrapping_sub(enabled) as f32) * effective_scale[0],
+                record.y + (correction_y.wrapping_sub(enabled) as f32) * effective_scale[1],
+            ];
+            if record.field_0c & FENNEL_EFFECT_GLYPH_FLAG != 0 {
+                // `sub_7BFAB0` replaces the candidate origin with the effect
+                // copy for such a record; it does not separately retain the
+                // normal-copy maximum when an effect flag is present.
+                origin[0] += effect_offset[0];
+                origin[1] += effect_offset[1];
+            }
+            let candidates = [
+                record.width * effective_scale[0] + origin[0],
+                record.height * effective_scale[1] + origin[1],
+            ];
+            for axis in 0..2 {
+                // `comiss candidate, maximum; jbe` leaves unordered values
+                // unchanged as well as ordered candidates <= the maximum.
+                if candidates[axis] > size[axis] {
+                    size[axis] = candidates[axis];
+                }
+            }
+        }
+    }
+    Ok(size)
+}
+
 /// Reproduces the normal-glyph portion of `sub_7C7F90` and selects the exact
 /// clipped or unclipped `sub_7C10B0` branch from caller-supplied runtime state.
 /// Records with `record+0x0C & 0x40000` emit the game's effect segment before
@@ -2248,6 +2319,21 @@ where
         });
     }
     let textbox_flags = fennel_srd_textbox_flags(input.text_flags, font_param);
+    layout_fennel_static_srd_explicit_flags(stream, input, textbox_flags, glyph_metrics)
+}
+
+/// Runs the same TextBox layout dispatch with an already-materialized runtime
+/// flag word. `sub_7C04F0` needs this after its fit guard temporarily clears
+/// `0x7CA0`; it does not reapply `FontParamData` before the second set-text.
+pub fn layout_fennel_static_srd_explicit_flags<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    textbox_flags: u32,
+    glyph_metrics: F,
+) -> Result<FennelSrdLayoutResult, FennelSrdLayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
     let layout = layout_fennel_static_common(stream, input, textbox_flags, glyph_metrics)?;
     let field_358 = if textbox_flags & 0x20 != 0 {
         let mut minimum_line = 0usize;
@@ -4820,6 +4906,55 @@ mod tests {
                 [247.0, 923.0, 0.0],
                 [231.0, 995.0, 0.0],
             ]
+        );
+    }
+
+    #[test]
+    fn srd_mode0_text_measurement_matches_7bfab0_origin_and_effect_choice() {
+        let mut stream = one_line_stream(&[99]);
+        stream.records[0] = FennelGlyphLayoutRecord {
+            glyph_token: 99,
+            texture_token: 7,
+            x: 10.0,
+            y: 20.0,
+            width: 4.0,
+            height: 6.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            ..Default::default()
+        };
+        let glyph = RuhunaRuntimeGlyphRecord {
+            code: 99,
+            texture_token: 7,
+            enabled: 1,
+            bearing_x: 2,
+            bearing_y: 10,
+            line_height: 12,
+            flag_mode: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            measure_fennel_srd_text_size_mode0(&stream, -1, [2.0, 3.0], [5.0, -4.0], |token| {
+                (token == 99).then_some(glyph)
+            })
+            .unwrap(),
+            [20.0, 32.0]
+        );
+
+        stream.records[0].field_0c |= FENNEL_EFFECT_GLYPH_FLAG;
+        assert_eq!(
+            measure_fennel_srd_text_size_mode0(&stream, -1, [2.0, 3.0], [5.0, -4.0], |token| {
+                (token == 99).then_some(glyph)
+            })
+            .unwrap(),
+            [25.0, 28.0]
+        );
+        assert_eq!(
+            measure_fennel_srd_text_size_mode0(&stream, 0, [2.0, 3.0], [5.0, -4.0], |token| (token
+                == 99)
+                .then_some(glyph))
+            .unwrap(),
+            [0.0, 0.0]
         );
     }
 
