@@ -243,6 +243,28 @@ pub const FENNEL_TEXTBOX_CLIP_FLAG: u32 = 0x400;
 /// `[-height * 0.5, height * 1.5]` to `[0, height]`.
 pub const FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG: u32 = 0x4000;
 
+/// The three-way layout dispatch at `sub_7C90A0` after record-stream
+/// construction. Names intentionally retain the selecting flag because the
+/// two non-default layout semantics are not yet fully closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelLayoutDispatch {
+    Flag20,
+    Flag40,
+    Default,
+}
+
+/// Reproduces the exact priority of the `sub_7C90A0` layout switch:
+/// `0x20` wins when both bits are present, then `0x40`, then `sub_7C1F90`.
+pub const fn fennel_layout_dispatch(textbox_flags: u32) -> FennelLayoutDispatch {
+    if textbox_flags & 0x20 != 0 {
+        FennelLayoutDispatch::Flag20
+    } else if textbox_flags & 0x40 != 0 {
+        FennelLayoutDispatch::Flag40
+    } else {
+        FennelLayoutDispatch::Default
+    }
+}
+
 /// Reproduces the flags left on a freshly constructed SRD TextBoxObject by
 /// `sub_AC6F50` after it clears the old alignment/special-mode bits and applies
 /// the SrTextCast state mode at `+0x108`.
@@ -2591,6 +2613,30 @@ mod tests {
             fennel_fresh_srd_textbox_flags(0, 5) & FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
             0
         );
+        assert_eq!(
+            fennel_layout_dispatch(fennel_fresh_srd_textbox_flags(0, 0)),
+            FennelLayoutDispatch::Default
+        );
+        assert_eq!(
+            fennel_layout_dispatch(fennel_fresh_srd_textbox_flags(0, 1)),
+            FennelLayoutDispatch::Default
+        );
+        for mode in 2..=4 {
+            assert_eq!(
+                fennel_layout_dispatch(fennel_fresh_srd_textbox_flags(0, mode)),
+                FennelLayoutDispatch::Flag20
+            );
+        }
+        assert_eq!(
+            fennel_layout_dispatch(fennel_fresh_srd_textbox_flags(0, 5)),
+            FennelLayoutDispatch::Default
+        );
+        assert_eq!(
+            fennel_layout_dispatch(fennel_fresh_srd_textbox_flags(0, 6)),
+            FennelLayoutDispatch::Default
+        );
+        assert_eq!(fennel_layout_dispatch(0x60), FennelLayoutDispatch::Flag20);
+        assert_eq!(fennel_layout_dispatch(0x40), FennelLayoutDispatch::Flag40);
     }
 
     #[test]

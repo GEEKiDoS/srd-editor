@@ -133,7 +133,9 @@ RFZ texts=1292
 
 `sub_AC6F50` 把 `TEXT.flags & 0x0C` 和 `TEXT.flags & 0x30` 传给 `sub_AC6BF0`，并把返回值写到 `TextBoxObject+0x2D0`。反编译与逐指令结果一致：水平组 `0/0x04/0x08` 分别贡献 `0/1/2`，垂直组 `0/0x10/0x20` 分别选择 `+0/+3/+6`，因此 9 个合法组合映射为 `0..8`。若任一组含同时置位的非法组合，函数回退为 `0`。Rust 的 `fennel_alignment_code_from_text_flags` 精确保留这张映射表和非法组合回退，没有把它简化成对所有位模式都成立的算式。
 
-同一函数先调用 `sub_7C8DA0` 清除 `TextBoxObject+0x2E0` 的 `0x04/0x08`，再调用 `sub_7C8E80` 清除 `0x20/0x80/0x400/0x800/0x1000/0x2000/0x4000`。后续 `0..6` 模式 switch 会通过这两个 setter 重建对应位；已确认模式 `2..4` 会置位 `0x20`。`sub_7C90A0` 正是按 `0x20`、其次 `0x40`、否则默认路径选择三套大布局函数。当前尚未在这条初始化链找到 `0x40` 的写入来源，也尚未证明各模式的排版语义，因此 Rust 只实现已经闭合的 alignment code，不命名或选择这些布局分支。
+同一函数先调用 `sub_7C8DA0` 清除 `TextBoxObject+0x2E0` 的 `0x04/0x08`，再调用 `sub_7C8E80` 清除 `0x20/0x80/0x400/0x800/0x1000/0x2000/0x4000`。后续 `0..6` 模式 switch 会通过这两个 setter 重建对应位；已确认模式 `2..4` 会置位 `0x20`。`sub_7C90A0` 的逐指令分派顺序是 `flags & 0x20 -> sub_7C4070`，否则 `flags & 0x40 -> sub_7C5A20`，否则 `sub_7C1F90`；两位同时存在时 `0x20` 优先。Rust 的 `fennel_layout_dispatch` 只固化这张无语义命名的分派表，尚未把未闭合布局器接进 draw 路径。
+
+flags 还有一条上层复制链。`sub_7BBD80` 构造的上层字体对象把 `+0x230` 初始化为 `3`；`sub_7BCB50/sub_7BCBA0/sub_7BCBD0/sub_7BCC00/sub_7BCC60` 分别修改与 TextBoxObject setters 对应的位；`sub_7BC1B0` 在 `0x7BC249..0x7BC24F` 把整个 `+0x230` DWORD 复制到新 TextBoxObject `+0x2E0`。对该上层对象方法区及原始 PE 的 `+0x230` 指令复核仍只看到构造、这些 setters 与复制，没有发现设置 `0x40` 的方法；现有 setters 的 `0xFFFF835F` 清除掩码会保留已有 `0x40`，但不会生成它。因此 `sub_7C5A20` 的真实入口来源仍未闭合，不能因为分派存在就假定任何 SRD mode 会进入它。
 
 加载端与此完全对应。`srd_player_impl_load_project` 对每个 PROJ FONT 调用 `sub_AC4A80`。该函数为普通字体名建立并注册 `font::TextBox`，保存到同一个 `SrRenderer +0x26C` 资源树；但字体名包含 `.sbfont` 时明确跳过建立 TextBox。因此 `.sbfont` 必然进入旧式路径，而 RFZ 在 TextBox 可用时直接走 Fennel/Ruhuna；外部资源加载失败也会回退到旧式路径。二进制中不需要、也没有证据支持一个 RFZ runtime glyph 到 FONT/TEX/CROP 的写表桥。
 
