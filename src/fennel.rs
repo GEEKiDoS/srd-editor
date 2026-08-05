@@ -1017,6 +1017,39 @@ pub enum FennelMode56LayoutError {
     Layout(FennelDefaultLayoutError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelMode1LayoutError {
+    TextFlagBypassesModeSwitch { text_flags: u32 },
+    Layout(FennelDefaultLayoutError),
+}
+
+impl std::fmt::Display for FennelMode1LayoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TextFlagBypassesModeSwitch { text_flags } => write!(
+                formatter,
+                "Fennel TEXT flags {text_flags:#010x} bypass the mode-1 switch"
+            ),
+            Self::Layout(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FennelMode1LayoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TextFlagBypassesModeSwitch { .. } => None,
+            Self::Layout(error) => Some(error),
+        }
+    }
+}
+
+impl From<FennelDefaultLayoutError> for FennelMode1LayoutError {
+    fn from(error: FennelDefaultLayoutError) -> Self {
+        Self::Layout(error)
+    }
+}
+
 impl std::fmt::Display for FennelMode56LayoutError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1510,6 +1543,7 @@ struct FennelPreparedStaticLayout {
     effective_scale_x: f32,
     effective_scale_y: f32,
     scale_x_multiplier: f32,
+    scale_y_multiplier: f32,
     initial_fallback_line_height: f32,
 }
 
@@ -1533,6 +1567,30 @@ where
 {
     let textbox_flags = fennel_fresh_srd_textbox_flags(input.text_flags, 0);
     layout_fennel_static_common(stream, input, textbox_flags, glyph_metrics)
+}
+
+/// Reproduces fresh mode 1 (`TextBoxObject+0x2E0 == 0x000F`). Bit `0x08`
+/// couples first-line horizontal auto-fit to Y scale when the original Y scale
+/// is larger than the fitted X scale.
+pub fn layout_fennel_static_mode1<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    glyph_metrics: F,
+) -> Result<FennelDefaultLayoutResult, FennelMode1LayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    if input.text_flags & 1 != 0 {
+        return Err(FennelMode1LayoutError::TextFlagBypassesModeSwitch {
+            text_flags: input.text_flags,
+        });
+    }
+    Ok(layout_fennel_static_common(
+        stream,
+        input,
+        fennel_fresh_srd_textbox_flags(input.text_flags, 1),
+        glyph_metrics,
+    )?)
 }
 
 /// Reproduces the evidence-closed `sub_7C4070` subset reached by the three
@@ -1788,6 +1846,7 @@ where
             // `sub_7C7F90`.
             record.y += line.y_bottom;
             record.scale_x *= prepared.scale_x_multiplier;
+            record.scale_y *= prepared.scale_y_multiplier;
             advance += fennel_advance(record, metric, prepared.effective_scale_x, textbox_flags);
         }
         if line.start != line.end {
@@ -1919,8 +1978,9 @@ fn prepare_fennel_static_scales(
     stream_end_index: usize,
 ) -> FennelPreparedStaticLayout {
     let mut effective_scale_x = input.scale_x;
-    let effective_scale_y = input.scale_y;
+    let mut effective_scale_y = input.scale_y;
     let mut scale_x_multiplier = 1.0f32;
+    let mut scale_y_multiplier = 1.0f32;
     if textbox_flags & 4 != 0
         && !fennel_float_nearly_equal(input.scale_x, 0.0)
         && !fennel_float_nearly_equal(input.scale_y, 0.0)
@@ -1938,6 +1998,10 @@ fn prepare_fennel_static_scales(
             effective_scale_x =
                 ((input.scale_x * input.box_width) / visual_extent) * FENNEL_AUTO_FIT_BIAS;
             scale_x_multiplier = effective_scale_x / input.scale_x;
+            if textbox_flags & 8 != 0 && input.scale_y > effective_scale_x {
+                effective_scale_y = effective_scale_x;
+                scale_y_multiplier = effective_scale_x / input.scale_y;
+            }
         }
     }
     let initial_fallback_line_height = stream
@@ -1953,6 +2017,7 @@ fn prepare_fennel_static_scales(
         effective_scale_x,
         effective_scale_y,
         scale_x_multiplier,
+        scale_y_multiplier,
         initial_fallback_line_height,
     }
 }
@@ -3351,6 +3416,80 @@ mod tests {
             )
             .unwrap_err(),
             FennelMode56LayoutError::TextFlagBypassesModeSwitch { text_flags: 1 }
+        );
+    }
+
+    #[test]
+    fn mode1_auto_fit_couples_y_only_when_it_exceeds_the_fitted_x_scale() {
+        let metric = |_| {
+            Some(FennelLayoutGlyphMetrics {
+                code: b'A' as u16,
+                point_x: 20,
+                bearing_x: 0,
+                width: 20,
+                advance_x: 20,
+                em_pixels_y: 10,
+            })
+        };
+        let expected_scale = ((1.0 * 10.0) / 20.0) * FENNEL_AUTO_FIT_BIAS;
+
+        let mut coupled = one_line_stream(&[1]);
+        let result = layout_fennel_static_mode1(
+            &mut coupled,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 10.0,
+                box_height: 20.0,
+                scale_x: 1.0,
+                scale_y: 2.0,
+                line_spacing: 0,
+            },
+            metric,
+        )
+        .unwrap();
+        assert_eq!(result.effective_scale_x, expected_scale);
+        assert_eq!(result.effective_scale_y, expected_scale);
+        assert_eq!(coupled.records[0].scale_x, expected_scale);
+        assert_eq!(coupled.records[0].scale_y, expected_scale / 2.0);
+        assert_eq!(result.total_height, 10.0 * expected_scale);
+
+        let mut uncoupled = one_line_stream(&[1]);
+        let result = layout_fennel_static_mode1(
+            &mut uncoupled,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 10.0,
+                box_height: 20.0,
+                scale_x: 1.0,
+                scale_y: 0.4,
+                line_spacing: 0,
+            },
+            metric,
+        )
+        .unwrap();
+        assert_eq!(result.effective_scale_y, 0.4);
+        assert_eq!(uncoupled.records[0].scale_y, 1.0);
+        assert_eq!(result.total_height, 4.0);
+    }
+
+    #[test]
+    fn mode1_layout_rejects_the_text_bypass() {
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_mode1(
+                &mut stream,
+                FennelStaticLayoutInput {
+                    text_flags: 1,
+                    box_width: 20.0,
+                    box_height: 20.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    line_spacing: 0,
+                },
+                metrics,
+            )
+            .unwrap_err(),
+            FennelMode1LayoutError::TextFlagBypassesModeSwitch { text_flags: 1 }
         );
     }
 

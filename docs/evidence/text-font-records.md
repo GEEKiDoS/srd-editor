@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源与动态 mode 来源。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源与动态 mode 来源。
 
 ## TEXT 记录
 
@@ -292,6 +292,12 @@ TextBoxObject `+0x12C` 是 8 字节元素向量，`begin/end/capacity` 位于 `+
 
 Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状态机，并单独返回 host-independent `field_358`。完整语料中 TEXT bit 0 清零、因而允许进入 mode switch 的 RFZ TEXT 为 684 条；用已知 `0x0CA3` 状态逐条审计全部成功，其中 12 条得到非零 `+0x358`，最大下标为 1。该审计证明实现覆盖现有资源输入，不声称这些文本在原版首帧实际启用了动态 mode。
 
+### fresh mode 1 的 X/Y 联动 auto-fit
+
+fresh mode 1 生成 flags `0x000F`，仍由 `sub_7C1F90` 处理。它先与 mode zero 相同地用首条显式行计算 fitted X scale；flags `0x08` 置位时，若原始 `scale_y > fitted_scale_x`，`0x7C2192..0x7C21F4` 还把 effective Y scale 改为 fitted X scale，并保存 `fitted_scale_x / original_scale_y` 作为每条 record 的 Y multiplier。若原始 Y scale 不大于 fitted X scale，则 Y scale 和 record `scale_y` 都保持不变。
+
+Rust 的 `layout_fennel_static_mode1` 只接受 TEXT bit 0 清零这一真实 mode-switch 前提，公共 prepare/position pass 分别保存 effective Y scale 和 record Y multiplier。完整语料中 684 条允许 mode switch 的 RFZ TEXT 全部完成 mode-1 假设布局；该统计同样不证明原版运行时实际选择了 mode 1。
+
 ### fresh mode 5/6 的默认排版
 
 `sub_AC6F50` 对 fresh mode 5/6 生成 `0x6C03/0x7C03`，两者既不含 `0x20` 也不含 `0x40`，所以仍调用默认 `sub_7C1F90`。该函数在 `0x7C1FCF..0x7C1FEA` 仅当 flags `0x4000` 清零时执行垂直边界检查；mode 5/6 因而不会写入垂直 `-254` 截止。Rust 的 `layout_fennel_static_mode56` 只接受 mode 5 或 6 且要求 TEXT bit 0 清零，不把其他 flags 组合泛化进来。
@@ -322,6 +328,7 @@ flags 来源仍未闭合。对 Surfride 文本组件 `0x7B0000..0x7D0000` 的 re
 含非空行元数据的 TEXT=1242
 行位置/行描述元素=1404/1404
 单条 TEXT 最大行元数据数=9
+fresh mode-1 假设布局成功=684
 fresh mode-5 假设布局成功=684
 fresh mode-5 非终止 guard=0
 成功建立 texture batch 的 TEXT=1292

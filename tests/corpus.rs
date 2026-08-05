@@ -16,8 +16,8 @@ use srd_editor::fennel::{
     FennelTextureBatchStop, build_fennel_plain_record_stream,
     build_fennel_static_unclipped_vertex_batches, build_fennel_texture_batch_membership,
     decode_fennel_game_text, fennel_fresh_srd_textbox_flags, layout_fennel_static_default,
-    layout_fennel_static_fitting_lines, layout_fennel_static_flag20, layout_fennel_static_mode56,
-    tokenize_fennel_plain_text,
+    layout_fennel_static_fitting_lines, layout_fennel_static_flag20, layout_fennel_static_mode1,
+    layout_fennel_static_mode56, tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
@@ -2227,6 +2227,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut flag20_layout_count = 0usize;
     let mut flag20_nonzero_field_358_count = 0usize;
     let mut maximum_flag20_field_358 = 0usize;
+    let mut mode1_layout_count = 0usize;
     let mut mode56_layout_count = 0usize;
     let mut mode56_nonterminating_wrap_count = 0usize;
     let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
@@ -2425,6 +2426,14 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                     path.display()
                 );
 
+                let mut mode1_stream = stream.clone();
+                layout_fennel_static_mode1(&mut mode1_stream, properties.layout, |token| {
+                    let code = u16::try_from(token).ok()?;
+                    runtime.glyph(code).map(FennelLayoutGlyphMetrics::from)
+                })
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                mode1_layout_count += 1;
+
                 let mut mode56_stream = stream.clone();
                 match layout_fennel_static_mode56(
                     &mut mode56_stream,
@@ -2480,7 +2489,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, texts with line metadata={line_metadata_text_count}, line positions={line_position_count}, line descriptions={line_description_count}, maximum line metadata/text={maximum_line_metadata_count}, Flag20-eligible texts={flag20_eligible_text_count}, Flag20 layouts={flag20_layout_count}, nonzero Flag20 +0x358={flag20_nonzero_field_358_count}, maximum Flag20 +0x358={maximum_flag20_field_358}, mode-5 layouts={mode56_layout_count}, mode-5 nonterminating wraps={mode56_nonterminating_wrap_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, texts with line metadata={line_metadata_text_count}, line positions={line_position_count}, line descriptions={line_description_count}, maximum line metadata/text={maximum_line_metadata_count}, Flag20-eligible texts={flag20_eligible_text_count}, Flag20 layouts={flag20_layout_count}, nonzero Flag20 +0x358={flag20_nonzero_field_358_count}, maximum Flag20 +0x358={maximum_flag20_field_358}, mode-1 layouts={mode1_layout_count}, mode-5 layouts={mode56_layout_count}, mode-5 nonterminating wraps={mode56_nonterminating_wrap_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -2507,6 +2516,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
         assert_eq!(flag20_layout_count, 684);
         assert_eq!(flag20_nonzero_field_358_count, 12);
         assert_eq!(maximum_flag20_field_358, 1);
+        assert_eq!(mode1_layout_count, 684);
         assert_eq!(mode56_layout_count, 684);
         assert_eq!(mode56_nonterminating_wrap_count, 0);
     }
