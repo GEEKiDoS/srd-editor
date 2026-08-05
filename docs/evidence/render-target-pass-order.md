@@ -71,15 +71,15 @@
 
 EntryInfo 范围允许重复或重叠；二进制会再次遍历同一个 pass，因此不能擅自去重。
 
-Rust 的 `target_pass` 已实现 type-1/SRD class、attribute group、首个 rule 匹配，以及稳定分桶与 32-entry inclusive-range 遍历。API 仍要求调用者提供明确的 target rule 表、depth/order 输入和 EntryInfo，不负责猜测 target profile。
+MainScene/BgScene 的默认 BasePass 与 EntryInfo 已继续闭环。共同 `air::Scene` 构造固定安装 5 项 rule；BasePass `PassIndex` 分别为 4、8、12、16、24，而对应 EntryInfo 值是 compact rule index 0、1、2、3、4。完整静态表与生成链见 [`chusan-air-scene-profiles.md`](chusan-air-scene-profiles.md)。Rust 的 `target_pass` 现已实现该 profile 构建、type-1/SRD class、attribute group、首个 rule 匹配、稳定分桶与 32-entry inclusive-range 遍历。
 
 ## 仍未闭合的输入
 
 队列容器、稳定性和 flush 遍历已经闭环，但独立 SRD 文件仍不足以生成唯一最终 GPU 列表。还需继续证明：
 
-- Chusan 实际 `MainScene`、`BgScene`、common background 宿主及其他 target 在当前模式下安装的 `0x18` rule records；
-- 对应 target 当前 swap buffer 的 32 个 EntryInfo `(first,last)`；
+- common background 的实际宿主，以及 MainScene/BgScene 之外其他 target 在当前模式下安装的 `0x18` rule records/EntryInfo；
 - target filter 的激活集合和切换时序；
+- command 的实际 depth/order 宿主输入；
 - `ceylon_enqueue_draw_packet` 在相邻 packet 状态相同情况下的 vertex-range 合并如何映射到编辑器的逻辑 draw 项。
 
 在这些 target-specific 输入闭环前，Rust planner 不能自行分配 pass index，也不能把 RefCast 的 CAST 调用序列直接提交给 D3D9Ex。

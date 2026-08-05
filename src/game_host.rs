@@ -3,6 +3,10 @@ use std::fmt;
 use crate::camera::{build_look_at_rh_game, build_perspective_fov_rh_game};
 use crate::projection::{Matrix4x4, mul_matrix4x4_game};
 use crate::srd_draw::SrdHostDrawContext;
+use crate::target_pass::{
+    EVIDENCE_AIR_SCENE_BASE_PASSES, EvidenceBasePassProfile, EvidenceScenePassProfile,
+    EvidenceScenePassProfileError, build_evidence_scene_pass_profile,
+};
 use crate::transform::Affine3x4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +89,18 @@ pub const CHUSAN_ADVERTISE_LOGO_PLAYER: ChusanAdvertiseLogoPlayerProfile =
     };
 
 impl ChusanAirSceneTargetProfile {
+    /// MainScene and BgScene both retain the five `PassBasic` objects installed
+    /// by the common `air::Scene` constructor.
+    pub const fn base_passes(self) -> &'static [EvidenceBasePassProfile; 5] {
+        &EVIDENCE_AIR_SCENE_BASE_PASSES
+    }
+
+    pub fn scene_pass_profile(
+        self,
+    ) -> Result<EvidenceScenePassProfile, EvidenceScenePassProfileError> {
+        build_evidence_scene_pass_profile(self.base_passes())
+    }
+
     /// Rebuilds the target Camera `Projection * View` used by the game after
     /// `air::Camera` attaches to the scene. The attach callback overwrites the
     /// constructor's Aspect=1 with `scene_width / scene_height`.
@@ -162,6 +178,10 @@ mod tests {
             assert!(profile.request_color_offscreen);
             assert!(profile.request_depth_offscreen);
             assert!(!profile.clear);
+            let passes = profile.scene_pass_profile().unwrap();
+            assert_eq!(passes.rules.len(), 5);
+            assert_eq!(passes.target_entries[4].first, 0);
+            assert_eq!(passes.target_entries[24].last, 4);
         }
     }
 

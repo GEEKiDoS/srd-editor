@@ -8,6 +8,90 @@ pub const SCENE_TARGET_ENTRY_COUNT: usize = 32;
 /// constructor `0x00`, SrRenderer `| 0x10`, submit `| 0x01`.
 pub const SRD_COMMAND_PACKET_84_LOW: u8 = 0x11;
 
+/// `sea::BasePass` property values used to build one active scene-pass rule.
+/// `pass_index` keeps the binary property's original name: it indexes the
+/// target's 32-entry `EntryInfo` table, while classification uses the compact
+/// active-rule index produced after disabled entries are skipped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EvidenceBasePassProfile {
+    pub name: &'static str,
+    pub pass_index: u32,
+    pub entry: bool,
+    pub rule: EvidenceScenePassRule,
+}
+
+/// Five `sea::PassBasic` instances installed by the common `air::Scene`
+/// constructor at `sub_6CF9A0`. Chusan's MainScene and BgScene both use this
+/// constructor and do not replace these values in their concrete setup path.
+pub const EVIDENCE_AIR_SCENE_BASE_PASSES: [EvidenceBasePassProfile; 5] = [
+    EvidenceBasePassProfile {
+        name: "Back2DPass",
+        pass_index: 4,
+        entry: true,
+        rule: EvidenceScenePassRule {
+            class_selector: 3,
+            attribute_group: 0,
+            condition_mode: 4,
+            depth_store_selector: 5,
+            depth_threshold: 0.0,
+            order_threshold: 8_388_608,
+        },
+    },
+    EvidenceBasePassProfile {
+        name: "OpaquePass",
+        pass_index: 8,
+        entry: true,
+        rule: EvidenceScenePassRule {
+            class_selector: 0,
+            attribute_group: 0,
+            condition_mode: 0,
+            depth_store_selector: 3,
+            depth_threshold: 0.0,
+            order_threshold: 0,
+        },
+    },
+    EvidenceBasePassProfile {
+        name: "PunchPass",
+        pass_index: 12,
+        entry: true,
+        rule: EvidenceScenePassRule {
+            class_selector: 1,
+            attribute_group: 0,
+            condition_mode: 0,
+            depth_store_selector: 3,
+            depth_threshold: 0.0,
+            order_threshold: 0,
+        },
+    },
+    EvidenceBasePassProfile {
+        // The spelling is copied exactly from the binary string table.
+        name: "TrancePass",
+        pass_index: 16,
+        entry: true,
+        rule: EvidenceScenePassRule {
+            class_selector: 2,
+            attribute_group: 0,
+            condition_mode: 0,
+            depth_store_selector: 6,
+            depth_threshold: 0.0,
+            order_threshold: 0,
+        },
+    },
+    EvidenceBasePassProfile {
+        name: "Front2DPass",
+        pass_index: 24,
+        entry: true,
+        rule: EvidenceScenePassRule {
+            class_selector: 3,
+            attribute_group: 0,
+            condition_mode: 3,
+            depth_store_selector: 5,
+            depth_threshold: 0.0,
+            order_threshold: 8_388_608,
+        },
+    },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EvidenceScenePassRule {
     pub class_selector: u32,
@@ -108,6 +192,68 @@ fn condition_matches(
 pub struct EvidenceScenePassRange {
     pub first: i32,
     pub last: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceScenePassProfile {
+    pub rules: Vec<EvidenceScenePassRule>,
+    pub target_entries: [EvidenceScenePassRange; SCENE_TARGET_ENTRY_COUNT],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceScenePassProfileError(pub String);
+
+impl fmt::Display for EvidenceScenePassProfileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EvidenceScenePassProfileError {}
+
+/// Reproduces the `sub_64BDA0 -> sub_64F970` profile build:
+///
+/// - disabled BasePass entries produce neither a rule nor an EntryInfo update;
+/// - enabled rules receive compact indices in registration order;
+/// - the BasePass `PassIndex` property selects one of 32 EntryInfo slots;
+/// - the slot keeps the first compact rule index and always updates the last.
+pub fn build_evidence_scene_pass_profile(
+    base_passes: &[EvidenceBasePassProfile],
+) -> Result<EvidenceScenePassProfile, EvidenceScenePassProfileError> {
+    let mut rules = Vec::new();
+    let mut target_entries = [EvidenceScenePassRange::DISABLED; SCENE_TARGET_ENTRY_COUNT];
+
+    for base_pass in base_passes {
+        if !base_pass.entry {
+            continue;
+        }
+        let compact_rule_index = i32::try_from(rules.len()).map_err(|_| {
+            EvidenceScenePassProfileError("active BasePass rule count exceeds i32".to_string())
+        })?;
+        let entry_index = usize::try_from(base_pass.pass_index).map_err(|_| {
+            EvidenceScenePassProfileError(format!(
+                "BasePass {:?} PassIndex {} does not fit usize",
+                base_pass.name, base_pass.pass_index
+            ))
+        })?;
+        let Some(entry) = target_entries.get_mut(entry_index) else {
+            return Err(EvidenceScenePassProfileError(format!(
+                "BasePass {:?} PassIndex {} is outside the binary's 32 EntryInfo slots",
+                base_pass.name, base_pass.pass_index
+            )));
+        };
+
+        rules.push(base_pass.rule);
+        if entry.first == -1 {
+            entry.first = compact_rule_index;
+        }
+        entry.last = compact_rule_index;
+    }
+
+    Ok(EvidenceScenePassProfile {
+        rules,
+        target_entries,
+    })
 }
 
 impl EvidenceScenePassRange {
@@ -302,6 +448,112 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn air_scene_default_base_pass_table_matches_the_binary_records() {
+        assert_eq!(
+            EVIDENCE_AIR_SCENE_BASE_PASSES
+                .iter()
+                .map(|pass| (pass.name, pass.pass_index))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Back2DPass", 4),
+                ("OpaquePass", 8),
+                ("PunchPass", 12),
+                ("TrancePass", 16),
+                ("Front2DPass", 24),
+            ]
+        );
+        assert!(
+            EVIDENCE_AIR_SCENE_BASE_PASSES
+                .iter()
+                .all(|pass| pass.entry && pass.rule.attribute_group == 0)
+        );
+
+        let back = EVIDENCE_AIR_SCENE_BASE_PASSES[0].rule;
+        assert_eq!((back.class_selector, back.condition_mode), (3, 4));
+        assert_eq!(back.depth_store_selector, 5);
+        assert_eq!(back.order_threshold, 8_388_608);
+
+        let front = EVIDENCE_AIR_SCENE_BASE_PASSES[4].rule;
+        assert_eq!((front.class_selector, front.condition_mode), (3, 3));
+        assert_eq!(front.depth_store_selector, 5);
+        assert_eq!(front.order_threshold, 8_388_608);
+    }
+
+    #[test]
+    fn air_scene_profile_uses_pass_index_as_entry_slot_not_rule_index() {
+        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES)
+            .expect("binary PassIndex values are within 0..31");
+
+        assert_eq!(profile.rules.len(), 5);
+        for (entry_index, compact_rule_index) in [(4, 0), (8, 1), (12, 2), (16, 3), (24, 4)] {
+            assert_eq!(
+                profile.target_entries[entry_index],
+                EvidenceScenePassRange::inclusive(compact_rule_index, compact_rule_index)
+            );
+        }
+        for (entry_index, entry) in profile.target_entries.iter().enumerate() {
+            if ![4, 8, 12, 16, 24].contains(&entry_index) {
+                assert_eq!(*entry, EvidenceScenePassRange::DISABLED);
+            }
+        }
+    }
+
+    #[test]
+    fn profile_builder_skips_disabled_entries_and_extends_duplicate_slots() {
+        let mut passes = EVIDENCE_AIR_SCENE_BASE_PASSES;
+        passes[1].entry = false;
+        passes[2].pass_index = 4;
+
+        let profile = build_evidence_scene_pass_profile(&passes).unwrap();
+        assert_eq!(profile.rules.len(), 4);
+        assert_eq!(
+            profile.target_entries[4],
+            EvidenceScenePassRange::inclusive(0, 1)
+        );
+        assert_eq!(profile.target_entries[8], EvidenceScenePassRange::DISABLED);
+        assert_eq!(
+            profile.target_entries[16],
+            EvidenceScenePassRange::inclusive(2, 2)
+        );
+        assert_eq!(
+            profile.target_entries[24],
+            EvidenceScenePassRange::inclusive(3, 3)
+        );
+    }
+
+    #[test]
+    fn profile_builder_rejects_pass_index_outside_the_proven_property_range() {
+        let invalid = EvidenceBasePassProfile {
+            pass_index: SCENE_TARGET_ENTRY_COUNT as u32,
+            ..EVIDENCE_AIR_SCENE_BASE_PASSES[0]
+        };
+        let error = build_evidence_scene_pass_profile(&[invalid]).unwrap_err();
+        assert!(error.0.contains("outside the binary's 32 EntryInfo slots"));
+    }
+
+    #[test]
+    fn default_srd_class_three_routes_to_back_2d_first() {
+        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        for order in [0, u16::MAX] {
+            assert_eq!(
+                select_evidence_scene_pass(
+                    &profile.rules,
+                    EvidenceScenePassClassificationInput {
+                        command_class: 3,
+                        attribute_group: 0,
+                        depth: 0.0,
+                        order,
+                    }
+                ),
+                Some(EvidenceSelectedScenePass {
+                    pass_index: 0,
+                    stores_depth: true,
+                })
+            );
+        }
     }
 
     #[test]

@@ -31,6 +31,33 @@ Chusan 构造路径 `sub_AE4660 -> sub_AE52B0` 创建两个 1752-byte `air::Scen
 
 MainScene 还在 `0xAE535C..0xAE5371` 通过虚表 `+0x80` 把 `{12, 0}` 写入 target `+0x290/+0x294`。写入位置和数值已确认，但字段语义尚未闭环，因此代码和文档不为它命名。
 
+## 默认 BasePass 与 EntryInfo
+
+`air::Scene` 不是等待外部配置后才拥有 pass。共同基类构造 `sub_6CF9A0` 在 target `+0x334` 原位构造 5 个 `sea::PassBasic`，并从静态表 `0x18A74A0` 依次写入名称、BasePass `PassIndex`、Type、Sort、Range 和 RangeValueU32。User 与 RangeValueF32 固定写 0；BasePass 构造的 Entry 默认值为 true，Chusan 的 MainScene/BgScene 后续设置没有关闭或替换这五项。
+
+| 注册顺序 / compact rule index | 名称 | PassIndex | Type | User | Range | Sort | F32 | U32 |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | `Back2DPass` | 4 | 3 (`2D`) | 0 | 4 (`LayerBack`) | 5 (`LayerAllLower`) | 0 | 8388608 |
+| 1 | `OpaquePass` | 8 | 0 (`Opaque`) | 0 | 0 | 3 (`DepthLower`) | 0 | 0 |
+| 2 | `PunchPass` | 12 | 1 (`Punch`) | 0 | 0 | 3 (`DepthLower`) | 0 | 0 |
+| 3 | `TrancePass` | 16 | 2 (`Trans`) | 0 | 0 | 6 (`LayerLower+DepthUpper`) | 0 | 0 |
+| 4 | `Front2DPass` | 24 | 3 (`2D`) | 0 | 3 (`LayerFront`) | 5 (`LayerAllLower`) | 0 | 8388608 |
+
+`TrancePass` 是二进制字符串的原始拼写。字段到 24-byte rule 的映射由 BasePass 虚表闭环：`+0x70 -> sub_624B80` 读取 property 0 `PassIndex`；`+0x7C -> sub_624B30` 先读取 property 1 `Entry`，为 true 才从对象 `+0x60..+0x77` 原样复制 Type/User/Range/Sort/F32/U32。
+
+`sub_64BDA0` 对启用项按注册顺序生成 compact rule index，并调用 `sub_4354A4 -> sub_64F970` 更新 target 的 32 项 EntryInfo。这里两个索引不能混同：BasePass `PassIndex` 是 EntryInfo 数组下标，写入范围值才是 compact rule index。MainScene/BgScene 的默认结果因此精确为：
+
+```text
+entry[4]  = (0, 0)
+entry[8]  = (1, 1)
+entry[12] = (2, 2)
+entry[16] = (3, 3)
+entry[24] = (4, 4)
+其余       = (-1, -1)
+```
+
+若多个启用 BasePass 使用同一 PassIndex，`sub_64F970` 只在 first 为 -1 时写 first，但每次都更新 last；若 Entry 为 false，该项既不进入 rule vector，也不占 compact rule index。Rust `target_pass::build_evidence_scene_pass_profile` 已逐项复现这个行为，`CHUSAN_MAIN_SCENE` 与 `CHUSAN_BG_SCENE` 均可直接取得该已证明 profile。
+
 ## Camera 构造值
 
 `air::Camera` 先调用 `sea_camera_construct` (`0x654550`)。属性注册调用同时写入当前默认值：
@@ -67,6 +94,7 @@ scene_width / max(scene_height, 1)
 
 - `CHUSAN_MAIN_SCENE`；
 - `CHUSAN_BG_SCENE`；
+- 两个 target 共用的五项 BasePass/rule 与 32 项 EntryInfo profile；
 - `projection_view_for_present_size(width, height)`。
 
 该函数只恢复 target Camera 的 `Projection * View`。它不生成 `FirstCalcMatrix`，也不宣称 Advertise 一定由 MainScene 接收；scene-node 根矩阵、当帧 active target 集合和 target bit/filter 仍是独立宿主输入。
