@@ -8,7 +8,7 @@ use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget, Scen
 use crate::texture::TextureList;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReferenceLayerParent {
     ProjectLayer(ReferenceTarget),
     ReferenceInstance(usize),

@@ -99,6 +99,12 @@ sea::WaterScene
 
 这两条链共同排除了“把 SRD CAM 的 Projection*View 无条件写入每个 2D draw 的 c10..c13”。SRD CAM 参与 `SrRenderer+0x08/+0x48` 的坐标转换；最终 shader 环境则属于实际接收该 packet 的 target。
 
+## CAST 调用顺序与最终提交顺序的边界
+
+ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch (`sub_AD9490`) 最终都调用 `srd_begin_quad_draw -> sub_AC5F70`。`sub_AC5F70` 结束 vertex builder 后进入 `ceylon_submit_vertex_batch` (`0x6DF020`) 和 `ceylon_enqueue_draw_packet` (`0x670BE0`)；所以 RefCast 递归产生的 CAST 调用顺序确实也是 packet 初次 enqueue 的顺序。空 target 时，`sub_63E380` 又以 `0x38` 字节记录前向追加到全局命令向量。
+
+这仍不等于最终 GPU 顺序。target 消费全局记录后，`sub_601DE0` 取得 target-local camera/depth 输入，再由 `sub_64BAB0` 根据 packet 分类、scene 配置记录和深度条件选择 pass，并调用 pass 对象虚表 `+0x08`。`ceylon_enqueue_draw_packet` 自身还会在相邻 packet 状态满足条件时合并 vertex ranges。因此当前 Rust 的 `EvidenceCompleteRuntimeCastDraw` 只声称复现“CAST render invocation / initial enqueue sequence”；在 pass queue 的具体容器、稳定性、比较器和 flush 顺序全部闭合前，不得直接作为 D3D9Ex 最终提交列表。
+
 ## Advertise 的已证明结论
 
 Advertise 的嵌入式 `projView::SrPlayer`：

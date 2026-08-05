@@ -85,7 +85,7 @@ cargo run -- --srd-fennel-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_
 
 这些命令均通过 `Direct3DCreate9Ex`/`CreateDeviceEx` 成功创建真实 D3D9Ex HAL device，并由该 device 成功创建嵌入式 SRD VS/PS；随后生成并以 `PresentEx` 提交第一帧 ImGui draw data，再显式触发 resize/`ResetEx` 路径，重建 DEFAULT-pool UI 资源并成功提交第二帧。AdvertiseLogo 动画集 draw smoke 在 reset 前后均得到 2,073,600 个 changed pixels、`white_pixels=0` 和 FNV-1a `97D30483E5DD6325`；二维贴图 smoke 得到 849,776 个一致像素、`white_pixels=0` 和 `09DF61BBE19B88A5`；RFZ/Fennel smoke 得到 40,920 个一致像素、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 `7B466FC4B4E0EC9A`。动画集证据见 [`scene-animation-sets.md`](scene-animation-sets.md)，2D shader/常量见 [`render-shape-env-2d.md`](render-shape-env-2d.md)，字体路径见 [`text-font-records.md`](text-font-records.md)。
 
-同次检查后继续加入动画集、TEXT/FONT、证据完整 draw-list、贴图 draw、Fennel draw、完整 DDS 解码路径和 reference runtime 世界/Image draw 语料测试；当前测试集为 198 个单元测试及 32 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。新增的跨字体专项以真实 RFZ 构造 `$F[n]` 切换和裸 `$F` 复位，验证 batch token 路由到各自 atlas；Fennel 专项还覆盖 `$[0]..$[7]`、`$D/$L`、辅助重复串、`sub_7BFAB0` mode-0 几何测量以及 `sub_7C04F0` 横纵位移/fit guard。reference 专项同时覆盖完整 91 文件中的 2365 个 copied layer 世界状态和独立 ImageCast builder 顺序。原有 Advertise D3D9Ex 像素回归在改动后保持不变。
+同次检查后继续加入动画集、TEXT/FONT、证据完整 draw-list、贴图 draw、Fennel draw、完整 DDS 解码路径和 reference runtime 世界/Image/Text draw 语料测试；当前测试集为 199 个单元测试及 32 个本地语料测试，其中完整游戏数据根为 `D:\sdhd\assets\data`。新增的跨字体专项以真实 RFZ 构造 `$F[n]` 切换和裸 `$F` 复位，验证 batch token 路由到各自 atlas；Fennel 专项还覆盖 `$[0]..$[7]`、`$D/$L`、辅助重复串、`sub_7BFAB0` mode-0 几何测量以及 `sub_7C04F0` 横纵位移/fit guard。reference 专项同时覆盖完整 91 文件中的 2365 个 copied layer 世界状态、647 个 copied Fennel draw 以及 owner-aware Image/Text CAST 调用序列。原有 Advertise D3D9Ex 像素回归在改动后保持不变。
 
 ## 当前边界
 
@@ -93,4 +93,4 @@ cargo run -- --srd-fennel-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_
 
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
-- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image draw 到 copied Text draw 生成及 Image/Text 统一 D3D9 提交计划。
+- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列到 target pass queue 分类、合并、最终排序及统一 D3D9Ex 提交计划。

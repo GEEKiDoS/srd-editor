@@ -40,6 +40,7 @@ use srd_editor::srd_draw::{
     FennelTextFontRole, SrdHostDrawContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
+    build_evidence_complete_initial_reference_fennel_draws,
     build_evidence_complete_initial_reference_image_draws, collect_fennel_font_resource_requests,
 };
 use srd_editor::texture::TextureList;
@@ -722,6 +723,9 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     let mut runtime_fonts = BTreeMap::new();
     let mut draw_count = 0usize;
     let mut vertex_count = 0usize;
+    let mut reference_draw_count = 0usize;
+    let mut copied_reference_draw_count = 0usize;
+    let mut reference_vertex_count = 0usize;
     let mut samples = Vec::new();
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
@@ -774,16 +778,52 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
                 .flat_map(|draw| &draw.batches)
                 .map(|batch| batch.vertices.len())
                 .sum::<usize>();
+
+            let reference_draws = build_evidence_complete_initial_reference_fennel_draws(
+                &project,
+                scene_index,
+                identity_host_context(),
+                &font_registry,
+                &runtime_fonts,
+                false,
+                &BTreeMap::new(),
+            )
+            .unwrap_or_else(|error| panic!("{} reference Fennel: {error}", path.display()));
+            assert_eq!(
+                reference_draws
+                    .iter()
+                    .filter(|draw| { matches!(draw.owner, ReferenceLayerParent::ProjectLayer(_)) })
+                    .collect::<Vec<_>>(),
+                draws.iter().collect::<Vec<_>>(),
+                "{} project-layer helper diverged from the established Fennel builder",
+                path.display()
+            );
+            reference_draw_count += reference_draws.len();
+            copied_reference_draw_count += reference_draws
+                .iter()
+                .filter(|draw| matches!(draw.owner, ReferenceLayerParent::ReferenceInstance(_)))
+                .count();
+            reference_vertex_count += reference_draws
+                .iter()
+                .flat_map(|draw| &draw.batches)
+                .map(|batch| batch.vertices.len())
+                .sum::<usize>();
         }
     }
     eprintln!(
-        "initial visible 2D Fennel draws={draw_count}, vertices={vertex_count}, samples={samples:?}"
+        "initial visible 2D Fennel draws={draw_count}, vertices={vertex_count}, reference draws={reference_draw_count}, copied reference draws={copied_reference_draw_count}, reference vertices={reference_vertex_count}, samples={samples:?}"
     );
     assert!(draw_count > 0);
     assert!(vertex_count > 0);
+    assert!(reference_draw_count >= draw_count);
+    assert!(copied_reference_draw_count > 0);
+    assert!(reference_vertex_count >= vertex_count);
     if profile == CorpusProfile::Complete91 {
         assert_eq!(draw_count, 551);
         assert_eq!(vertex_count, 34_326);
+        assert_eq!(reference_draw_count, 1_198);
+        assert_eq!(copied_reference_draw_count, 647);
+        assert_eq!(reference_vertex_count, 57_846);
     }
 }
 

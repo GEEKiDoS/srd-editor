@@ -93,6 +93,7 @@ Rust 已实现：
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
 - `ProjectRuntime::compose_world_states` 已把上述组合应用到每个顶层 project layer 和每个独立 copied layer 的完整 CAST hierarchy：顶层从宿主 `FirstCalcMatrix` 起算，copied layer 从 owning RefCast 世界状态起算；CAST 的 `0x200/0x400/0x80000` 继承位、独立 runtime 2D/3D 模式和只发生一次的 copied-layer Y 翻转均进入结果，transform visibility 与 render gate 分栏保存；
 - 独立 ImageCast draw builder 已按 `structural_cast_draw_order` 逐 CAST 消费上述 owner/source/world/runtime SrImage 状态；测试覆盖“原始目标层 disabled、copied layer 由 RefCast 独立 enabled”时只生成 copied instance draw，并验证父 RefCast 与目标 CAST 平移进入最终顶点；
+- copied TextCast/Fennel builder 使用相同 owner/source/world/runtime SrImage 输入，并以 `(ReferenceLayerParent, NODE)` 区分每个实例的 substitution/default/repeat/F4；专项用同一目标层的两个独立实例分别把 `$[0]` 解析为不同 glyph/atlas token。`EvidenceCompleteRuntimeCastDraw` 已在一次结构遍历中按 `Image -> RefCast 内联 Fennel -> Image -> ...` 生成混合 CAST 调用序列，但明确不把它冒充后续 target queue 的最终 GPU 顺序；
 - 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
@@ -104,4 +105,6 @@ Rust 已实现：
 
 2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
 
-后续仍需把已经闭合的结构顺序和世界/gate 结果接到 copied TextCast 独立 draw，并与当前 copied ImageCast 结果合并为 target queue 统一提交；同时仍需实现源目标层对根 CAST 的附加抑制条件。`CHU_UI_Common_BK_00_v11.srd` 的当前 100 个证据子集 Image draw 均来自原始层，copied 目标仍因未实现的特殊 CAST matrix 分支被整体排除，所以本页不把独立 Image builder 表述为已经完成 reference 像素渲染。
+完整 91 文件初始 Fennel 语料中，原始 project layer 的 551 个 draw/34326 个顶点通过新单 CAST helper 后逐项与既有 builder 完全相等；加入 copied layer 后得到 1198 个 draw、57846 个顶点，其中 647 个 draw 来自独立 reference instance。
+
+后续仍需闭合 target queue 的 pass 分类、合并和最终排序，才能把当前混合 CAST 调用序列接入 D3D9Ex；同时仍需实现源目标层对根 CAST 的附加抑制条件。`CHU_UI_Common_BK_00_v11.srd` 的当前 100 个证据子集 Image draw 均来自原始层，copied 目标仍因未实现的特殊 CAST matrix 分支被整体排除，所以本页不把独立 Image/Text builder 表述为已经完成 reference 像素渲染。
