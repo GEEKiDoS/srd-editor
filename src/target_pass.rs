@@ -144,6 +144,79 @@ pub const fn evidence_type1_attribute_group(packet_64: u32) -> u32 {
     (packet_64 >> 25) & 0x0f
 }
 
+/// Reproduces the dispatch gate in `sea::BasicScene` virtual `+0x44`
+/// (`sub_601C60`). A disabled scene is not asked to filter the global queue;
+/// DrawIndex 31 also produces no dispatch because the sign bit is cleared.
+pub const fn evidence_scene_target_dispatch_mask(enabled: bool, draw_index: u8) -> Option<u32> {
+    if !enabled {
+        return None;
+    }
+
+    let mask = 1u32.wrapping_shl((draw_index as u32) & 31) & 0x7fff_ffff;
+    if mask == 0 { None } else { Some(mask) }
+}
+
+/// Inputs consumed by the type-1 branch of the target filter at
+/// `sub_63EA50`. The three packet fields are the exact values read from
+/// packet `+0x58`, `+0x60`, and command copy `+0x10`/packet `+0x84`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvidenceType1TargetFilterInput {
+    pub target_mask: u32,
+    pub target_attribute: u8,
+    pub command_draw_mask: u32,
+    pub packet_58_low: u8,
+    pub packet_flags_60: u32,
+    pub packet_84_low: u8,
+}
+
+pub const fn evidence_type1_target_filter_accepts(input: EvidenceType1TargetFilterInput) -> bool {
+    if input.target_mask != 0 && input.target_mask & input.command_draw_mask == 0 {
+        return false;
+    }
+    if input.packet_flags_60 & 0x100 != 0 {
+        return false;
+    }
+
+    // The binary uses x86 SHL and then tests only the low byte. Scene
+    // Attribute is registered with the bounded range 0..7, but preserving the
+    // masked shift count keeps this helper faithful for raw diagnostic input.
+    let attribute_bit = 1u32.wrapping_shl((input.target_attribute as u32) & 31) as u8;
+    if input.packet_58_low & attribute_bit == 0 {
+        return false;
+    }
+    if input.target_attribute == 1 && input.packet_flags_60 & 0x04 == 0 {
+        return false;
+    }
+
+    input.packet_84_low & 0x02 == 0
+}
+
+/// Proven SRD type-1 specialization. Global SRD queue construction copies
+/// packet `+0x84` into command `+0x10`; the normal submit path leaves its low
+/// byte at `0x11`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvidenceSrdType1TargetFilter {
+    pub target_dispatch_mask: Option<u32>,
+    pub target_attribute: u8,
+    pub command_draw_mask: u32,
+}
+
+impl EvidenceSrdType1TargetFilter {
+    pub const fn accepts(self, packet: CeylonDrawPacketPresetState) -> bool {
+        let Some(target_mask) = self.target_dispatch_mask else {
+            return false;
+        };
+        evidence_type1_target_filter_accepts(EvidenceType1TargetFilterInput {
+            target_mask,
+            target_attribute: self.target_attribute,
+            command_draw_mask: self.command_draw_mask,
+            packet_58_low: packet.flags_58 as u8,
+            packet_flags_60: packet.flags_60,
+            packet_84_low: SRD_COMMAND_PACKET_84_LOW,
+        })
+    }
+}
+
 /// Reproduces `sub_64BAB0`'s forward, first-match rule scan.
 pub fn select_evidence_scene_pass(
     rules: &[EvidenceScenePassRule],
@@ -472,6 +545,68 @@ mod tests {
         assert_eq!(evidence_type1_attribute_group(0), 0);
         assert_eq!(evidence_type1_attribute_group(0x1e00_0000), 0x0f);
         assert_eq!(evidence_type1_attribute_group(0xe1ff_ffff), 0);
+    }
+
+    #[test]
+    fn basic_scene_dispatch_gate_uses_enable_and_signed_bit_suppression() {
+        assert_eq!(evidence_scene_target_dispatch_mask(false, 0), None);
+        assert_eq!(evidence_scene_target_dispatch_mask(true, 0), Some(1));
+        assert_eq!(
+            evidence_scene_target_dispatch_mask(true, 16),
+            Some(0x1_0000)
+        );
+        assert_eq!(evidence_scene_target_dispatch_mask(true, 31), None);
+    }
+
+    #[test]
+    fn type1_target_filter_preserves_every_binary_rejection_gate() {
+        let accepted = EvidenceType1TargetFilterInput {
+            target_mask: 1,
+            target_attribute: 0,
+            command_draw_mask: 0xffff,
+            packet_58_low: 0xff,
+            packet_flags_60: 0x4000,
+            packet_84_low: SRD_COMMAND_PACKET_84_LOW,
+        };
+        assert!(evidence_type1_target_filter_accepts(accepted));
+        assert!(!evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                target_mask: 0x1_0000,
+                ..accepted
+            }
+        ));
+        assert!(!evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                packet_flags_60: accepted.packet_flags_60 | 0x100,
+                ..accepted
+            }
+        ));
+        assert!(!evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                target_attribute: 2,
+                packet_58_low: 0xfb,
+                ..accepted
+            }
+        ));
+        assert!(!evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                target_attribute: 1,
+                ..accepted
+            }
+        ));
+        assert!(evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                target_attribute: 1,
+                packet_flags_60: accepted.packet_flags_60 | 0x04,
+                ..accepted
+            }
+        ));
+        assert!(!evidence_type1_target_filter_accepts(
+            EvidenceType1TargetFilterInput {
+                packet_84_low: accepted.packet_84_low | 0x02,
+                ..accepted
+            }
+        ));
     }
 
     #[test]

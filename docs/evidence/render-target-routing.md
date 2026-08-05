@@ -87,11 +87,11 @@ sea::WaterScene
 
 ## 每个 target 自己过滤，并拥有自己的 Camera
 
-基础虚表 `+0x44` 是 `sub_601C60`。它从当前 target 的配置取得一个 bit index，构造 `1 << index`，再调用 target 虚表 `+0x40`。基础 `+0x40` 是 `sub_601CB0`，逐个遍历 `0x38` 字节命令记录，并由 `sub_63EA50` 同时检查：
+基础虚表 `+0x44` 是 `sub_601C60`。它先检查 Scene `Enable` byte `+0x10`，再读取 property 2 `DrawIndex`，构造 `(1 << DrawIndex) & 0x7FFFFFFF`；结果非零才调用 target 虚表 `+0x40`。基础 `+0x40` 是 `sub_601CB0`，读取 property 3 `Attribute`，逐个遍历 `0x38` 字节命令记录，并由 `sub_63EA50` 同时检查：
 
 - 当前 target bit 与记录 `DrawMask` 是否相交；
-- target 的 visibility/layer index 是否被 packet 允许；
-- packet 自身的禁止位。
+- packet `+0x58` 低字节是否包含 `1 << Attribute`；
+- packet `+0x60 bit 0x100`、Attribute 1 专用的 `bit 0x04`，以及 command `+0x10 bit 0x02`。
 
 `sub_601CB0` 还调用当前 target 虚表 `+0x58`。`sea::BasicScene`、`sea::DefaultScene` 和 `air::Scene` 的该槽最终进入 `sub_603970/sub_603980`，返回 target `+0x90` 保存的 Camera 指针。基础命令处理 `sub_601DE0` 使用传入的 target-local camera/context 做可见性和排序，之后才把记录加入该 target 自己的 draw queue。
 
@@ -105,7 +105,9 @@ ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch 
 
 这仍不等于唯一最终 GPU 顺序。后续队列容器现已闭环：`sub_64BAB0` 选择第一个匹配 rule index，`sea::SceneModelModule` 对每个 pass 稳定前向追加，target 再按 32 个 EntryInfo 的数组顺序及各自 inclusive pass range 前向提交；这条链不存在额外 comparator sort。完整指令证据与 Rust planner 见 [`render-target-pass-order.md`](render-target-pass-order.md)。
 
-type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。普通 Image/Fennel packet 还已证明始终是 class 3 / attribute group 0，而默认第一项 Back2DPass 对完整 u16 order 域恒真，所以这部分不再需要伪造 depth/order。Rust 可把一个 Image 和每个 Fennel texture batch 展平为逻辑 command，并为“已被 target filter 接纳”的 MainScene/BgScene 输入生成精确 target-local 顺序。尚缺的是 active filter 集合、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation / initial enqueue sequence，新 planner 也不宣称完整当帧 GPU packet 数或宿主 target 选择。
+type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。普通 Image/Fennel packet 还已证明始终是 class 3 / attribute group 0，而默认第一项 Back2DPass 对完整 u16 order 域恒真，所以这部分不再需要伪造 depth/order。Rust 可把一个 Image 和每个 Fennel texture batch 展平为逻辑 command，先执行已证明的 type-1 filter，再生成 target-local 顺序。
+
+Chusan 的 MainScene/BgScene 构造完成状态也已闭环：两者 Scene Enable 均为 true、Attribute 均为 0，DrawIndex 分别为 0/16；Advertise DrawMask `0xFFFF` 因此接纳 MainScene、拒绝 BgScene。注册调用的第三个布尔量只控制 manager `+0x11C` current-target 指针，不是 Enable。尚缺的是后续帧可能发生的 Enable/manager-current 切换时序、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation / initial enqueue sequence，新 planner 也不宣称任意运行阶段的完整 GPU packet 数。
 
 ## Advertise 的已证明结论
 
@@ -116,7 +118,7 @@ Advertise 的嵌入式 `projView::SrPlayer`：
 - 默认 `DrawMask=0xFFFF`，除非外部对象属性系统随后显式覆盖；目前构造、common init 和资源加载路径均未发现覆盖；
 - 因而先进入全局队列，再由当帧已注册的 target 逐一过滤。
 
-单独的 `.srd` 文件不包含“当帧有哪些 target 正在注册、哪些处于 active/visible 状态、各自 Camera 和 viewport 是什么”这些宿主状态。编辑器若只打开 SRD，无法从文件本身恢复唯一的 Chusan 最终相机。
+对 Advertise 的具体 Chusan 构造完成时刻，Main/Bg 初始接纳结果已经确定。单独的 `.srd` 文件仍不包含“后续帧有哪些 target 注册/Enable、各自 Camera 和 viewport 是什么”这些宿主状态；编辑器若脱离具体宿主打开任意 SRD，仍无法从文件本身恢复唯一最终相机。
 
 ## 编辑器边界
 

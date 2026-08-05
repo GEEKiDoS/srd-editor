@@ -5,7 +5,8 @@ use crate::projection::{Matrix4x4, mul_matrix4x4_game};
 use crate::srd_draw::SrdHostDrawContext;
 use crate::target_pass::{
     EVIDENCE_AIR_SCENE_BASE_PASSES, EvidenceBasePassProfile, EvidenceScenePassProfile,
-    EvidenceScenePassProfileError, build_evidence_scene_pass_profile,
+    EvidenceScenePassProfileError, EvidenceSrdType1TargetFilter, build_evidence_scene_pass_profile,
+    evidence_scene_target_dispatch_mask,
 };
 use crate::transform::Affine3x4;
 
@@ -28,9 +29,16 @@ impl std::error::Error for GameHostProfileError {}
 pub struct ChusanAirSceneTargetProfile {
     pub name: &'static str,
     pub registration_order: i32,
-    pub registration_starts_enabled: bool,
+    /// The third argument to `sub_602210`: after successful registration it
+    /// writes this target to render-manager slot `+0x11C`. It is independent
+    /// from the Scene `Enable` property at target `+0x10`.
+    pub registration_sets_manager_current_target: bool,
+    /// Value of Scene property 0 immediately after the common constructor and
+    /// the concrete Chusan initialization path.
+    pub initial_enable: bool,
     pub present_index: u8,
     pub draw_index: u8,
+    pub attribute: u8,
     pub present_mode: u8,
     pub shader_on_demand: bool,
     pub request_color_offscreen: bool,
@@ -41,9 +49,11 @@ pub struct ChusanAirSceneTargetProfile {
 pub const CHUSAN_MAIN_SCENE: ChusanAirSceneTargetProfile = ChusanAirSceneTargetProfile {
     name: "MainScene",
     registration_order: 10_000,
-    registration_starts_enabled: true,
+    registration_sets_manager_current_target: true,
+    initial_enable: true,
     present_index: 0,
     draw_index: 0,
+    attribute: 0,
     present_mode: 1,
     shader_on_demand: false,
     request_color_offscreen: true,
@@ -54,9 +64,11 @@ pub const CHUSAN_MAIN_SCENE: ChusanAirSceneTargetProfile = ChusanAirSceneTargetP
 pub const CHUSAN_BG_SCENE: ChusanAirSceneTargetProfile = ChusanAirSceneTargetProfile {
     name: "BgScene",
     registration_order: 9_900,
-    registration_starts_enabled: false,
+    registration_sets_manager_current_target: false,
+    initial_enable: true,
     present_index: 0,
     draw_index: 16,
+    attribute: 0,
     present_mode: 0,
     shader_on_demand: false,
     request_color_offscreen: true,
@@ -101,6 +113,12 @@ impl ChusanAirSceneTargetProfile {
         build_evidence_scene_pass_profile(self.base_passes())
     }
 
+    /// Scene virtual `+0x44` dispatch state immediately after Chusan's
+    /// concrete MainScene/BgScene setup.
+    pub const fn initial_dispatch_mask(self) -> Option<u32> {
+        evidence_scene_target_dispatch_mask(self.initial_enable, self.draw_index)
+    }
+
     /// Rebuilds the target Camera `Projection * View` used by the game after
     /// `air::Camera` attaches to the scene. The attach callback overwrites the
     /// constructor's Aspect=1 with `scene_width / scene_height`.
@@ -124,6 +142,19 @@ impl ChusanAirSceneTargetProfile {
 }
 
 impl ChusanAdvertiseLogoPlayerProfile {
+    /// Builds the exact type-1 filter inputs for Advertise's globally queued
+    /// SRD commands at the end of the proven scene/player initialization.
+    pub const fn initial_srd_target_filter(
+        self,
+        target: ChusanAirSceneTargetProfile,
+    ) -> EvidenceSrdType1TargetFilter {
+        EvidenceSrdType1TargetFilter {
+            target_dispatch_mask: target.initial_dispatch_mask(),
+            target_attribute: target.attribute,
+            command_draw_mask: self.draw_mask,
+        }
+    }
+
     /// Combines the proven root-node matrix with an explicitly selected Chusan
     /// target. `AdvertiseLogoObject` leaves the embedded SrPlayer parent null,
     /// so its composite matrix remains the constructor identity. The caller
@@ -168,12 +199,13 @@ mod tests {
         assert_eq!(CHUSAN_BG_SCENE.draw_index, 16);
         assert_eq!(CHUSAN_BG_SCENE.present_mode, 0);
 
-        for (profile, expected_enabled) in [(CHUSAN_MAIN_SCENE, true), (CHUSAN_BG_SCENE, false)] {
-            assert_eq!(profile.registration_starts_enabled, expected_enabled);
-        }
+        assert!(CHUSAN_MAIN_SCENE.registration_sets_manager_current_target);
+        assert!(!CHUSAN_BG_SCENE.registration_sets_manager_current_target);
 
         for profile in [CHUSAN_MAIN_SCENE, CHUSAN_BG_SCENE] {
+            assert!(profile.initial_enable);
             assert_eq!(profile.present_index, 0);
+            assert_eq!(profile.attribute, 0);
             assert!(!profile.shader_on_demand);
             assert!(profile.request_color_offscreen);
             assert!(profile.request_depth_offscreen);
@@ -183,6 +215,8 @@ mod tests {
             assert_eq!(passes.target_entries[4].first, 0);
             assert_eq!(passes.target_entries[24].last, 4);
         }
+        assert_eq!(CHUSAN_MAIN_SCENE.initial_dispatch_mask(), Some(1));
+        assert_eq!(CHUSAN_BG_SCENE.initial_dispatch_mask(), Some(0x1_0000));
     }
 
     #[test]
@@ -226,6 +260,21 @@ mod tests {
                 layer_2d: 100,
                 common_init_ends_enabled: false,
             }
+        );
+    }
+
+    #[test]
+    fn advertise_default_draw_mask_initially_admits_main_and_rejects_background() {
+        let packet = crate::render::CeylonDrawPacketPresetState::srd_renderer_initial();
+        assert!(
+            CHUSAN_ADVERTISE_LOGO_PLAYER
+                .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
+                .accepts(packet)
+        );
+        assert!(
+            !CHUSAN_ADVERTISE_LOGO_PLAYER
+                .initial_srd_target_filter(CHUSAN_BG_SCENE)
+                .accepts(packet)
         );
     }
 

@@ -1,6 +1,6 @@
 # Chusan `air::Scene` target profiles
 
-本文只记录 `chusanApp.exe` 中 Chusan 自己创建的 `MainScene` 与 `BgScene`。它们是可供编辑器显式选择的 target profile，不是独立 SRD 的自动默认宿主。Advertise 的空 `TargetScene` 仍按 [`render-target-routing.md`](render-target-routing.md) 所述进入全局队列，并可能被多个已注册 target 接收。
+本文只记录 `chusanApp.exe` 中 Chusan 自己创建的 `MainScene` 与 `BgScene`。它们是可供编辑器显式选择的 target profile，不是任意独立 SRD 的自动默认宿主。Advertise 的空 `TargetScene` 仍按 [`render-target-routing.md`](render-target-routing.md) 所述进入全局队列；其构造完成时的 Main/Bg 接纳结果已由 DrawMask/DrawIndex 精确闭环。
 
 ## 实际创建点
 
@@ -13,7 +13,9 @@ Chusan 构造路径 `sub_AE4660 -> sub_AE52B0` 创建两个 1752-byte `air::Scen
 
 两次构造都调用 `sub_4085C6 -> sub_7023D0`，因此类型确实是 `air::Scene`，不是根据字符串推测。`sub_7023D0` 安装 `air::Scene` 虚表 `0x18E30B0`，并在 target `+0x90` 创建 432-byte `air::Camera`。
 
-注册 thunk `sub_43BB2E -> sub_602210 -> sub_46524E -> sub_6310E0 -> sub_673F10` 最终把 target 按其运行时名称插入管理器 `+0x114` 的 map。`MainScene` 的参数是 order `10000`、start enabled `true`；`BgScene` 是 order `9900`、start enabled `false`。
+注册 thunk `sub_43BB2E -> sub_602210 -> sub_46524E -> sub_6310E0 -> sub_673F10` 最终把 target 按其运行时名称插入管理器 `+0x114` 的 map。`MainScene` 的参数是 order `10000`、第三参数 `true`；`BgScene` 是 order `9900`、第三参数 `false`。
+
+第三参数不是 Enable。注册成功且参数为 true 时，`sub_602210` 调用 `sub_409D72 -> sub_632520`，只把 target 指针写入管理器 `+0x11C`；getter `sub_46DB10 -> sub_631CD0` 也只返回该槽。重命名/重注册路径 `sub_6044E0/sub_6046D0` 会比较并恢复同一指针。因此 Rust 将它记录为“注册后设置 manager current target”，不再称为 start enabled。
 
 ## 已闭环的 scene 属性
 
@@ -21,8 +23,10 @@ Chusan 构造路径 `sub_AE4660 -> sub_AE52B0` 创建两个 1752-byte `air::Scen
 
 | 属性 | MainScene | BgScene | 证据 |
 | --- | ---: | ---: | --- |
+| `Enable` (property 0) | true（构造完成） | true（构造完成） | `sub_5FFB70` 在 target `+0x10` 写 1；具体初始化没有调用 `sub_604460` 改写 |
 | `PresentIndex` | 0 | 0 | 两次 `air::Scene` 构造的第二参数 |
 | `DrawIndex` (property 2) | 0 | 16 | `sub_424B1D -> sub_604440` 固定写 property 2 |
+| `Attribute` (property 3) | 0 | 0 | `0x6002CC..0x600310` 以默认 0、范围 0..7 注册；具体初始化没有改写 |
 | `PresentMode` (property 4) | 1（构造默认） | 0 | `sub_43B97B -> sub_604850` 固定写 property 4 |
 | `ShaderOnDemand` (property 7) | false | false | `0xAE5390..0xAE53A1` / `0xAE5491..0xAE54A2` |
 | `RequestColorOffscreen` (property 14) | true | true | `0xAE53A6..0xAE53B7` / `0xAE54A7..0xAE54B8` |
@@ -30,6 +34,31 @@ Chusan 构造路径 `sub_AE4660 -> sub_AE52B0` 创建两个 1752-byte `air::Scen
 | `Clear` | false | false | target `+0x298` 在 `0xAE53D2..0xAE53D5` / `0xAE54D3..0xAE54DB` 清零 |
 
 MainScene 还在 `0xAE535C..0xAE5371` 通过虚表 `+0x80` 把 `{12, 0}` 写入 target `+0x290/+0x294`。写入位置和数值已确认，但字段语义尚未闭环，因此代码和文档不为它命名。
+
+## 构造完成时的全局 SRD target filter
+
+基础 Scene 虚表 `+0x44` (`sub_601C60`) 先检查 target `+0x10` 的 Enable；为 true 时读取 property 2 DrawIndex，并生成：
+
+```text
+targetMask = (1 << DrawIndex) & 0x7FFFFFFF
+```
+
+所以构造完成时 MainScene 的 mask 为 `0x00000001`，BgScene 为 `0x00010000`。`sub_601CB0 -> sub_63EA50` 对 type-1/SRD command 依次要求：
+
+- `targetMask == 0` 或 `targetMask & command.DrawMask != 0`；
+- packet `+0x60 bit 0x100` 清零；
+- packet `+0x58` 低字节包含 `1 << Attribute`；
+- Attribute 为 1 时，packet `+0x60 bit 0x04` 还必须置位；
+- command `+0x10 bit 0x02` 清零。
+
+普通 Image/Fennel packet 的 `+0x58` 低字节为 `0xFF`、`+0x60 bit 0x100` 清零；全局 SRD command 的 `+0x10` 是 packet `+0x84` 的原位副本，低字节为 `0x11`。Advertise 默认 DrawMask 是 `0xFFFF`，因此在上述已证明的初始状态中：
+
+```text
+MainScene: 0x00000001 & 0x0000FFFF != 0 -> 接纳
+BgScene:   0x00010000 & 0x0000FFFF == 0 -> 拒绝
+```
+
+这是构造完成状态的确定结论；若游戏后续通过 Scene `Enable` 属性或其他宿主配置改写状态，必须按对应时序另行追踪，不能外推为所有模式、所有帧恒定不变。
 
 ## 默认 BasePass 与 EntryInfo
 
@@ -94,7 +123,9 @@ scene_width / max(scene_height, 1)
 
 - `CHUSAN_MAIN_SCENE`；
 - `CHUSAN_BG_SCENE`；
+- 两个 target 的初始 Enable、DrawIndex、Attribute、dispatch mask；
+- Advertise `DrawMask=0xFFFF` 对 Main 接纳、对 Bg 拒绝的 type-1 filter；
 - 两个 target 共用的五项 BasePass/rule 与 32 项 EntryInfo profile；
 - `projection_view_for_present_size(width, height)`。
 
-该函数只恢复 target Camera 的 `Projection * View`。它不生成 `FirstCalcMatrix`，也不宣称 Advertise 一定由 MainScene 接收；scene-node 根矩阵、当帧 active target 集合和 target bit/filter 仍是独立宿主输入。
+Camera 函数只恢复 target 的 `Projection * View`，不生成 `FirstCalcMatrix`。Rust 的初始 filter API 只覆盖上述 Chusan 构造完成时刻；任意独立 SRD、其他 target 或后续 Enable 切换仍保留为显式宿主输入。

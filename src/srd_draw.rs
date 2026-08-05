@@ -33,7 +33,10 @@ use crate::ruhuna::RuhunaRuntimeFont;
 use crate::scene::{Layer, Project, ReferenceTarget};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
-use crate::target_pass::{EvidenceScenePassProfile, build_evidence_srd_scene_submission_indices};
+use crate::target_pass::{
+    EvidenceScenePassProfile, EvidenceSrdType1TargetFilter,
+    build_evidence_srd_scene_submission_indices,
+};
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::transform::{Affine3x4, SpatialTransform};
 use crate::{csli::add_color_saturating_game, csli::multiply_color_game};
@@ -132,21 +135,45 @@ pub fn build_evidence_runtime_target_submission(
     draws: &[EvidenceCompleteRuntimeCastDraw],
     profile: &EvidenceScenePassProfile,
 ) -> Result<Vec<EvidenceRuntimeTargetCommandSource>, SrdDrawError> {
+    build_evidence_runtime_target_submission_impl(draws, profile, |_| true)
+}
+
+/// Applies the proven type-1 global-queue target filter before target-local
+/// pass classification. A disabled/non-dispatched target produces an empty
+/// submission; rejected Fennel batches do not disturb the order of admitted
+/// commands.
+pub fn build_evidence_filtered_runtime_target_submission(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    profile: &EvidenceScenePassProfile,
+    filter: EvidenceSrdType1TargetFilter,
+) -> Result<Vec<EvidenceRuntimeTargetCommandSource>, SrdDrawError> {
+    build_evidence_runtime_target_submission_impl(draws, profile, |packet| filter.accepts(packet))
+}
+
+fn build_evidence_runtime_target_submission_impl(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    profile: &EvidenceScenePassProfile,
+    mut admits: impl FnMut(CeylonDrawPacketPresetState) -> bool,
+) -> Result<Vec<EvidenceRuntimeTargetCommandSource>, SrdDrawError> {
     let mut sources = Vec::new();
     let mut packets = Vec::new();
     for (runtime_draw_index, draw) in draws.iter().enumerate() {
         match draw {
             EvidenceCompleteRuntimeCastDraw::Image(draw) => {
-                sources.push(EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index });
-                packets.push(draw.packet);
+                if admits(draw.packet) {
+                    sources.push(EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index });
+                    packets.push(draw.packet);
+                }
             }
             EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
                 for batch_index in 0..draw.batches.len() {
-                    sources.push(EvidenceRuntimeTargetCommandSource::FennelBatch {
-                        runtime_draw_index,
-                        batch_index,
-                    });
-                    packets.push(draw.packet);
+                    if admits(draw.packet) {
+                        sources.push(EvidenceRuntimeTargetCommandSource::FennelBatch {
+                            runtime_draw_index,
+                            batch_index,
+                        });
+                        packets.push(draw.packet);
+                    }
                 }
             }
         }
@@ -2511,6 +2538,29 @@ mod tests {
         assert_eq!(
             build_evidence_runtime_target_submission(&runtime_cast_draws, &profile).unwrap(),
             expected_target_commands
+        );
+        assert_eq!(
+            build_evidence_filtered_runtime_target_submission(
+                &runtime_cast_draws,
+                &profile,
+                crate::game_host::CHUSAN_ADVERTISE_LOGO_PLAYER
+                    .initial_srd_target_filter(crate::game_host::CHUSAN_MAIN_SCENE),
+            )
+            .unwrap(),
+            expected_target_commands
+        );
+        let background_profile = crate::game_host::CHUSAN_BG_SCENE
+            .scene_pass_profile()
+            .unwrap();
+        assert!(
+            build_evidence_filtered_runtime_target_submission(
+                &runtime_cast_draws,
+                &background_profile,
+                crate::game_host::CHUSAN_ADVERTISE_LOGO_PLAYER
+                    .initial_srd_target_filter(crate::game_host::CHUSAN_BG_SCENE),
+            )
+            .unwrap()
+            .is_empty()
         );
         for draw in &runtime_cast_draws {
             let packet = match draw {
