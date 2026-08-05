@@ -93,10 +93,11 @@ Rust 已实现：
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
 - 未解析引用不创建层，以及无截断猜测的循环诊断；
-- copied TextCast 不追加 FontResource 请求，并复用原始目标层已请求的共享字体资源。
+- copied TextCast 不追加 FontResource 请求，并复用原始目标层已请求的共享字体资源；
+- `ReferenceRuntimePlan::structural_cast_draw_order` 按顶层 runtime layer 向量和每层 CAST 向量的前向顺序生成计划；遇到已解析 RefCast 时在该 NODE 位置递归展开对应独立实例，未解析 RefCast 不生成伪 draw，父层余下 CAST 在递归返回后继续。
 
 53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；按文件统计共有 186 个目标 SCN/LAYR 被两个或更多实例引用。全部文件均收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
 
 2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
 
-后续仍需实现源目标层对根 CAST 的附加抑制条件，以及最终 D3D9 draw submission。本页不把已完成的动画、世界状态和递归调用表述为已经完成像素渲染。
+后续仍需把该结构顺序与 runtime layer/CAST gate、每个 copied layer 的独立 Image/Text draw 数据及 target queue 提交合并，并实现源目标层对根 CAST 的附加抑制条件。本页不把已完成的动画、世界状态和顺序计划表述为已经完成 reference 像素渲染。

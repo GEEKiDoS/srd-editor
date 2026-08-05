@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::CStr;
 use std::path::PathBuf;
 use std::ptr;
@@ -9,6 +10,7 @@ use imgui::{
 use crate::animation::{KeyData, Track};
 use crate::editor_document::{EditorDocument, display_srd_name};
 use crate::scene::Layer;
+use crate::srd_draw::FennelSrdRuntimeTextInput;
 
 const PROJECT_WINDOW: &CStr = c"Project";
 const SCENE_WINDOW: &CStr = c"Scene & Status";
@@ -67,6 +69,7 @@ pub struct EditorWorkspace {
     preview_screen_width: i32,
     preview_screen_height: i32,
     preview_scissor: PreviewScissorSelection,
+    fennel_runtime_text_inputs: BTreeMap<(usize, usize, usize), FennelSrdRuntimeTextInput>,
 }
 
 impl EditorWorkspace {
@@ -96,6 +99,7 @@ impl EditorWorkspace {
             preview_screen_width: DEFAULT_TARGET_SCREEN_WIDTH,
             preview_screen_height: DEFAULT_TARGET_SCREEN_HEIGHT,
             preview_scissor: PreviewScissorSelection::Unselected,
+            fennel_runtime_text_inputs: BTreeMap::new(),
         }
     }
 
@@ -152,6 +156,18 @@ impl EditorWorkspace {
             screen_height: self.preview_screen_height,
             scissor: self.preview_scissor,
         }
+    }
+
+    pub fn selected_scene_fennel_runtime_text_inputs(
+        &self,
+    ) -> BTreeMap<(usize, usize), FennelSrdRuntimeTextInput> {
+        self.fennel_runtime_text_inputs
+            .iter()
+            .filter_map(|(&(scene_index, layer_index, node_index), input)| {
+                (scene_index == self.selected_scene)
+                    .then_some(((layer_index, node_index), input.clone()))
+            })
+            .collect()
     }
 
     pub fn validate_preview_host_settings(&self) -> Result<PreviewHostSettings, String> {
@@ -485,6 +501,52 @@ impl EditorWorkspace {
             ui.text(format!("Rotation: {:?}", spatial.rotation));
             ui.text(format!("Scale: {:?}", spatial.scale));
         }
+        let is_text_cast = layer
+            .image_by_node
+            .get(node_index)
+            .and_then(Option::as_ref)
+            .is_some_and(|image| image.creates_text_cast());
+        if is_text_cast {
+            ui.separator();
+            ui.text_disabled("FENNEL RUNTIME TEXT HOST");
+            let key = (self.selected_scene, self.selected_layer, node_index);
+            let mut enabled = self.fennel_runtime_text_inputs.contains_key(&key);
+            if ui.checkbox("Manual runtime text input", &mut enabled) {
+                if enabled {
+                    self.fennel_runtime_text_inputs.entry(key).or_default();
+                } else {
+                    self.fennel_runtime_text_inputs.remove(&key);
+                }
+            }
+            if let Some(input) = self.fennel_runtime_text_inputs.get_mut(&key) {
+                ui.input_float("Text state F4", &mut input.field_f4).build();
+                ui.input_int("Default D", &mut input.default_d).build();
+                ui.input_int("Repeat spaces", &mut input.repeat_space_count)
+                    .build();
+                ui.text_wrapped(
+                    "F4 is the exact SrTextCast runtime field and is intentionally independent from the animation timeline frame.",
+                );
+                for substitution_index in 0..8 {
+                    let mut value =
+                        String::from_utf8_lossy(&input.substitutions[substitution_index])
+                            .into_owned();
+                    if ui
+                        .input_text(format!("$[{substitution_index}]"), &mut value)
+                        .build()
+                    {
+                        input.substitutions[substitution_index] = value.into_bytes();
+                    }
+                }
+                ui.text_colored(
+                    [0.92, 0.68, 0.25, 1.0],
+                    "Stored only: mixed ImageCast/TextCast Composition ordering is not yet evidence-complete.",
+                );
+            } else {
+                ui.text_disabled(
+                    "Enable this only when the host substitution strings or current scroll F4 are known.",
+                );
+            }
+        }
     }
 
     fn draw_timeline(&mut self, ui: &Ui) {
@@ -767,5 +829,32 @@ mod tests {
         assert_eq!(settings.present_height, 1920);
         assert_eq!(settings.screen_width, 1920);
         assert_eq!(settings.screen_height, 1080);
+    }
+
+    #[test]
+    fn workspace_exports_runtime_text_inputs_only_for_the_selected_scene() {
+        let mut workspace = EditorWorkspace::new(false, None);
+        workspace.fennel_runtime_text_inputs.insert(
+            (0, 2, 3),
+            FennelSrdRuntimeTextInput {
+                field_f4: 9.5,
+                ..Default::default()
+            },
+        );
+        workspace.fennel_runtime_text_inputs.insert(
+            (1, 4, 5),
+            FennelSrdRuntimeTextInput {
+                field_f4: 12.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            workspace
+                .selected_scene_fennel_runtime_text_inputs()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(2, 3)]
+        );
     }
 }

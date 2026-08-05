@@ -324,6 +324,21 @@ pub struct FennelSrdRuntimeTextInput {
     pub field_f4: f32,
 }
 
+impl Default for FennelSrdRuntimeTextInput {
+    fn default() -> Self {
+        // Empty slots are an editor form default, not a claim about an
+        // arbitrary game's current SrTextCast host strings. The initial draw
+        // wrapper still rejects serialized substitution tokens without an
+        // explicit input entry.
+        Self {
+            substitutions: std::array::from_fn(|_| Vec::new()),
+            default_d: FENNEL_DEFAULT_D_VALUE,
+            repeat_space_count: FENNEL_DEFAULT_REPEAT_SPACE_COUNT,
+            field_f4: 0.0,
+        }
+    }
+}
+
 pub fn build_evidence_complete_initial_fennel_draws(
     project: &Project,
     scene_index: usize,
@@ -339,6 +354,7 @@ pub fn build_evidence_complete_initial_fennel_draws(
         font_registry,
         runtime_fonts,
         force_color_update,
+        None,
         None,
     )
 }
@@ -363,6 +379,44 @@ pub fn build_evidence_complete_fennel_draws_with_runtime_text(
         font_registry,
         runtime_fonts,
         force_color_update,
+        None,
+        Some(runtime_text_inputs),
+    )
+}
+
+/// Applies one ANMS frame through the shared ProjectRuntime, then builds RFZ
+/// TextCast draws with the resulting layer enable, CAST transforms/colors and
+/// SrImage geometry while keeping text-host substitutions/scroll state
+/// explicit.
+pub fn build_evidence_complete_animation_set_fennel_draws_with_runtime_text(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    animation_set_index: usize,
+    frame: f32,
+    host: SrdHostDrawContext,
+    font_registry: &FennelFontSlotRegistry<Vec<u8>>,
+    runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
+    force_color_update: bool,
+    runtime_text_inputs: &BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>,
+) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
+    let mut runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    runtime
+        .apply_animation_set(project, textures, scene_index, animation_set_index, frame)
+        .map_err(|error| SrdDrawError(format!("failed to apply animation set: {error}")))?;
+    let runtime_layers = runtime
+        .project_layers
+        .get(scene_index)
+        .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the runtime")))?;
+    build_evidence_complete_fennel_draws_impl(
+        project,
+        scene_index,
+        host,
+        font_registry,
+        runtime_fonts,
+        force_color_update,
+        Some(runtime_layers),
         Some(runtime_text_inputs),
     )
 }
@@ -374,6 +428,7 @@ fn build_evidence_complete_fennel_draws_impl(
     font_registry: &FennelFontSlotRegistry<Vec<u8>>,
     runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
     force_color_update: bool,
+    runtime_layers: Option<&[ProjectLayerRuntimeState]>,
     runtime_text_inputs: Option<&BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>>,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
     if host.target_render_size.contains(&0) {
@@ -396,16 +451,32 @@ fn build_evidence_complete_fennel_draws_impl(
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
-        let layer_enabled = layer.flags & 0x100 != 0;
+        let runtime_layer = runtime_layers
+            .map(|layers| {
+                layers.get(layer_index).ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}] is missing from the runtime"
+                    ))
+                })
+            })
+            .transpose()?;
+        let layer_enabled = runtime_layer
+            .map(|runtime_layer| runtime_layer.enabled)
+            .unwrap_or(layer.flags & 0x100 != 0);
         if !layer_enabled || !layer.is_2d() || reject_special_matrix_branches(layer).is_err() {
             continue;
         }
-        let transforms = layer
-            .transforms
-            .iter()
-            .copied()
-            .map(|transform| transform.spatial())
-            .collect::<Vec<_>>();
+        let transforms = runtime_layer.map_or_else(
+            || {
+                layer
+                    .transforms
+                    .iter()
+                    .copied()
+                    .map(|transform| transform.spatial())
+                    .collect::<Vec<_>>()
+            },
+            |runtime_layer| runtime_layer.cast_transforms.clone(),
+        );
         let world_matrices = layer
             .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
             .map_err(|error| SrdDrawError(error.to_string()))?;
@@ -460,7 +531,10 @@ fn build_evidence_complete_fennel_draws_impl(
                     ))
                 })?
                 .font_slot_id;
-            let image_state = image.initial_runtime_state();
+            let image_state = runtime_layer.map_or_else(
+                || image.initial_runtime_state(),
+                |runtime_layer| runtime_layer.image_states[node_index],
+            );
             let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
             if font_param.vertical {
                 return Err(SrdDrawError(format!(
@@ -1145,5 +1219,14 @@ mod tests {
             assignments[0].slot.resource_handle
         );
         assert_eq!(assignments[4].slot.lease_count, 2);
+    }
+
+    #[test]
+    fn fennel_runtime_text_input_manual_defaults_keep_slots_explicit_and_clock_zero() {
+        let input = FennelSrdRuntimeTextInput::default();
+        assert!(input.substitutions.iter().all(Vec::is_empty));
+        assert_eq!(input.default_d, FENNEL_DEFAULT_D_VALUE);
+        assert_eq!(input.repeat_space_count, FENNEL_DEFAULT_REPEAT_SPACE_COUNT);
+        assert_eq!(input.field_f4.to_bits(), 0.0f32.to_bits());
     }
 }

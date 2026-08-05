@@ -97,6 +97,83 @@ pub struct ReferenceRuntimePlan {
     pub unresolved: Vec<UnresolvedReference>,
 }
 
+/// One non-reference CAST in the exact structural traversal produced by
+/// `srd_render_runtime_layer`: layer CAST vectors are visited forward, and a
+/// resolved RefCast recursively expands its copied layer at that NODE
+/// position before the parent vector continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeCastDrawOrderEntry {
+    pub owner: ReferenceLayerParent,
+    pub source: ReferenceTarget,
+    pub node_index: usize,
+}
+
+impl ReferenceRuntimePlan {
+    pub fn structural_cast_draw_order(
+        &self,
+        project: &Project,
+        scene_index: usize,
+    ) -> Vec<RuntimeCastDrawOrderEntry> {
+        let mut output = Vec::new();
+        let Some(scene) = project.scenes.get(scene_index) else {
+            return output;
+        };
+        for layer_index in 0..scene.layers.len() {
+            let target = ReferenceTarget {
+                scene_index,
+                layer_index,
+            };
+            self.append_structural_cast_draw_order(
+                project,
+                ReferenceLayerParent::ProjectLayer(target),
+                target,
+                &mut output,
+            );
+        }
+        output
+    }
+
+    fn append_structural_cast_draw_order(
+        &self,
+        project: &Project,
+        owner: ReferenceLayerParent,
+        source: ReferenceTarget,
+        output: &mut Vec<RuntimeCastDrawOrderEntry>,
+    ) {
+        let layer = &project.scenes[source.scene_index].layers[source.layer_index];
+        for node_index in 0..layer.nodes.len() {
+            if layer
+                .reference_by_node
+                .get(node_index)
+                .and_then(Option::as_ref)
+                .is_some()
+            {
+                if let Some((instance_index, instance)) =
+                    self.instances.iter().enumerate().find(|(_, instance)| {
+                        instance.parent == owner && instance.reference_node_index == node_index
+                    })
+                {
+                    self.append_structural_cast_draw_order(
+                        project,
+                        ReferenceLayerParent::ReferenceInstance(instance_index),
+                        instance.target,
+                        output,
+                    );
+                }
+                // A RefCast itself submits no primitive. An unresolved
+                // reference has a null copied-layer pointer and contributes
+                // no recursive entries.
+                continue;
+            }
+            output.push(RuntimeCastDrawOrderEntry {
+                owner,
+                source,
+                node_index,
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReferenceLayerRuntimeState {
     pub instance_index: usize,
@@ -860,6 +937,86 @@ mod tests {
         assert!(plan.instances[2].flip_y);
         assert!(!plan.instances[3].flip_y);
         assert!(!plan.instances[4].flip_y);
+    }
+
+    #[test]
+    fn structural_draw_order_expands_reference_layers_at_the_refcast_position() {
+        let project = project(vec![
+            layer(
+                b"root",
+                true,
+                vec![None, Some(reference(b"scene", b"middle", 1)), None],
+            ),
+            layer(
+                b"middle",
+                true,
+                vec![None, Some(reference(b"scene", b"leaf", 1)), None],
+            ),
+            layer(b"leaf", true, vec![None, None]),
+        ]);
+        let plan = project.build_reference_runtime_plan().unwrap();
+        assert_eq!(
+            plan.structural_cast_draw_order(&project, 0)
+                .into_iter()
+                .map(|entry| (entry.owner, entry.source.layer_index, entry.node_index))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 0,
+                    }),
+                    0,
+                    0,
+                ),
+                (ReferenceLayerParent::ReferenceInstance(0), 1, 0),
+                (ReferenceLayerParent::ReferenceInstance(2), 2, 0),
+                (ReferenceLayerParent::ReferenceInstance(2), 2, 1),
+                (ReferenceLayerParent::ReferenceInstance(0), 1, 2),
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 0,
+                    }),
+                    0,
+                    2,
+                ),
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 1,
+                    }),
+                    1,
+                    0,
+                ),
+                (ReferenceLayerParent::ReferenceInstance(1), 2, 0),
+                (ReferenceLayerParent::ReferenceInstance(1), 2, 1),
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 1,
+                    }),
+                    1,
+                    2,
+                ),
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 2,
+                    }),
+                    2,
+                    0,
+                ),
+                (
+                    ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                        scene_index: 0,
+                        layer_index: 2,
+                    }),
+                    2,
+                    1,
+                ),
+            ]
+        );
     }
 
     #[test]
