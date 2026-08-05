@@ -913,6 +913,16 @@ pub struct FennelDefaultLayoutResult {
     pub record_limit: i32,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelFlag20LayoutResult {
+    pub layout: FennelDefaultLayoutResult,
+    /// TextBoxObject `+0x358`. `sub_7C4070` initializes it to zero and, after
+    /// each non-empty line description append, replaces it with the new line
+    /// index only when the currently selected `advance_width` is strictly
+    /// greater. Equal widths preserve the earlier index.
+    pub field_358: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FennelDefaultLayoutError {
     InvalidLineTable,
@@ -953,6 +963,44 @@ impl std::fmt::Display for FennelDefaultLayoutError {
 }
 
 impl std::error::Error for FennelDefaultLayoutError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelFlag20LayoutError {
+    UnsupportedTextBoxFlags { textbox_flags: u32 },
+    TextFlagBypassesModeSwitch { text_flags: u32 },
+    Layout(FennelDefaultLayoutError),
+}
+
+impl std::fmt::Display for FennelFlag20LayoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedTextBoxFlags { textbox_flags } => write!(
+                formatter,
+                "unsupported Fennel Flag20 TextBox flags {textbox_flags:#010x}"
+            ),
+            Self::TextFlagBypassesModeSwitch { text_flags } => write!(
+                formatter,
+                "Fennel TEXT flags {text_flags:#010x} bypass the Flag20 mode switch"
+            ),
+            Self::Layout(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FennelFlag20LayoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsupportedTextBoxFlags { .. } | Self::TextFlagBypassesModeSwitch { .. } => None,
+            Self::Layout(error) => Some(error),
+        }
+    }
+}
+
+impl From<FennelDefaultLayoutError> for FennelFlag20LayoutError {
+    fn from(error: FennelDefaultLayoutError) -> Self {
+        Self::Layout(error)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FennelTextureBatchMembership {
@@ -1416,8 +1464,7 @@ struct FennelPreparedStaticLayout {
 /// Reproduces the record-positioning and marker effects of the static
 /// mode-zero `sub_7C1F90` path, including its automatic wrap, two fixed
 /// FontManager membership tables, space candidate, and vertical-overflow
-/// behavior. The TextBoxObject's separate internal line-metadata vectors are
-/// not represented by this record-stream API yet.
+/// behavior and both internal line-metadata vectors.
 ///
 /// Static SrTextCast initialization reaches this routine with TextBoxObject
 /// flags exactly `3` or `7`. Both enable automatic wrapping and the space
@@ -1427,6 +1474,51 @@ struct FennelPreparedStaticLayout {
 pub fn layout_fennel_static_default<F>(
     stream: &mut FennelPlainRecordStream,
     input: FennelStaticLayoutInput,
+    glyph_metrics: F,
+) -> Result<FennelDefaultLayoutResult, FennelDefaultLayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    let textbox_flags = fennel_fresh_srd_textbox_flags(input.text_flags, 0);
+    layout_fennel_static_common(stream, input, textbox_flags, glyph_metrics)
+}
+
+/// Reproduces the evidence-closed `sub_7C4070` subset reached by the three
+/// fresh SrTextCast Flag20 states. Other bit combinations are rejected rather
+/// than generalized from the similar binary control flow.
+pub fn layout_fennel_static_flag20<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    textbox_flags: u32,
+    glyph_metrics: F,
+) -> Result<FennelFlag20LayoutResult, FennelFlag20LayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    if !matches!(textbox_flags, 0x0CA3 | 0x1CA3 | 0x2CA3) {
+        return Err(FennelFlag20LayoutError::UnsupportedTextBoxFlags { textbox_flags });
+    }
+    if input.text_flags & 1 != 0 {
+        return Err(FennelFlag20LayoutError::TextFlagBypassesModeSwitch {
+            text_flags: input.text_flags,
+        });
+    }
+    let layout = layout_fennel_static_common(stream, input, textbox_flags, glyph_metrics)?;
+    let mut field_358 = 0usize;
+    for line_index in 1..layout.line_descriptions.len() {
+        if layout.line_descriptions[field_358].advance_width
+            > layout.line_descriptions[line_index].advance_width
+        {
+            field_358 = line_index;
+        }
+    }
+    Ok(FennelFlag20LayoutResult { layout, field_358 })
+}
+
+fn layout_fennel_static_common<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    textbox_flags: u32,
     mut glyph_metrics: F,
 ) -> Result<FennelDefaultLayoutResult, FennelDefaultLayoutError>
 where
@@ -1434,8 +1526,14 @@ where
 {
     let (line_ranges, metrics, stream_end_index) =
         prepare_fennel_line_ranges(stream, &mut glyph_metrics)?;
-    let prepared =
-        prepare_fennel_static_scales(stream, input, &line_ranges, &metrics, stream_end_index);
+    let prepared = prepare_fennel_static_scales(
+        stream,
+        input,
+        textbox_flags,
+        &line_ranges,
+        &metrics,
+        stream_end_index,
+    );
     let horizontal_alignment = fennel_alignment_code_from_text_flags(input.text_flags) % 3;
     let mut measured_lines = Vec::with_capacity(line_ranges.len());
     let mut current_y = 0.0f32;
@@ -1711,15 +1809,15 @@ where
 fn prepare_fennel_static_scales(
     stream: &FennelPlainRecordStream,
     input: FennelStaticLayoutInput,
+    textbox_flags: u32,
     line_ranges: &[(usize, usize)],
     metrics: &[Option<FennelLayoutGlyphMetrics>],
     stream_end_index: usize,
 ) -> FennelPreparedStaticLayout {
-    let static_layout_flags = fennel_fresh_srd_textbox_flags(input.text_flags, 0);
     let mut effective_scale_x = input.scale_x;
     let effective_scale_y = input.scale_y;
     let mut scale_x_multiplier = 1.0f32;
-    if static_layout_flags & 4 != 0
+    if textbox_flags & 4 != 0
         && !fennel_float_nearly_equal(input.scale_x, 0.0)
         && !fennel_float_nearly_equal(input.scale_y, 0.0)
     {
@@ -2951,6 +3049,102 @@ mod tests {
                 advance_width: 10.0,
                 line_height: 12.0,
             }]
+        );
+    }
+
+    #[test]
+    fn flag20_layout_uses_the_proven_non_auto_fit_flags() {
+        let mut stream = one_line_stream(&[1, 2]);
+        let result = layout_fennel_static_flag20(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 15.0,
+                box_height: 40.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            0x0CA3,
+            metrics,
+        )
+        .unwrap();
+
+        assert_eq!(result.layout.effective_scale_x, 1.0);
+        assert_eq!(result.layout.automatic_wrap_count, 1);
+        assert_eq!(result.layout.line_descriptions.len(), 2);
+        assert_eq!(result.layout.line_descriptions[0].record_count, 1);
+        assert_eq!(result.layout.line_descriptions[1].record_count, 1);
+    }
+
+    #[test]
+    fn flag20_field_358_tracks_the_first_strict_minimum_advance_line() {
+        let input = FennelStaticLayoutInput {
+            text_flags: 0,
+            box_width: 40.0,
+            box_height: 40.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            line_spacing: 0,
+        };
+        let mut decreasing = two_line_stream(&[1, 2], &[1]);
+        let result = layout_fennel_static_flag20(&mut decreasing, input, 0x1CA3, metrics).unwrap();
+        assert_eq!(
+            result
+                .layout
+                .line_descriptions
+                .iter()
+                .map(|line| line.advance_width)
+                .collect::<Vec<_>>(),
+            vec![21.0, 10.0]
+        );
+        assert_eq!(result.field_358, 1);
+
+        let mut tied = two_line_stream(&[1], &[1]);
+        let result = layout_fennel_static_flag20(&mut tied, input, 0x2CA3, metrics).unwrap();
+        assert_eq!(result.field_358, 0);
+    }
+
+    #[test]
+    fn flag20_layout_rejects_unproven_flag_combinations() {
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_flag20(
+                &mut stream,
+                FennelStaticLayoutInput {
+                    text_flags: 0,
+                    box_width: 20.0,
+                    box_height: 20.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    line_spacing: 0,
+                },
+                0x20,
+                metrics,
+            )
+            .unwrap_err(),
+            FennelFlag20LayoutError::UnsupportedTextBoxFlags {
+                textbox_flags: 0x20,
+            }
+        );
+
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_flag20(
+                &mut stream,
+                FennelStaticLayoutInput {
+                    text_flags: 1,
+                    box_width: 20.0,
+                    box_height: 20.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    line_spacing: 0,
+                },
+                0x0CA3,
+                metrics,
+            )
+            .unwrap_err(),
+            FennelFlag20LayoutError::TextFlagBypassesModeSwitch { text_flags: 1 }
         );
     }
 

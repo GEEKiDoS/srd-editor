@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是非默认排版器与动态 mode。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 排版器与动态 mode 来源。
 
 ## TEXT 记录
 
@@ -279,6 +279,19 @@ TextBoxObject `+0x12C` 是 8 字节元素向量，`begin/end/capacity` 位于 `+
 
 消费者审计限定在已证明的 TextBox/Fennel 链：对 `0x7BE000..0x7CA000` 内 57 个函数的直接字段访问检查，以及 PE `.text` 中 `0x34C` displacement 的原始字节复核，只发现构造/析构与 `sub_7C1F90/sub_7C3940/sub_7C4070/sub_7C5A20/sub_7C7350` 等排版生产者。`sub_7C7F90` 和现有 batch 建立链不读取这两个向量；远处同 displacement 命中属于其他大对象字段或通用复制函数，不能据此认定为 TextBox 消费者。因此在当前游戏二进制的已闭合静态 draw 链中，这两组数据是保留的排版结果元数据，不改变已实现的 glyph 提交结果。
 
+### Flag20 排版器 `sub_7C4070`
+
+`sub_7C90A0` 在 `flags & 0x20` 时调用 `sub_7C4070`。当前两条已闭合的初始化链都只产生三个可达 Flag20 DWORD：`0x0CA3/0x1CA3/0x2CA3`；TEXT flags bit 0 置位时会在调用 mode switch 前跳过这些状态。Rust 因此只接受这三个 DWORD 且要求 TEXT bit 0 清零，其他组合明确报错。
+
+`sub_7C1F90` 与 `sub_7C4070` 均为 `0x1487` 字节。逐基本块反编译和 1265/1276 条指令流对齐证明两者共享同一套 glyph 宽度/advance、固定字符表、空格候选、自动断行、行高、双 pass 对齐、`-254` 截止、record 定位和 `+0x12C/+0x34C` 追加状态机。需要保留的差异为：
+
+- 默认函数在 `0x7C1FCF..0x7C1FEA` 从 flags bit `0x4000` 建立垂直截止 gate；已知 Flag20 DWORD 均不含该位，`sub_7C4070` 直接执行同一垂直检查；
+- 已知 Flag20 DWORD 不含 `0x04/0x08`，所以不会执行 mode-zero flags `7` 的首行 auto-fit；
+- `sub_7C4070` 在 `0x7C43C8` 把 TextBoxObject `+0x358` 清零；每次追加非空 `+0x34C` 描述后，`0x7C4B0B..0x7C4B29` 与 `0x7C51CE..0x7C51EC` 比较当前下标描述和新描述的 `+0x08 advance_width`。仅当前值严格大于新值时写入最新描述下标，`jbe` 路径使相等值保留较早下标；
+- 两函数都保留 flags `0x200` 的字形度量/尾部修正分支，但三个已知 Flag20 DWORD 均不含该位，因此当前实现没有把未执行组合泛化为受支持输入。
+
+Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状态机，并单独返回 host-independent `field_358`。完整语料中 TEXT bit 0 清零、因而允许进入 mode switch 的 RFZ TEXT 为 684 条；用已知 `0x0CA3` 状态逐条审计全部成功，其中 12 条得到非零 `+0x358`，最大下标为 1。该审计证明实现覆盖现有资源输入，不声称这些文本在原版首帧实际启用了动态 mode。
+
 `layout_fennel_static_fitting_lines` 仍作为原子 guard 保留：它在完整默认布局结果需要自动断行或垂直截止时返回明确错误且不修改输入，便于调用方只接受完整可见矩形；实际游戏路径由 `layout_fennel_static_default` 复现。
 
 真实 1292 条 RFZ TEXT 与对应六套 RFZ runtime font 的逐条审计为：
@@ -467,6 +480,6 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 ## 下一证据目标
 
-- `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
+- `sub_7C5A20` Flag40 排版器及 flags bit `0x40` 的真实写入来源；
 - 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源与 mode 6 显式 API 的真实调用点；

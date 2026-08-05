@@ -36,7 +36,7 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 - FontResource 的 32 槽 lowest-free 分配、同资源缓存复用、最后引用释放后的精确槽回收、满表返回未注册 slot `0x20`，以及当前玩家 `SCN -> LAYR -> NODE` 中主字体后接 `rubyFont/rfzOutlineFont/rfzOutlineRubyFont` 的 CATR 请求顺序已经闭合并实现；copied reference layer 已证明不会追加请求，而是使用原始目标层已请求的共享资源。`$F[n]`/裸 `$F` 的全局 slot 解析与跨字体 atlas token 路由也已连接。仍待宿主提供的是加载当前 SRD 前仍存活的进程级 FontManager/renderer 资源状态；不得把“空 registry”或编辑器自行分配的 opaque texture handle 声称为任意原版进程的绝对映射；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源。mode 6 已定位到非虚方法 `0xADA300..0xADA348`：启用时清 TEXT flags bit 0、写入 state `+0x130/+0x134/+0x12C` 并设 mode 6，关闭时置回 bit 0 与 mode 0；当前 IDB 中该方法只有无调用引用的 jump-island thunk `0x45335F`，不是 `off_190E210` 虚表项，因此不得假定 SRD 首帧或动画会自动触发它。调用方显式给出 runtime flags/clip size 时，normal-glyph 动态裁剪批次已经可用；自动上游连接仍禁止猜测；
-- `sub_7C90A0` 的布局分派已闭合为 `0x20 -> sub_7C4070`、否则 `0x40 -> sub_7C5A20`、否则默认。mode `2..4` 的 fresh flags 明确进入 `sub_7C4070`；TextBoxObject `+0x2E0` 还可由上层对象 `+0x230` 整 DWORD 复制，但当前已枚举的上下层 setters 都不生成 `0x40`，所以 `sub_7C5A20` 的真实入口来源和两套排版语义仍待闭合；
+- `sub_7C90A0` 的布局分派已闭合为 `0x20 -> sub_7C4070`、否则 `0x40 -> sub_7C5A20`、否则默认。mode `2..4` 的 `0x0CA3/0x1CA3/0x2CA3` Flag20 排版已按 `sub_7C4070` 实现，包括不做 mode-zero auto-fit、相同的断行/截止/元数据状态机和 `+0x358` 严格最小 advance 下标；684 条可进入 mode switch 的完整 RFZ TEXT 审计全部成功。TextBoxObject `+0x2E0` 还可由上层对象 `+0x230` 整 DWORD 复制，但当前已枚举的上下层 setters 都不生成 `0x40`，所以 `sub_7C5A20` 的真实入口来源与尚未证明的差异仍待闭合；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 
 在这些输入闭环前，不得自行补动态 mode 更新或 rehash 行为。
