@@ -103,7 +103,9 @@ sea::WaterScene
 
 ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch (`sub_AD9490`) 最终都调用 `srd_begin_quad_draw -> sub_AC5F70`。`sub_AC5F70` 结束 vertex builder 后进入 `ceylon_submit_vertex_batch` (`0x6DF020`) 和 `ceylon_enqueue_draw_packet` (`0x670BE0`)；所以 RefCast 递归产生的 CAST 调用顺序确实也是 packet 初次 enqueue 的顺序。空 target 时，`sub_63E380` 又以 `0x38` 字节记录前向追加到全局命令向量。
 
-这仍不等于最终 GPU 顺序。target 消费全局记录后，`sub_601DE0` 取得 target-local camera/depth 输入，再由 `sub_64BAB0` 根据 packet 分类、scene 配置记录和深度条件选择 pass，并调用 pass 对象虚表 `+0x08`。`ceylon_enqueue_draw_packet` 自身还会在相邻 packet 状态满足条件时合并 vertex ranges。因此当前 Rust 的 `EvidenceCompleteRuntimeCastDraw` 只声称复现“CAST render invocation / initial enqueue sequence”；在 pass queue 的具体容器、稳定性、比较器和 flush 顺序全部闭合前，不得直接作为 D3D9Ex 最终提交列表。
+这仍不等于唯一最终 GPU 顺序。后续队列容器现已闭环：`sub_64BAB0` 选择第一个匹配 rule index，`sea::SceneModelModule` 对每个 pass 稳定前向追加，target 再按 32 个 EntryInfo 的数组顺序及各自 inclusive pass range 前向提交；这条链不存在额外 comparator sort。完整指令证据与 Rust planner 见 [`render-target-pass-order.md`](render-target-pass-order.md)。
+
+尚缺的是 target-specific 输入：packet 分类值、实际 rule records、32 个 EntryInfo 范围、active filter 集合，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此当前 Rust 的 `EvidenceCompleteRuntimeCastDraw` 仍只声称复现“CAST render invocation / initial enqueue sequence”，不得直接作为 D3D9Ex 最终提交列表。
 
 ## Advertise 的已证明结论
 

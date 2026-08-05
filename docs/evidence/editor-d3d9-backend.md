@@ -93,4 +93,4 @@ cargo run -- --srd-fennel-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_
 
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
-- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列到 target pass queue 分类、合并、最终排序及统一 D3D9Ex 提交计划。
+- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列，已继续推进到 target per-pass 稳定队列和 32-entry flush planner；仍需闭合 target-specific 分类/rule/EntryInfo/filter 输入、相邻 packet 合并映射及统一 D3D9Ex 提交计划。
