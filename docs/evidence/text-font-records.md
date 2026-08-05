@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 5/6 的 `0x4000` 垂直截止关闭，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源、通用 flags `0x200` 排版分支与动态 mode 来源。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源与动态 mode 来源。
 
 ## TEXT 记录
 
@@ -288,7 +288,7 @@ TextBoxObject `+0x12C` 是 8 字节元素向量，`begin/end/capacity` 位于 `+
 - 默认函数在 `0x7C1FCF..0x7C1FEA` 从 flags bit `0x4000` 建立垂直截止 gate；已知 Flag20 DWORD 均不含该位，`sub_7C4070` 直接执行同一垂直检查；
 - 已知 Flag20 DWORD 不含 `0x04/0x08`，所以不会执行 mode-zero flags `7` 的首行 auto-fit；
 - `sub_7C4070` 在 `0x7C43C8` 把 TextBoxObject `+0x358` 清零；每次追加非空 `+0x34C` 描述后，`0x7C4B0B..0x7C4B29` 与 `0x7C51CE..0x7C51EC` 比较当前下标描述和新描述的 `+0x08 advance_width`。仅当前值严格大于新值时写入最新描述下标，`jbe` 路径使相等值保留较早下标；
-- 两函数都保留 flags `0x200` 的字形度量/尾部修正分支，但三个已知 Flag20 DWORD 均不含该位，因此当前实现没有把未执行组合泛化为受支持输入。
+- 两函数都保留 flags `0x200` 的字形度量/尾部修正分支；共享状态机已经复现该分支，但三个已知 fresh Flag20 DWORD 均不含该位，因此 `layout_fennel_static_flag20` 仍不接受未经上游来源证明的额外组合。
 
 Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状态机，并单独返回 host-independent `field_358`。完整语料中 TEXT bit 0 清零、因而允许进入 mode switch 的 RFZ TEXT 为 684 条；用已知 `0x0CA3` 状态逐条审计全部成功，其中 12 条得到非零 `+0x358`，最大下标为 1。该审计证明实现覆盖现有资源输入，不声称这些文本在原版首帧实际启用了动态 mode。
 
@@ -297,6 +297,12 @@ Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状�
 `sub_AC6F50` 对 fresh mode 5/6 生成 `0x6C03/0x7C03`，两者既不含 `0x20` 也不含 `0x40`，所以仍调用默认 `sub_7C1F90`。该函数在 `0x7C1FCF..0x7C1FEA` 仅当 flags `0x4000` 清零时执行垂直边界检查；mode 5/6 因而不会写入垂直 `-254` 截止。Rust 的 `layout_fennel_static_mode56` 只接受 mode 5 或 6 且要求 TEXT bit 0 清零，不把其他 flags 组合泛化进来。
 
 若自动断行产生空逻辑行、record 指针不推进且 `0x4000` 又关闭垂直终止，原函数会重复同一状态。编辑器不能复制这种挂死，因此返回 `NonTerminatingWrapWithoutVerticalCutoff`，错误名明确描述原版控制流而不伪造排版结果。把 mode 5 假设应用到完整语料中 684 条允许 mode switch 的 RFZ TEXT 时，684 条全部终止且成功，没有命中该 guard；这仍只是资源覆盖审计，不证明原版运行时实际选择了 mode 5。
+
+### flags `0x200` 的固定 cell 度量
+
+`sub_7C1F90/sub_7C4070/sub_7C5A20` 的所有对应测试点都使用相同规则。flags `0x200` 清零时，视觉宽度使用 runtime glyph `bearing_x(+0x28) + width(+0x30)`，advance 使用 `advance_x(+0x3C)`；置位时，两者都改为 `cvttss2si(float(point_x(+0x0C)) * f32::from_bits(0x3FAAAAAA))`。行高仍读取 `em_pixels_y(+0x48)`，不被固定 cell 替换。
+
+排版与两 pass 定位完成后，`0x7C333B..0x7C33F6` 遍历调用方的每条显式行，对行内每个非终止 record 执行 `record.x -= float(advance_x - fixed_cell) * 0.5f * effective_scale_x`；`0.5f` 的常量位为 `0x3F000000`。这会把原 glyph advance 居中到固定 cell 中，并且即使前面出现垂直 `-254`，仍按原显式行表处理对应 record。Rust 在 `FennelLayoutGlyphMetrics` 中补入 `point_x`，共享状态机复现度量与尾部修正；公开 mode/Flag20 入口仍保持各自证据白名单，未因内部已实现而擅自绑定状态字节 `+0x103` 的动态来源。
 
 ### Flag40 `sub_7C5A20` 的差分与来源审计
 

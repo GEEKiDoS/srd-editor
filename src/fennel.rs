@@ -718,13 +718,13 @@ pub struct FennelPlainRecordStream {
     pub glyph_count: usize,
 }
 
-/// Runtime-glyph fields read by the default horizontal layout routine
-/// `sub_7C1F90` when TextBoxObject flag `0x200` is clear. Static SRD TextCast
-/// initialization produces flags `3` or `7`, so that alternate metric mode is
-/// not part of this evidence-complete subset.
+/// Runtime-glyph fields read by the three Fennel layout routines. Flag `0x200`
+/// substitutes a point-size-derived fixed cell for horizontal visual width and
+/// advance, then applies a final centering correction against `advance_x`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FennelLayoutGlyphMetrics {
     pub code: u16,
+    pub point_x: u16,
     pub bearing_x: i32,
     pub width: u32,
     pub advance_x: u32,
@@ -735,6 +735,7 @@ impl From<&RuhunaRuntimeGlyphRecord> for FennelLayoutGlyphMetrics {
     fn from(glyph: &RuhunaRuntimeGlyphRecord) -> Self {
         Self {
             code: glyph.code,
+            point_x: glyph.point_x,
             bearing_x: glyph.bearing_x,
             width: glyph.width,
             advance_x: glyph.advance_x,
@@ -1638,9 +1639,11 @@ where
             while scan < explicit_end {
                 let record = &stream.records[scan];
                 let metric = metrics[scan].expect("metrics were populated during validation");
-                let glyph_visual_end =
-                    fennel_visual_width(metric) * prepared.effective_scale_x + advance;
-                let advance_increment = fennel_advance(record, metric, prepared.effective_scale_x);
+                let glyph_visual_end = fennel_visual_width(metric, textbox_flags)
+                    * prepared.effective_scale_x
+                    + advance;
+                let advance_increment =
+                    fennel_advance(record, metric, prepared.effective_scale_x, textbox_flags);
                 if glyph_visual_end <= input.box_width {
                     if metric.code == 0x20 {
                         // `sub_7C1F90` saves the pointer after the space, but
@@ -1669,8 +1672,8 @@ where
                         metrics[previous_index].expect("previous metrics were populated");
                     if fennel_font_manager_set_e0_contains(previous_metric.code) {
                         break_index = previous_index;
-                        break_visual_extent -=
-                            fennel_visual_width(previous_metric) * prepared.effective_scale_x;
+                        break_visual_extent -= fennel_visual_width(previous_metric, textbox_flags)
+                            * prepared.effective_scale_x;
                     }
                 }
                 if let Some((candidate_index, candidate_visual_extent)) =
@@ -1785,7 +1788,7 @@ where
             // `sub_7C7F90`.
             record.y += line.y_bottom;
             record.scale_x *= prepared.scale_x_multiplier;
-            advance += fennel_advance(record, metric, prepared.effective_scale_x);
+            advance += fennel_advance(record, metric, prepared.effective_scale_x, textbox_flags);
         }
         if line.start != line.end {
             line_positions.push(FennelLinePosition {
@@ -1798,6 +1801,19 @@ where
                 advance_width: advance,
                 line_height: line.line_height,
             });
+        }
+    }
+    if textbox_flags & 0x200 != 0 {
+        for &(start, end) in &line_ranges {
+            for record_index in start..end {
+                let metric =
+                    metrics[record_index].expect("metrics were populated during validation");
+                let fixed_cell = fennel_flag_200_cell_width_i32(metric);
+                let correction = (metric.advance_x as i32).wrapping_sub(fixed_cell) as f32
+                    * FENNEL_HALF
+                    * prepared.effective_scale_x;
+                stream.records[record_index].x -= correction;
+            }
         }
     }
     if let Some(overflow) = vertical_overflow {
@@ -1915,8 +1931,8 @@ fn prepare_fennel_static_scales(
         for record_index in first_start..first_end {
             let record = &stream.records[record_index];
             let metric = metrics[record_index].expect("metrics were populated during validation");
-            visual_extent = fennel_visual_width(metric) * input.scale_x + advance;
-            advance += fennel_advance(record, metric, input.scale_x);
+            visual_extent = fennel_visual_width(metric, textbox_flags) * input.scale_x + advance;
+            advance += fennel_advance(record, metric, input.scale_x, textbox_flags);
         }
         if visual_extent > input.box_width {
             effective_scale_x =
@@ -2007,31 +2023,49 @@ fn fennel_default_error_to_fitting(error: FennelDefaultLayoutError) -> FennelFit
 
 const FENNEL_AUTO_FIT_BIAS: f32 = f32::from_bits(0x3F7F_BE77);
 const FENNEL_FLOAT_EQUAL_EPSILON: f32 = f32::from_bits(0x3400_0000);
+const FENNEL_FLAG_200_POINT_SCALE: f32 = f32::from_bits(0x3FAA_AAAA);
+const FENNEL_HALF: f32 = f32::from_bits(0x3F00_0000);
 
 fn fennel_float_nearly_equal(left: f32, right: f32) -> bool {
     (left - right).abs() <= FENNEL_FLOAT_EQUAL_EPSILON
 }
 
-fn fennel_visual_width(metric: FennelLayoutGlyphMetrics) -> f32 {
-    metric.bearing_x.wrapping_add(metric.width as i32) as f32
+fn fennel_flag_200_cell_width_i32(metric: FennelLayoutGlyphMetrics) -> i32 {
+    fennel_cvttss2si((metric.point_x as f32) * FENNEL_FLAG_200_POINT_SCALE)
+}
+
+fn fennel_visual_width(metric: FennelLayoutGlyphMetrics, textbox_flags: u32) -> f32 {
+    if textbox_flags & 0x200 != 0 {
+        fennel_flag_200_cell_width_i32(metric) as f32
+    } else {
+        metric.bearing_x.wrapping_add(metric.width as i32) as f32
+    }
 }
 
 fn fennel_advance(
     record: &FennelGlyphLayoutRecord,
     metric: FennelLayoutGlyphMetrics,
     scale_x: f32,
+    textbox_flags: u32,
 ) -> f32 {
-    (record.field_20 + (metric.advance_x as i32) as f32) * scale_x
+    let metric_advance = if textbox_flags & 0x200 != 0 {
+        fennel_flag_200_cell_width_i32(metric)
+    } else {
+        metric.advance_x as i32
+    };
+    (record.field_20 + metric_advance as f32) * scale_x
 }
 
-fn fennel_cvttss2si_as_f32(value: f32) -> f32 {
-    let converted = if value.is_nan() || !(-2_147_483_648.0f32..2_147_483_648.0f32).contains(&value)
-    {
+fn fennel_cvttss2si(value: f32) -> i32 {
+    if value.is_nan() || !(-2_147_483_648.0f32..2_147_483_648.0f32).contains(&value) {
         i32::MIN
     } else {
         value.trunc() as i32
-    };
-    converted as f32
+    }
+}
+
+fn fennel_cvttss2si_as_f32(value: f32) -> f32 {
+    fennel_cvttss2si(value) as f32
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2670,6 +2704,7 @@ mod tests {
         match token {
             1 => Some(FennelLayoutGlyphMetrics {
                 code: b'A' as u16,
+                point_x: 10,
                 bearing_x: 1,
                 width: 8,
                 advance_x: 10,
@@ -2677,6 +2712,7 @@ mod tests {
             }),
             2 => Some(FennelLayoutGlyphMetrics {
                 code: b'B' as u16,
+                point_x: 11,
                 bearing_x: 2,
                 width: 7,
                 advance_x: 11,
@@ -2892,6 +2928,7 @@ mod tests {
         let mut stream = one_line_stream(&[1]);
         let metric = FennelLayoutGlyphMetrics {
             code: b'A' as u16,
+            point_x: 20,
             bearing_x: 0,
             width: 20,
             advance_x: 20,
@@ -3318,6 +3355,40 @@ mod tests {
     }
 
     #[test]
+    fn flag_200_uses_the_point_cell_and_applies_the_tail_centering_correction() {
+        assert_eq!(FENNEL_FLAG_200_POINT_SCALE.to_bits(), 0x3FAA_AAAA);
+        let mut stream = one_line_stream(&[1]);
+        let result = layout_fennel_static_common(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 7.0,
+                box_height: 20.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            0x203,
+            |_| {
+                Some(FennelLayoutGlyphMetrics {
+                    code: b'A' as u16,
+                    point_x: 6,
+                    bearing_x: 0,
+                    width: 9,
+                    advance_x: 10,
+                    em_pixels_y: 12,
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.automatic_wrap_count, 0);
+        assert_eq!(result.line_descriptions[0].advance_width, 7.0);
+        assert_eq!(stream.records[0].x, -1.5);
+        assert_eq!(result.total_height, 12.0);
+    }
+
+    #[test]
     fn default_layout_uses_the_saved_space_candidate_before_alignment() {
         let mut stream = one_line_stream(&[1, 3, 2]);
         let result = layout_fennel_static_default(
@@ -3333,6 +3404,7 @@ mod tests {
             |token| match token {
                 1 => Some(FennelLayoutGlyphMetrics {
                     code: b'A' as u16,
+                    point_x: 5,
                     bearing_x: 0,
                     width: 4,
                     advance_x: 5,
@@ -3340,6 +3412,7 @@ mod tests {
                 }),
                 2 => Some(FennelLayoutGlyphMetrics {
                     code: b'B' as u16,
+                    point_x: 5,
                     bearing_x: 0,
                     width: 4,
                     advance_x: 5,
@@ -3347,6 +3420,7 @@ mod tests {
                 }),
                 3 => Some(FennelLayoutGlyphMetrics {
                     code: 0x20,
+                    point_x: 3,
                     bearing_x: 0,
                     width: 2,
                     advance_x: 3,
@@ -3370,6 +3444,7 @@ mod tests {
         let metric = |token| match token {
             1 => Some(FennelLayoutGlyphMetrics {
                 code: b'A' as u16,
+                point_x: 5,
                 bearing_x: 0,
                 width: 4,
                 advance_x: 5,
@@ -3377,6 +3452,7 @@ mod tests {
             }),
             2 => Some(FennelLayoutGlyphMetrics {
                 code: b'B' as u16,
+                point_x: 5,
                 bearing_x: 0,
                 width: 4,
                 advance_x: 5,
@@ -3384,6 +3460,7 @@ mod tests {
             }),
             3 => Some(FennelLayoutGlyphMetrics {
                 code: 0x3008,
+                point_x: 12,
                 bearing_x: 0,
                 width: 12,
                 advance_x: 12,
@@ -3391,6 +3468,7 @@ mod tests {
             }),
             4 => Some(FennelLayoutGlyphMetrics {
                 code: 0x3002,
+                point_x: 5,
                 bearing_x: 0,
                 width: 4,
                 advance_x: 5,
@@ -3442,6 +3520,7 @@ mod tests {
             |_| {
                 Some(FennelLayoutGlyphMetrics {
                     code: b'A' as u16,
+                    point_x: 20,
                     bearing_x: 0,
                     width: 20,
                     advance_x: 20,
