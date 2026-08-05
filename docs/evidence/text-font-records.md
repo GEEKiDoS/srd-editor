@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐和垂直 `-254` 截止，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是内部行元数据与动态 mode。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过 1292/1292 条完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是非默认排版器与动态 mode。
 
 ## TEXT 记录
 
@@ -258,6 +258,25 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 - 中/下对齐量写入 TextBoxObject `+0x108`，不会折进 layout record `+0x14`；`sub_7C7F90` 随后把它加到 TextBox 的 Y 平移。Rust 因此把 `textbox_vertical_offset` 与 record `y` 分开保存；
 - `sub_7C90A0` 尾部扫描所有记录：没有 `-254` 时返回 glyph count；有标记时返回最后一个标记的记录下标，标记位于下标零时返回 `-1`。Rust 的 `record_limit` 保留这一结果。
 
+### 默认排版的行元数据
+
+TextBoxObject `+0x12C` 是 8 字节元素向量，`begin/end/capacity` 位于 `+0x12C/+0x130/+0x134`；`+0x34C` 是 16 字节元素向量，三指针位于 `+0x34C/+0x350/+0x354`。构造函数 `sub_7BEB80` 初始化后者，析构函数 `sub_7BEFB0` 释放并清零；`sub_7C1F90` 进入时把两个 end 都重置到 begin。
+
+`sub_7C1F90` 的最终定位 pass 对每个非空视觉行锁步追加两个元素。空视觉行仍参与高度推进，但不追加元数据：
+
+| 向量 | 元素字段 | 二进制来源 |
+| --- | --- | --- |
+| `+0x12C` | `float x_offset` | 当前行的水平对齐量 |
+| `+0x12C` | `float y_bottom` | 当前行 bottom、累计 Y 与 TextBoxObject `+0x108` 纵向对齐量之和 |
+| `+0x34C` | `record* first` | 当前视觉行第一条 116 字节 layout record 指针 |
+| `+0x34C` | `u32 count` | 当前视觉行包含的 record 数 |
+| `+0x34C` | `float advance` | 当前行各 record 水平 advance 的累计值 |
+| `+0x34C` | `float line_height` | 当前行最大有效 em 高度；全零时使用已证明的 fallback 高度 |
+
+中/下对齐通过测量与定位两 pass 完成：测量 pass 不追加，最终定位 pass 才写一次，因此不会产生重复元素。`+0x12C.y_bottom` 已包含 `+0x108`，而 glyph record `+0x14` 仍不包含该偏移。Rust 用 `FennelLinePosition` 保存 8 字节元素的语义；`FennelLineDescription.first_record_index` 以宿主无关的 record 下标替代原 x86 指针，不声称复制 32 位 ABI 内存布局。
+
+消费者审计限定在已证明的 TextBox/Fennel 链：对 `0x7BE000..0x7CA000` 内 57 个函数的直接字段访问检查，以及 PE `.text` 中 `0x34C` displacement 的原始字节复核，只发现构造/析构与 `sub_7C1F90/sub_7C3940/sub_7C4070/sub_7C5A20/sub_7C7350` 等排版生产者。`sub_7C7F90` 和现有 batch 建立链不读取这两个向量；远处同 displacement 命中属于其他大对象字段或通用复制函数，不能据此认定为 TextBox 消费者。因此在当前游戏二进制的已闭合静态 draw 链中，这两组数据是保留的排版结果元数据，不改变已实现的 glyph 提交结果。
+
 `layout_fennel_static_fitting_lines` 仍作为原子 guard 保留：它在完整默认布局结果需要自动断行或垂直截止时返回明确错误且不修改输入，便于调用方只接受完整可见矩形；实际游戏路径由 `layout_fennel_static_default` 复现。
 
 真实 1292 条 RFZ TEXT 与对应六套 RFZ runtime font 的逐条审计为：
@@ -267,6 +286,9 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 发生自动断行的 TEXT=9
 自动生成的逻辑断行总数=16
 最终含垂直 -254 标记的 TEXT=19
+含非空行元数据的 TEXT=1242
+行位置/行描述元素=1404/1404
+单条 TEXT 最大行元数据数=9
 成功建立 texture batch 的 TEXT=1292
 单条 TEXT 最大 texture batch 数=6
 因 -254 停止 batch 扫描的 TEXT=19
@@ -443,7 +465,6 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 ## 下一证据目标
 
-- `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
 - 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源与 mode 6 显式 API 的真实调用点；

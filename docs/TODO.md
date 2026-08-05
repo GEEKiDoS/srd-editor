@@ -30,11 +30,10 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 ## Fennel 行元数据与剩余 effect/crop 输入
 
-静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记和 `sub_7C90A0` 尾部 record-limit 返回值已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` 静态 normal glyph 的 bearing origin、effective scale、2D matrix 顺序，以及 `sub_7C10B0` 的无裁剪/裁剪 UV 重映射两套顶点同样已实现。SrTextCast 构造 mode 0 的 flags 为 `3/7`，因此完整 1292 条 RFZ TEXT 的首帧全部保持无裁剪；真实语料有 550 个初始可见 2D draw，Advertise 像素回归为 40920 个 changed pixels。
+静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记、`sub_7C90A0` 尾部 record-limit 返回值，以及 TextBoxObject `+0x12C/+0x34C` 的锁步行元数据已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` 静态 normal glyph 的 bearing origin、effective scale、2D matrix 顺序，以及 `sub_7C10B0` 的无裁剪/裁剪 UV 重映射两套顶点同样已实现。已证明静态 draw/batch 链不读取行元数据；完整语料得到 1404 组锁步元素。SrTextCast 构造 mode 0 的 flags 为 `3/7`，因此完整 1292 条 RFZ TEXT 的首帧全部保持无裁剪；真实语料有 550 个初始可见 2D draw，Advertise 像素回归为 40920 个 changed pixels。
 
 尚未闭合：
 
-- TextBoxObject `+0x12C` 的 `float2` 行位置向量与 `+0x34C` 的 16 字节行描述记录的全部后续消费者；
 - FontResource 的 32 槽 lowest-free 分配、同资源缓存复用、最后引用释放后的精确槽回收、满表返回未注册 slot `0x20`，以及当前玩家 `SCN -> LAYR -> NODE` 中主字体后接 `rubyFont/rfzOutlineFont/rfzOutlineRubyFont` 的 CATR 请求顺序已经闭合并实现；copied reference layer 已证明不会追加请求，而是使用原始目标层已请求的共享资源。`$F[n]`/裸 `$F` 的全局 slot 解析与跨字体 atlas token 路由也已连接。仍待宿主提供的是加载当前 SRD 前仍存活的进程级 FontManager/renderer 资源状态；不得把“空 registry”或编辑器自行分配的 opaque texture handle 声称为任意原版进程的绝对映射；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源。mode 6 已定位到非虚方法 `0xADA300..0xADA348`：启用时清 TEXT flags bit 0、写入 state `+0x130/+0x134/+0x12C` 并设 mode 6，关闭时置回 bit 0 与 mode 0；当前 IDB 中该方法只有无调用引用的 jump-island thunk `0x45335F`，不是 `off_190E210` 虚表项，因此不得假定 SRD 首帧或动画会自动触发它。调用方显式给出 runtime flags/clip size 时，normal-glyph 动态裁剪批次已经可用；自动上游连接仍禁止猜测；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。

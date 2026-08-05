@@ -846,6 +846,29 @@ pub struct FennelVerticalOverflow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelLinePosition {
+    /// TextBoxObject `+0x12C` entry `+0x00`.
+    pub x_offset: f32,
+    /// TextBoxObject `+0x12C` entry `+0x04`. Unlike glyph-record Y, this
+    /// already includes TextBoxObject `+0x108` vertical alignment.
+    pub y_bottom: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelLineDescription {
+    /// Host-independent replacement for the x86 record pointer at entry
+    /// `+0x00` of the TextBoxObject `+0x34C` vector.
+    pub first_record_index: usize,
+    /// Entry `+0x04` in the binary's 16-byte record.
+    pub record_count: usize,
+    /// Entry `+0x08`: sum of each positioned record's horizontal advance.
+    pub advance_width: f32,
+    /// Entry `+0x0C`: maximum effective glyph height, or the proven fallback
+    /// height for an otherwise zero-height line.
+    pub line_height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FennelDefaultLayoutResult {
     pub effective_scale_x: f32,
     pub effective_scale_y: f32,
@@ -857,6 +880,11 @@ pub struct FennelDefaultLayoutResult {
     pub automatic_wrap_count: usize,
     pub first_automatic_wrap: Option<FennelAutomaticWrap>,
     pub vertical_overflow: Option<FennelVerticalOverflow>,
+    /// Non-empty visual lines appended to TextBoxObject `+0x12C` during the
+    /// final positioning pass of `sub_7C1F90`.
+    pub line_positions: Vec<FennelLinePosition>,
+    /// Entries appended in lockstep to TextBoxObject `+0x34C`.
+    pub line_descriptions: Vec<FennelLineDescription>,
     /// Exact value returned by the tail of `sub_7C90A0`: glyph count when no
     /// `-254` record exists, otherwise the last marker's record index, with a
     /// marker at index zero represented as `-1`.
@@ -1352,6 +1380,7 @@ struct FennelMeasuredLine {
     end: usize,
     x_offset: f32,
     y_bottom: f32,
+    line_height: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1502,6 +1531,7 @@ where
                 end: segment_end,
                 x_offset,
                 y_bottom: current_y + line_advance,
+                line_height,
             });
             current_y += line_advance;
 
@@ -1533,6 +1563,8 @@ where
         }
     };
 
+    let mut line_positions = Vec::new();
+    let mut line_descriptions = Vec::new();
     for line in &measured_lines {
         let mut advance = 0.0f32;
         for record_index in line.start..line.end {
@@ -1546,6 +1578,18 @@ where
             record.y += line.y_bottom;
             record.scale_x *= prepared.scale_x_multiplier;
             advance += fennel_advance(record, metric, prepared.effective_scale_x);
+        }
+        if line.start != line.end {
+            line_positions.push(FennelLinePosition {
+                x_offset: line.x_offset,
+                y_bottom: line.y_bottom + vertical_offset,
+            });
+            line_descriptions.push(FennelLineDescription {
+                first_record_index: line.start,
+                record_count: line.end - line.start,
+                advance_width: advance,
+                line_height: line.line_height,
+            });
         }
     }
     if let Some(overflow) = vertical_overflow {
@@ -1572,6 +1616,8 @@ where
         automatic_wrap_count,
         first_automatic_wrap,
         vertical_overflow,
+        line_positions,
+        line_descriptions,
         record_limit,
     })
 }
@@ -2756,6 +2802,110 @@ mod tests {
         assert_eq!(result.record_limit, 2);
         assert_eq!((stream.records[0].x, stream.records[0].y), (0.0, 12.0));
         assert_eq!((stream.records[1].x, stream.records[1].y), (0.0, 24.0));
+        assert_eq!(
+            result.line_positions,
+            vec![
+                FennelLinePosition {
+                    x_offset: 0.0,
+                    y_bottom: 12.0,
+                },
+                FennelLinePosition {
+                    x_offset: 0.0,
+                    y_bottom: 24.0,
+                },
+            ]
+        );
+        assert_eq!(
+            result.line_descriptions,
+            vec![
+                FennelLineDescription {
+                    first_record_index: 0,
+                    record_count: 1,
+                    advance_width: 10.0,
+                    line_height: 12.0,
+                },
+                FennelLineDescription {
+                    first_record_index: 1,
+                    record_count: 1,
+                    advance_width: 11.0,
+                    line_height: 12.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn default_line_positions_include_the_separate_vertical_alignment_offset() {
+        let mut stream = one_line_stream(&[1]);
+        let result = layout_fennel_static_default(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 0x14,
+                box_width: 20.0,
+                box_height: 40.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            metrics,
+        )
+        .unwrap();
+
+        assert_eq!(stream.records[0].y, 12.0);
+        assert_eq!(result.textbox_vertical_offset, 14.0);
+        assert_eq!(
+            result.line_positions,
+            vec![FennelLinePosition {
+                x_offset: 5.0,
+                y_bottom: 26.0,
+            }]
+        );
+        assert_eq!(
+            result.line_descriptions,
+            vec![FennelLineDescription {
+                first_record_index: 0,
+                record_count: 1,
+                advance_width: 10.0,
+                line_height: 12.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn default_line_metadata_omits_empty_visual_lines() {
+        let mut stream = two_line_stream(&[], &[1]);
+        let result = layout_fennel_static_default(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 20.0,
+                box_height: 40.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            metrics,
+        )
+        .unwrap();
+
+        assert_eq!(result.positioned_line_count, 2);
+        assert_eq!(stream.records[1].y, 24.0);
+        assert_eq!(
+            result.line_positions,
+            vec![FennelLinePosition {
+                x_offset: 0.0,
+                y_bottom: 24.0,
+            }]
+        );
+        assert_eq!(
+            result.line_descriptions,
+            vec![FennelLineDescription {
+                first_record_index: 1,
+                record_count: 1,
+                advance_width: 10.0,
+                line_height: 12.0,
+            }]
+        );
     }
 
     #[test]

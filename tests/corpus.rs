@@ -2202,6 +2202,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
 
     let mut runtime_fonts = BTreeMap::new();
     let mut text_count = 0usize;
@@ -2216,6 +2217,10 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut batch_overflow_stop_count = 0usize;
     let mut vertex_batch_build_count = 0usize;
     let mut maximum_vertices_per_text = 0usize;
+    let mut line_metadata_text_count = 0usize;
+    let mut line_position_count = 0usize;
+    let mut line_description_count = 0usize;
+    let mut maximum_line_metadata_count = 0usize;
     let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut default_layout_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut layout_error_counts = BTreeMap::<&'static str, usize>::new();
@@ -2295,6 +2300,25 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                     wrapped_text_count += usize::from(result.first_automatic_wrap.is_some());
                     automatic_wrap_count += result.automatic_wrap_count;
                     vertical_overflow_text_count += usize::from(result.vertical_overflow.is_some());
+                    assert_eq!(
+                        result.line_positions.len(),
+                        result.line_descriptions.len(),
+                        "{}",
+                        path.display()
+                    );
+                    line_metadata_text_count += usize::from(!result.line_positions.is_empty());
+                    line_position_count += result.line_positions.len();
+                    line_description_count += result.line_descriptions.len();
+                    maximum_line_metadata_count =
+                        maximum_line_metadata_count.max(result.line_descriptions.len());
+                    for description in &result.line_descriptions {
+                        assert!(description.record_count > 0, "{}", path.display());
+                        let end = description
+                            .first_record_index
+                            .checked_add(description.record_count)
+                            .unwrap_or_else(|| panic!("{}: {description:?}", path.display()));
+                        assert!(end <= default_stream.records.len(), "{}", path.display());
+                    }
                     let batches = build_fennel_texture_batch_membership(&default_stream, -1)
                         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
                     batch_build_count += 1;
@@ -2400,7 +2424,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, texts with line metadata={line_metadata_text_count}, line positions={line_position_count}, line descriptions={line_description_count}, maximum line metadata/text={maximum_line_metadata_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -2414,6 +2438,15 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     assert!(wrapped_text_count > 0);
     assert!(automatic_wrap_count >= wrapped_text_count);
     assert!(vertical_overflow_text_count > 0);
+    assert_eq!(line_position_count, line_description_count);
+    assert!(line_metadata_text_count > 0);
+    assert!(maximum_line_metadata_count > 0);
+    if profile == CorpusProfile::Complete91 {
+        assert_eq!(line_metadata_text_count, 1_242);
+        assert_eq!(line_position_count, 1_404);
+        assert_eq!(line_description_count, 1_404);
+        assert_eq!(maximum_line_metadata_count, 9);
+    }
     assert_eq!(batch_build_count, text_count);
     assert!(maximum_batch_count > 0);
     assert_eq!(batch_overflow_stop_count, vertical_overflow_text_count);
