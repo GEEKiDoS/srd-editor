@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -486,6 +486,11 @@ fn skips_real_initial_2d_fennel_text_with_the_binary_zero_color_gate() {
                 .unwrap(),
         );
     }
+    let mut font_registry = FennelFontSlotRegistry::default();
+    assign_fennel_font_resource_requests(
+        &mut font_registry,
+        collect_fennel_font_resource_requests(&document.project).unwrap(),
+    );
 
     let mut draw_count = 0usize;
     let mut vertex_count = 0usize;
@@ -494,6 +499,7 @@ fn skips_real_initial_2d_fennel_text_with_the_binary_zero_color_gate() {
             &document.project,
             scene_index,
             identity_host_context(),
+            &font_registry,
             &runtime_fonts,
             false,
         )
@@ -509,6 +515,145 @@ fn skips_real_initial_2d_fennel_text_with_the_binary_zero_color_gate() {
     }
     assert_eq!(draw_count, 0);
     assert_eq!(vertex_count, 0);
+}
+
+#[test]
+fn routes_explicit_fennel_font_slots_to_their_own_runtime_atlases() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut document =
+        EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
+    let mut font_registry = FennelFontSlotRegistry::default();
+    assign_fennel_font_resource_requests(
+        &mut font_registry,
+        collect_fennel_font_resource_requests(&document.project).unwrap(),
+    );
+
+    let mut runtime_fonts = BTreeMap::new();
+    for (font_index, font) in document.project.fonts.iter().enumerate() {
+        if runtime_fonts.contains_key(font.name.as_slice())
+            || !font
+                .name
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+                .ends_with(b".rfz")
+        {
+            continue;
+        }
+        let name = std::str::from_utf8(&font.name).unwrap();
+        let parsed =
+            RuhunaFont::from_rfz(&fs::read(root.join("A000/font").join(name)).unwrap()).unwrap();
+        let token_base = u32::try_from(font_index + 1).unwrap() << 16;
+        runtime_fonts.insert(
+            font.name.clone(),
+            parsed
+                .build_runtime_font(u32::try_from(font_index + 1).unwrap(), |page| {
+                    token_base | u32::from(page) + 1
+                })
+                .unwrap(),
+        );
+    }
+
+    let baseline = build_evidence_complete_initial_fennel_draws(
+        &document.project,
+        0,
+        identity_host_context(),
+        &font_registry,
+        &runtime_fonts,
+        false,
+    )
+    .unwrap();
+    let target = baseline
+        .first()
+        .expect("fixture must have a visible RFZ TextCast");
+    let primary_name = target.font_name.clone();
+    let primary_slot = font_registry
+        .request_for_key(&primary_name)
+        .unwrap()
+        .font_slot_id;
+    let mut rfz_paths = fs::read_dir(root.join("A000/font"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rfz"))
+        })
+        .collect::<Vec<_>>();
+    rfz_paths.sort();
+    let primary_font = &runtime_fonts[primary_name.as_slice()];
+    let (alternate_name, alternate_font, code) = rfz_paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().as_bytes().to_vec();
+            if name == primary_name {
+                return None;
+            }
+            let parsed = RuhunaFont::from_rfz(&fs::read(path).ok()?).ok()?;
+            let runtime = parsed
+                .build_runtime_font(0x7000, |page| 0x7000_0001 + u32::from(page))
+                .ok()?;
+            let code = (0x21u16..=0x7e).find(|code| {
+                primary_font.glyph(*code).is_some() && runtime.glyph(*code).is_some()
+            })?;
+            Some((name, runtime, code))
+        })
+        .next()
+        .expect("local RFZ corpus must contain a second font sharing a printable ASCII glyph");
+    let alternate_slot = font_registry.request(alternate_name.clone()).font_slot_id;
+    runtime_fonts.insert(alternate_name.clone(), alternate_font);
+    let text = format!(
+        "{}$F[{alternate_slot}]{}$F{}",
+        char::from_u32(u32::from(code)).unwrap(),
+        char::from_u32(u32::from(code)).unwrap(),
+        char::from_u32(u32::from(code)).unwrap()
+    );
+    document.project.scenes[target.scene_index].layers[target.layer_index].image_by_node
+        [target.node_index]
+        .as_mut()
+        .unwrap()
+        .text
+        .as_mut()
+        .unwrap()
+        .text = text.into_bytes();
+
+    let draws = build_evidence_complete_initial_fennel_draws(
+        &document.project,
+        0,
+        identity_host_context(),
+        &font_registry,
+        &runtime_fonts,
+        false,
+    )
+    .unwrap();
+    let routed = draws
+        .iter()
+        .find(|draw| draw.layer_index == target.layer_index && draw.node_index == target.node_index)
+        .unwrap();
+    let texture_tokens = routed
+        .batches
+        .iter()
+        .map(|batch| batch.texture_token)
+        .collect::<BTreeSet<_>>();
+    assert_ne!(primary_slot, alternate_slot);
+    assert!(
+        texture_tokens.contains(
+            &runtime_fonts[primary_name.as_slice()]
+                .glyph(code)
+                .unwrap()
+                .texture_token
+        )
+    );
+    assert!(
+        texture_tokens.contains(
+            &runtime_fonts[alternate_name.as_slice()]
+                .glyph(code)
+                .unwrap()
+                .texture_token
+        )
+    );
 }
 
 #[test]
@@ -555,11 +700,18 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
                     .unwrap(),
             );
         }
+        let mut font_registry = FennelFontSlotRegistry::default();
+        assign_fennel_font_resource_requests(
+            &mut font_registry,
+            collect_fennel_font_resource_requests(&project)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+        );
         for scene_index in 0..project.scenes.len() {
             let draws = build_evidence_complete_initial_fennel_draws(
                 &project,
                 scene_index,
                 identity_host_context(),
+                &font_registry,
                 &runtime_fonts,
                 false,
             )
@@ -1365,6 +1517,126 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
     assert!(multiply_instanced_targets > 0);
     eprintln!(
         "CRFD definitions={definition_count}, runtime reference layers={instance_count}, multiply-instanced targets={multiply_instanced_targets}"
+    );
+}
+
+#[test]
+fn copied_reference_text_casts_use_resources_requested_by_original_layers() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+
+    let mut copied_text_cast_count = 0usize;
+    let mut copied_font_use_count = 0usize;
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project =
+            Project::from_file(&file).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let requested_names = collect_fennel_font_resource_requests(&project)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+            .into_iter()
+            .map(|request| request.name)
+            .collect::<BTreeSet<_>>();
+        let plan = project
+            .build_reference_runtime_plan()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+
+        for instance in &plan.instances {
+            let layer =
+                &project.scenes[instance.target.scene_index].layers[instance.target.layer_index];
+            for node_index in 0..layer.nodes.len() {
+                let Some(image) = layer
+                    .image_by_node
+                    .get(node_index)
+                    .and_then(Option::as_ref)
+                    .filter(|image| image.creates_text_cast())
+                else {
+                    continue;
+                };
+                copied_text_cast_count += 1;
+                let text = image.text.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "{} copied SCN[{}]/LAYR[{}]/NODE[{node_index}] has no TEXT",
+                        path.display(),
+                        instance.target.scene_index,
+                        instance.target.layer_index
+                    )
+                });
+                let font_index = usize::try_from(text.font_index.unwrap_or(-1)).unwrap_or_else(|_| {
+                    panic!(
+                        "{} copied SCN[{}]/LAYR[{}]/NODE[{node_index}] has an invalid font index",
+                        path.display(),
+                        instance.target.scene_index,
+                        instance.target.layer_index
+                    )
+                });
+                let primary_name = &project.fonts[font_index].name;
+                if !primary_name.is_empty() {
+                    copied_font_use_count += 1;
+                    assert!(
+                        requested_names.contains(primary_name),
+                        "{} copied SCN[{}]/LAYR[{}]/NODE[{node_index}] primary font {:?} was not requested by the original scene table",
+                        path.display(),
+                        instance.target.scene_index,
+                        instance.target.layer_index,
+                        String::from_utf8_lossy(primary_name)
+                    );
+                }
+
+                let Some(attribute_list_index) = layer
+                    .cast_attribute_list_by_node
+                    .get(node_index)
+                    .and_then(|index| *index)
+                else {
+                    continue;
+                };
+                for attribute in &layer.cast_attribute_lists[attribute_list_index].attributes {
+                    if !matches!(
+                        attribute.name.as_slice(),
+                        b"rubyFont" | b"rfzOutlineFont" | b"rfzOutlineRubyFont"
+                    ) {
+                        continue;
+                    }
+                    let CastAttributeValue::String(name) = &attribute.value else {
+                        panic!(
+                            "{} copied SCN[{}]/LAYR[{}]/NODE[{node_index}] font CATR {:?} is not a string",
+                            path.display(),
+                            instance.target.scene_index,
+                            instance.target.layer_index,
+                            String::from_utf8_lossy(&attribute.name)
+                        );
+                    };
+                    if name.is_empty() {
+                        continue;
+                    }
+                    copied_font_use_count += 1;
+                    assert!(
+                        requested_names.contains(name),
+                        "{} copied SCN[{}]/LAYR[{}]/NODE[{node_index}] CATR font {:?} was not requested by the original scene table",
+                        path.display(),
+                        instance.target.scene_index,
+                        instance.target.layer_index,
+                        String::from_utf8_lossy(name)
+                    );
+                }
+            }
+        }
+    }
+
+    let expected_copied_text_cast_count = match profile {
+        CorpusProfile::Legacy53 => 1_449,
+        CorpusProfile::Complete91 => 1_527,
+    };
+    assert_eq!(copied_text_cast_count, expected_copied_text_cast_count);
+    assert_eq!(copied_font_use_count, expected_copied_text_cast_count);
+    eprintln!(
+        "{profile:?}: copied TextCasts={copied_text_cast_count}, covered font uses={copied_font_use_count}"
     );
 }
 

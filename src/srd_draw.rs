@@ -3,9 +3,10 @@ use std::fmt;
 
 use crate::attribute::CastAttributeValue;
 use crate::fennel::{
-    FennelFontSlotRegistry, FennelFontSlotRequest, FennelOwnedTextureBatch,
-    FennelStaticTextProperties, FennelStaticUnclippedDrawInput, build_fennel_plain_record_stream,
-    build_fennel_static_unclipped_vertex_batches, layout_fennel_static_default,
+    FennelFontSlotRegistry, FennelFontSlotRequest, FennelOwnedTextureBatch, FennelResolvedGlyph,
+    FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
+    build_fennel_plain_record_stream_with_font_slots, build_fennel_static_unclipped_vertex_batches,
+    layout_fennel_static_default,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -106,6 +107,13 @@ pub struct FennelFontResourceAssignment {
 /// exact case-sensitive string keys below call the same four-slot TextCast
 /// font loader. Empty strings reach `sub_1088590` but do not issue a resource
 /// request, so they are omitted here.
+///
+/// Independently constructed reference layers do not add requests here.
+/// `srd_player_impl_load_project` resolves and constructs those copies before
+/// this traversal, but `sub_AAE6C0` still walks only the original runtime scene
+/// table. Every copied TextCast was rebuilt from a target LAYR already present
+/// in that table and resolves its TextBox through the shared renderer resource
+/// tree at draw time.
 ///
 /// This is not an assertion that the process-global FontManager was empty
 /// before this player loaded. Apply the returned requests to a registry that
@@ -296,10 +304,17 @@ pub fn build_evidence_complete_animation_set_image_draws(
 /// texture batching, vertex generation, world transform and color inputs are
 /// all closed. 3D TextCast, effect/crop records and legacy `.sbfont` stay out
 /// of this evidence-complete path.
+///
+/// `font_registry` is the process-global slot state after this player's
+/// requests have been applied. It may already contain earlier host resources;
+/// the function uses it for both the TextCast primary slot and explicit
+/// `$F[n]` switches. Runtime fonts retain caller-defined opaque texture tokens,
+/// allowing the renderer to route batches across different font atlases.
 pub fn build_evidence_complete_initial_fennel_draws(
     project: &Project,
     scene_index: usize,
     host: SrdHostDrawContext,
+    font_registry: &FennelFontSlotRegistry<Vec<u8>>,
     runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
     force_color_update: bool,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
@@ -371,12 +386,22 @@ pub fn build_evidence_complete_initial_fennel_draws(
             {
                 continue;
             }
-            let runtime_font = runtime_fonts.get(font.name.as_slice()).ok_or_else(|| {
-                SrdDrawError(format!(
+            if !runtime_fonts.contains_key(font.name.as_slice()) {
+                return Err(SrdDrawError(format!(
                     "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] runtime RFZ {:?} is not loaded",
                     String::from_utf8_lossy(&font.name)
-                ))
-            })?;
+                )));
+            }
+            let primary_slot = font_registry
+                .request_for_key(&font.name)
+                .filter(|request| request.registered)
+                .ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] RFZ {:?} has no registered global Fennel slot",
+                        String::from_utf8_lossy(&font.name)
+                    ))
+                })?
+                .font_slot_id;
             let image_state = image.initial_runtime_state();
             let properties = FennelStaticTextProperties::from_text_definition(
                 text,
@@ -402,16 +427,26 @@ pub fn build_evidence_complete_initial_fennel_draws(
             }
             let primary_colors = primary_rgba.map(pack_fennel_record_color);
             let secondary_color = pack_fennel_record_color(secondary_rgba);
-            let mut stream = build_fennel_plain_record_stream(
+            let resolve_glyph = |font_slot_id: u16, code: u16| {
+                let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                Some(FennelResolvedGlyph {
+                    glyph_token: fennel_slot_code_token(font_slot_id, code),
+                    glyph: *runtime_font.glyph(code)?,
+                })
+            };
+            let mut stream = build_fennel_plain_record_stream_with_font_slots(
                 &text.text,
-                runtime_font,
+                primary_slot,
                 properties.glyph_placement(0, 0, primary_colors),
                 2048,
-                |code, _| u32::from(code),
+                resolve_glyph,
             )
             .map_err(|error| SrdDrawError(error.to_string()))?;
             let layout = layout_fennel_static_default(&mut stream, properties.layout, |token| {
-                let code = u16::try_from(token).ok()?;
+                let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
                 runtime_font.glyph(code).map(Into::into)
             })
             .map_err(|error| SrdDrawError(error.to_string()))?;
@@ -431,7 +466,9 @@ pub fn build_evidence_complete_initial_fennel_draws(
                     secondary_color,
                 },
                 |token| {
-                    let code = u16::try_from(token).ok()?;
+                    let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                    let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                    let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
                     runtime_font.glyph(code).copied()
                 },
             )
@@ -457,6 +494,14 @@ pub fn build_evidence_complete_initial_fennel_draws(
         }
     }
     Ok(draws)
+}
+
+const fn fennel_slot_code_token(font_slot_id: u16, code: u16) -> u32 {
+    (font_slot_id as u32) << 16 | code as u32
+}
+
+const fn fennel_slot_code_from_token(token: u32) -> (u16, u16) {
+    ((token >> 16) as u16, token as u16)
 }
 
 fn affine_to_matrix4x4(matrix: Affine3x4) -> Matrix4x4 {

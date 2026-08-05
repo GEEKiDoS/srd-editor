@@ -21,6 +21,7 @@ use crate::editor_workspace::{
     EditorWorkspace, PreviewHostSettings, PreviewScissorSelection, PreviewTargetSelection,
     apply_editor_style,
 };
+use crate::fennel::FennelFontSlotRegistry;
 use crate::game_host::{CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_MAIN_SCENE};
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::ruhuna::{RuhunaFont, RuhunaRuntimeFont};
@@ -28,9 +29,11 @@ use crate::shader_bytecode::{
     FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use crate::srd_draw::{
-    EvidenceCompleteFennelDraw, EvidenceCompleteSrdDraw, SrdHostDrawContext,
+    EvidenceCompleteFennelDraw, EvidenceCompleteSrdDraw, FennelFontResourceAssignment,
+    SrdHostDrawContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
+    collect_fennel_font_resource_requests,
 };
 use crate::transform::Affine3x4;
 
@@ -110,6 +113,12 @@ struct EditorSmokeOptions {
     advertise_logo_host: Option<AdvertiseLogoHostArgument>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FennelAtlasRoute {
+    font_name: Vec<u8>,
+    page_index: usize,
+}
+
 struct EditorWindow {
     window: Window,
     d3d9: D3d9ExDevice,
@@ -121,6 +130,7 @@ struct EditorWindow {
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
     fennel_renderer: Option<FennelDx9Renderer>,
     fennel_atlases: BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    fennel_atlas_routes: BTreeMap<u32, FennelAtlasRoute>,
     fennel_draws: Vec<EvidenceCompleteFennelDraw>,
     composition_texture_id: Option<TextureId>,
     applied_preview_host: Option<PreviewHostSettings>,
@@ -340,7 +350,7 @@ impl EditorWindow {
                 .map_err(|error| format!("failed to load SRD textures: {error}"))?,
             )
         };
-        let (fennel_renderer, fennel_atlases, fennel_draws) = if srd_fennel_smoke {
+        let fennel_resources = if srd_fennel_smoke {
             let document = workspace
                 .document()
                 .ok_or_else(|| "--srd-fennel-smoke requires an SRD document".to_string())?;
@@ -356,14 +366,21 @@ impl EditorWindow {
                     document.path.display()
                 )
             })?;
-            let (runtime_fonts, atlases) =
-                load_fennel_resources(d3d9.device(), &game_data_root, &document.project.fonts)?;
+            let mut font_registry = FennelFontSlotRegistry::default();
+            let assignments = assign_fennel_font_resource_requests(
+                &mut font_registry,
+                collect_fennel_font_resource_requests(&document.project)
+                    .map_err(|error| error.to_string())?,
+            );
+            let (runtime_fonts, atlases, atlas_routes) =
+                load_fennel_resources(d3d9.device(), &game_data_root, &assignments)?;
             let host =
                 diagnostic_project_camera_smoke_host(&document.project, scene.width.max(1.0), size);
             let draws = build_evidence_complete_initial_fennel_draws(
                 &document.project,
                 0,
                 host,
+                &font_registry,
                 &runtime_fonts,
                 false,
             )
@@ -412,11 +429,13 @@ impl EditorWindow {
                         .map_err(|error| format!("failed to create Fennel renderer: {error}"))?,
                 ),
                 atlases,
+                atlas_routes,
                 draws,
             )
         } else {
-            (None, BTreeMap::new(), Vec::new())
+            (None, BTreeMap::new(), BTreeMap::new(), Vec::new())
         };
+        let (fennel_renderer, fennel_atlases, fennel_atlas_routes, fennel_draws) = fennel_resources;
         let composition_texture_id =
             if let (Some(renderer), Some(size)) = (srd_renderer.as_mut(), composition_size) {
                 renderer
@@ -444,6 +463,7 @@ impl EditorWindow {
             srd_draws,
             fennel_renderer,
             fennel_atlases,
+            fennel_atlas_routes,
             fennel_draws,
             composition_texture_id,
             applied_preview_host: None,
@@ -580,9 +600,16 @@ impl EditorWindow {
                 .ok_or_else(|| "Fennel smoke lost the font renderer".to_string())?;
             let draws = &self.fennel_draws;
             let atlases = &self.fennel_atlases;
+            let atlas_routes = &self.fennel_atlas_routes;
             target
                 .render_custom_to_composition(CLEAR_COLOR_ARGB, || {
-                    render_fennel_draws(renderer, draws, atlases, composition_external)
+                    render_fennel_draws(
+                        renderer,
+                        draws,
+                        atlases,
+                        atlas_routes,
+                        composition_external,
+                    )
                 })
                 .map_err(|error| format!("Fennel composition draw failed: {error}"))?;
         }
@@ -752,6 +779,7 @@ impl EditorWindow {
         self.srd_draws.clear();
         self.fennel_renderer = None;
         self.fennel_atlases.clear();
+        self.fennel_atlas_routes.clear();
         self.fennel_draws.clear();
     }
 
@@ -977,19 +1005,25 @@ fn find_game_data_root(path: &std::path::Path) -> Option<PathBuf> {
 fn load_fennel_resources(
     device: &windows::Win32::Graphics::Direct3D9::IDirect3DDevice9,
     game_data_root: &std::path::Path,
-    fonts: &[crate::text::FontDefinition],
+    assignments: &[FennelFontResourceAssignment],
 ) -> Result<
     (
         BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
         BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+        BTreeMap<u32, FennelAtlasRoute>,
     ),
     String,
 > {
     let mut runtime_fonts = BTreeMap::new();
     let mut atlases = BTreeMap::new();
-    for font in fonts {
-        if runtime_fonts.contains_key(font.name.as_slice())
-            || !font
+    let mut atlas_routes = BTreeMap::new();
+    let mut next_texture_token = 1u32;
+    for assignment in assignments {
+        if !assignment.slot.first_request
+            || !assignment.slot.registered
+            || runtime_fonts.contains_key(assignment.request.name.as_slice())
+            || !assignment
+                .request
                 .name
                 .iter()
                 .map(u8::to_ascii_lowercase)
@@ -998,7 +1032,7 @@ fn load_fennel_resources(
         {
             continue;
         }
-        let name = std::str::from_utf8(&font.name)
+        let name = std::str::from_utf8(&assignment.request.name)
             .map_err(|error| format!("RFZ font name is not UTF-8: {error}"))?;
         let path = game_data_root.join("A000/font").join(name);
         let parsed = RuhunaFont::from_rfz(
@@ -1006,59 +1040,75 @@ fn load_fennel_resources(
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?,
         )
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
-        let runtime = parsed
-            .build_runtime_font(1, |page| u32::from(page) + 1)
-            .map_err(|error| format!("failed to build runtime {}: {error}", path.display()))?;
         let atlas = RuhunaD3d9AtlasSet::from_font(device, &parsed)
             .map_err(|error| format!("failed to upload {}: {error}", path.display()))?;
-        runtime_fonts.insert(font.name.clone(), runtime);
-        atlases.insert(font.name.clone(), atlas);
+        let mut page_tokens = Vec::with_capacity(atlas.page_count());
+        for page_index in 0..atlas.page_count() {
+            let texture_token = next_texture_token;
+            next_texture_token = next_texture_token.checked_add(1).ok_or_else(|| {
+                "editor Fennel texture-token space exhausted while loading atlases".to_string()
+            })?;
+            atlas_routes.insert(
+                texture_token,
+                FennelAtlasRoute {
+                    font_name: assignment.request.name.clone(),
+                    page_index,
+                },
+            );
+            page_tokens.push(texture_token);
+        }
+        let owner_token = u32::try_from(assignment.slot.resource_handle).map_err(|_| {
+            format!(
+                "Fennel resource handle {} does not fit the runtime glyph token",
+                assignment.slot.resource_handle
+            )
+        })?;
+        let runtime = parsed
+            .build_runtime_font(owner_token, |page| {
+                page_tokens.get(usize::from(page)).copied().unwrap_or(0)
+            })
+            .map_err(|error| format!("failed to build runtime {}: {error}", path.display()))?;
+        runtime_fonts.insert(assignment.request.name.clone(), runtime);
+        atlases.insert(assignment.request.name.clone(), atlas);
     }
-    Ok((runtime_fonts, atlases))
+    Ok((runtime_fonts, atlases, atlas_routes))
 }
 
 fn render_fennel_draws(
     renderer: &mut FennelDx9Renderer,
     draws: &[EvidenceCompleteFennelDraw],
     atlases: &BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    atlas_routes: &BTreeMap<u32, FennelAtlasRoute>,
     external: SrdDx9ExternalContext,
 ) -> windows::core::Result<()> {
     for draw in draws {
-        let atlas = atlases.get(draw.font_name.as_slice()).ok_or_else(|| {
-            windows::core::Error::new(
-                windows::Win32::Foundation::E_INVALIDARG,
-                format!(
-                    "Fennel atlas {:?} is not loaded",
-                    String::from_utf8_lossy(&draw.font_name)
-                ),
-            )
-        })?;
-        let batches = draw
-            .batches
-            .iter()
-            .map(|batch| {
-                let page_index = batch
-                    .texture_token
-                    .checked_sub(1)
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| {
-                        windows::core::Error::new(
-                            windows::Win32::Foundation::E_INVALIDARG,
-                            format!(
-                                "Fennel smoke texture token {:#010x} is not the page+1 token assigned by its loader",
-                                batch.texture_token
-                            ),
-                        )
-                    })?;
-                Ok(EvidenceCompleteFennelBatch {
-                    page_index,
-                    is_2d: draw.is_2d,
-                    fixed_constants: draw.fixed_constants,
-                    vertices: &batch.vertices,
-                })
-            })
-            .collect::<windows::core::Result<Vec<_>>>()?;
-        renderer.render(&batches, external, atlas)?;
+        for batch in &draw.batches {
+            let route = atlas_routes.get(&batch.texture_token).ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "Fennel texture token {:#010x} has no atlas route",
+                        batch.texture_token
+                    ),
+                )
+            })?;
+            let atlas = atlases.get(route.font_name.as_slice()).ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "Fennel atlas {:?} is not loaded",
+                        String::from_utf8_lossy(&route.font_name)
+                    ),
+                )
+            })?;
+            let routed_batch = EvidenceCompleteFennelBatch {
+                page_index: route.page_index,
+                is_2d: draw.is_2d,
+                fixed_constants: draw.fixed_constants,
+                vertices: &batch.vertices,
+            };
+            renderer.render(std::slice::from_ref(&routed_batch), external, atlas)?;
+        }
     }
     Ok(())
 }

@@ -205,6 +205,8 @@ FontManager 实现由 `sub_F32B40` 以 `0x20` 个槽构造。实现 `+0x2C..+0x3
 
 Rust 的 `collect_fennel_font_resource_requests` 复现这套区分大小写的顺序，且不按扩展名过滤：旧字体资源同样会占用全局槽，不能只统计 `.rfz`。`assign_fennel_font_resource_requests` 接受调用方提供的现有 registry，因此宿主可先加入更早加载的进程级字体资源。这里仍不声称某个原版游戏画面加载当前 SRD 时全局槽表为空；绝对 slot id 取决于同一进程中更早仍存活的字体资源，这是宿主生命周期输入，不在单个 SRD 文件内。
 
+reference layer 不会在这条序列中追加请求。`srd_player_impl_load_project` 先完成 `srd_resolve_reference_scene_links` 和独立层构造，外层 `sub_AAC390` 才调用 `sub_AAE6C0`；但后者始终只遍历原始 runtime scene table。复制层的 TextCast 由同一个目标 parsed LAYR 重建，绘制时又通过自身文本状态中的 FONT 下标/资源名查询共享 renderer TextBox 树，所以使用目标层原始 TextCast 已请求的资源。完整调用顺序见 [`reference-runtime-recursion.md`](reference-runtime-recursion.md)。
+
 对完整 91 文件语料逐文件从空 registry 审计得到 1292 次主字体请求、172 次首次资源构造和 1120 次缓存复用；没有出现上述三个 CATR 字体键，也没有满表请求，单文件最高注册槽为 4。旧 53 文件集合对应 1237/139/1098，最高槽同样为 4。这个统计只验证单个玩家请求序列和缓存关系，不把逐文件空 registry 当作原版整进程宿主状态。
 
 `sub_7C90A0` 的 record stream 边界也已复现：普通 glyph 每个一条 116 字节记录；显式换行写 kind `-1`，超过 128 项 line-start 表时写 `-254`；iterator 结束后再写一个 kind `-1` 和最终 kind `-255`。缺字时游戏会尝试名为 `fennel_npc` 的 EmbeddedSprite；该 fallback 尚未闭环，因此 Rust 当前明确报缺字，不伪造替代 glyph。
@@ -290,6 +292,12 @@ UTF-8/控制符/缺字/字体记录错误=0
 TextBoxObject 构造函数 `sub_7BEB80` 请求至少 11 个桶，prime table 首项为 `0x11`，所以初始桶数精确为 17。新 key 落入空桶时插入全局前向链表头；落入已有桶时插入该桶连续 node 组的最前端；已有 key 只追加 record，不改变 node 顺序。`sub_7C7F90` 从全局头开始沿 node `+0x00` 遍历，因此 Rust 保存的是这一原始遍历顺序，而不是 texture token 排序。
 
 `sub_7C8BE0` 的 rehash 尚未移植；Rust 在第 18 个唯一 texture token 到达当前未覆盖域时明确报错。本地完整六套 RFZ 字体最多 7 个 atlas 页，1292 条真实文本每条最多产生 6 个 batch，全部严格落在不触发 rehash 的已证明域内。批次审计还确认全部 19 个垂直截止文本都在布局写入的同一 `-254` record 下标停止。
+
+跨字体 atlas 的句柄链也已闭合。`sub_7CB9B0` 对 glyph 的 page 下标调用 `sub_EA4480`；后者经 `sub_EA4370/sub_E97A40` 从 renderer 纹理资源项 `+0x28` 取得不透明 32 位 texture handle，并写入 runtime glyph `+0x18`。`sub_7C90A0` 把它原样复制到 layout record `+0x08`，上述 `sub_7C0D40` 再直接以该值做 equality 和 hash；`sub_7C7F90` 在 `0x7C824B` 取 batch node `+0x08` 的同一 handle，并于 `0x7C829C` 写入 draw packet 的 stage-0 texture 字段。因此字体切换后不能继续把 page 下标当成全局纹理身份，也不能只用 TextCast 的主字体选择 atlas。
+
+Rust 现在要求 `build_evidence_complete_initial_fennel_draws` 接收已经包含宿主先存资源的 `FennelFontSlotRegistry`。TextCast 主字体从该 registry 取得初始全局 slot；`$F[n]` 按 `n as u16` 查询同一 registry，裸 `$F` 回到主 slot。内部 glyph token 用 `(slot, code)` 的无碰撞组合维持 layout/vertex 两阶段查找，runtime glyph 自身仍携带调用方提供的不透明 texture token。编辑器为每个已上传的 `(RFZ 资源, atlas page)` 分配唯一 token，并保存 token 到实际 `RuhunaD3d9AtlasSet/page` 的路由；提交时逐 batch 选择对应字体和页面，不再使用会在不同字体间冲突的 `page+1` 约定。
+
+游戏 texture handle 的绝对数值来自进程内 renderer 资源项，不由 SRD/RFZ 文件决定；它与更早存在的宿主纹理生命周期一样属于外部运行时输入。Rust 精确保留 handle equality、32 位 wrapping hash、batch 顺序和路由语义，但不声称编辑器自行分配的数值等于某次原版进程的资源 handle。真实 RFZ 专项测试构造主字体、`$F[n]` 第二字体和裸 `$F` 复位，确认输出 batch 同时命中两个字体各自的 atlas token。完整 91 文件语料当前没有 `$F` token，因此原有 550 draw/32694 vertices 回归保持不变。
 
 ### FontManager 固定断行字符表
 
@@ -437,5 +445,5 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 - `sub_7C1F90` 写入 TextBoxObject `+0x12C/+0x34C` 的内部行元数据及其后续消费者；
 - `sub_7C4070/sub_7C5A20` 两个非默认排版器及其 mode 来源；
-- RFZ 资源注册到全局 Fennel slot 的实际分配/释放顺序、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
+- 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
 - SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源与 mode 6 显式 API 的真实调用点；

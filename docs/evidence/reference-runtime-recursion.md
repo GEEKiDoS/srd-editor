@@ -41,6 +41,18 @@
 
 因此目标层内的 RefCast 会继续产生新的独立层实例。同一个目标被两个 RefCast 引用时也会产生两个对象，而不是合并缓存。该循环没有深度上限或目标层去重；若同一目标层沿一条引用链再次出现，新复制层会持续产生，队列不会收敛。Rust 对这种图返回明确错误，不伪造游戏中不存在的截断深度。
 
+## 复制层与字体资源请求
+
+项目加载顺序已经继续闭合。`srd_player_impl_load_project` 在 `0xAABE55` 调用 `sub_44532C -> sub_AAC520`；后者于 `0xAAC60C` 执行 `srd_resolve_reference_scene_links`，所以独立 reference layer 在外层 `sub_AAC390` 调用字体 setup 之前已经构造完成。随后 `sub_AAC390` 才在 `0xAAC48D` 调用 `sub_44546C -> sub_AAE6C0`。
+
+这个先后关系并不意味着 copied TextCast 会再次请求字体。`sub_AAE6C0` 仍只从 `srd_player_get_runtime_scene_table` 取得 `SrPlayer::Impl+0x294`，遍历原始 scene/layer/CAST 表；它不读取 `ReferenceScene+0x24` 的复制层队列。`srd_create_independent_reference_layer` 虽然通过 `srd_build_runtime_layer` 为目标 parsed LAYR 建立全新 CAST，但其完整调用集中没有进入四槽字体 loader `sub_1088590`。
+
+复制出来的 TextCast 也不需要私有字体句柄。它从同一 parsed LAYR/CIMG/TEXT 初始化自己的文本状态；绘制时 `sub_AD9160 -> sub_AC5740` 使用该状态 `+0x128` 的 FONT 下标和 `+0x140` 的资源名，通过共享 renderer 资源树取得 TextBox/TextBoxObject。由于每个 reference target 都是原始运行时 scene 表中已经存在的 LAYR，该目标层的原始 TextCast 已被 `sub_AAE6C0` 遍历并请求相同资源。因此全局 FontManager 的请求计数按原始 TextCast 计算，不按 copied layer 实例数倍增。
+
+Rust 的 `collect_fennel_font_resource_requests` 明确保留这一边界。语料测试还会展开全部 reference runtime plan，并验证每个 copied TextCast 的主字体及三个已证明 CATR 字体名都已包含在原始 scene 表的请求集合中；不会用引用实例数重复分配全局 slot。
+
+完整 91 文件语料展开后共有 1527 个 copied TextCast，旧 53 文件集合共有 1449 个；两组的每一个字体使用都命中原始 scene 表的请求集合，且当前语料未出现 copied TextCast 的额外 CATR 字体使用。
+
 ## 更新递归
 
 `srd_update_cast_tree` (`0xAC0F80`) 完成普通子 CAST 递归后调用 CAST 虚表 `+0x74`。普通 CAST 返回空，SrRefCast 的 `srd_get_reference_cast_runtime_layer` (`0xADB810`) 返回 `+0x1F4`。存在 copied layer 时，更新器把当前 RefCast 的有效状态传给该层并调用 `srd_update_runtime_layer` (`0xABE710`)。
@@ -80,7 +92,8 @@ Rust 已实现：
 - 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
-- 未解析引用不创建层，以及无截断猜测的循环诊断。
+- 未解析引用不创建层，以及无截断猜测的循环诊断；
+- copied TextCast 不追加 FontResource 请求，并复用原始目标层已请求的共享字体资源。
 
 53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；按文件统计共有 186 个目标 SCN/LAYR 被两个或更多实例引用。全部文件均收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
 
