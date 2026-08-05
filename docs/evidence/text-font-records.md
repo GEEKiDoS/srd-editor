@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源与动态 mode 来源。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。CATR `FontParamData` 到实际 mode、低位 flags、monospaced、裁剪和 shadow effect 的初始运行时链也已闭合并接入。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链同样已实现。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源，以及 FontParam point/style 字段的完整 glyph 下游。
 
 ## TEXT 记录
 
@@ -221,7 +221,9 @@ TextBoxObject 构造函数 `sub_7BEB80` 先写 `+0x2D0=0`、`+0x2E0=3`、`+0x2E4
 - TEXT `0x78 bit 0` 清零时，`sub_7C8DA0` 再置 `0x04`，默认布局 flags 精确为 `7`；
 - 两者都由 `sub_7C90A0` 选择 `sub_7C1F90`；bit `0x04` 只控制首行横向 auto-fit，不改变布局器选择。
 
-mode 来源也已从实际 SrTextCast 构造链闭环。`sub_AD8270` 在 TextCast `+0x1F4` 建立文本状态，并对状态 `+0x100` 调用 `sub_AE3580`；后者把扩展对象 `+0x08` 清零，因此 `sub_AC6F50` 读取的状态 `+0x108`（TextCast 总偏移 `+0x2FC`）构造值精确为 `0`。`sub_AC6F50` 先用 `sub_7C8DA0(0,0)` 清除 flags `0x04/0x08`，再用 `sub_7C8E80(0,0,0,0)` 清除 `0x7CA0` 模式位。若 TEXT `0x78 bit 0` 置位，函数跳过 mode switch；否则 mode `0..6` 对 fresh TextBoxObject 的最终 flags 为：
+构造初值与 SRD 写入来源现已分别闭环。`sub_AD8270` 在 TextCast `+0x1F4` 建立文本状态，并对状态 `+0x100` 调用 `sub_AE3580`；后者把扩展对象 `+0x08` 清零，因此 mode 构造值精确为 `0`。随后 SrTextCast 虚方法 `sub_AD9BF0` 按 NODE CATR 的原始 72 字节记录顺序调用 `sub_AB8720`；名称精确为 `FontParamData` 时，`noWrapPutMode#N` 经 `atoi` 后夹到 `0..6` 并写扩展 `+0x08`，即状态 `+0x108` / TextCast `+0x2FC`。同字段还可被 `autoScalingHeight#True/False` 写为 1/0，后出现的 token 覆盖先前值。
+
+`sub_AC6F50` 先用 `sub_7C8DA0(0,0)` 清除 flags `0x04/0x08`，再用 `sub_7C8E80(0,0,0,0)` 清除 `0x7CA0` 模式位。若 TEXT `0x78 bit 0` 置位，函数跳过 mode switch；否则 mode `0..6` 在后续 FontParam flag setters 之前生成：
 
 | mode | flags | 裁剪 |
 | --- | --- | --- |
@@ -233,7 +235,7 @@ mode 来源也已从实际 SrTextCast 构造链闭环。`sub_AD8270` 在 TextCas
 | `5` | `0x6C03` | 是，Y 区间为 `0..height` |
 | `6` | `0x7C03` | 是，Y 区间为 `0..height` |
 
-大于 `6` 的值走 switch default，保留低位 `3`。Rust 的 `fennel_fresh_srd_textbox_flags` 直接保存这张分派表；当前首帧只使用已由构造链证明的 mode `0`，没有把尚未找到写入来源的动态 mode 自行绑定到 SRD 属性或动画通道。
+大于 `6` 的值走 switch default，保留低位 `3`。之后 `prohibition/wordWrap/monospaced` 总是分别覆盖 flags `0x01/0x02/0x200`；因此上表是 mode switch 中间状态，不是所有 CATR 应用后的最终值。Rust 的 `fennel_fresh_srd_textbox_flags` 保存上表，`fennel_srd_textbox_flags` 再复现三个 post-mode setters。完整 1,292 个 RFZ TextCast 的实际初始 mode 为 `0:1173, 2:12, 4:107`；最终 TextBox flags 有十种真实值，其中 119 个含裁剪 bit `0x400`，272 个含 monospaced bit `0x200`。
 
 TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+0x6C` 清零。`sub_F2C670` 把 TEXT `+0x1C`（属性 `0x7C`）写到 TextBoxObject `+0x100`，`sub_F3BD40` 的普通 token 分支再把它复制到输出 `+0x6C`；`sub_7C90A0` 最终写入 layout record `+0x20`。同理，`sub_F2C620` 把 TEXT `+0x1E`（属性 `0x41`）写到 TextBoxObject `+0xFC`，作为行距；`sub_F2C5B0` 从 TEXT `0x36` 写入横纵缩放。因此 `FennelStaticTextProperties` 的来源为：
 
@@ -361,7 +363,7 @@ TextBoxObject 构造函数 `sub_7BEB80` 请求至少 11 个桶，prime table 首
 
 Rust 现在要求 `build_evidence_complete_initial_fennel_draws` 接收已经包含宿主先存资源的 `FennelFontSlotRegistry`。TextCast 主字体从该 registry 取得初始全局 slot；`$F[n]` 按 `n as u16` 查询同一 registry，裸 `$F` 回到主 slot。内部 glyph token 用 `(slot, code)` 的无碰撞组合维持 layout/vertex 两阶段查找，runtime glyph 自身仍携带调用方提供的不透明 texture token。编辑器为每个已上传的 `(RFZ 资源, atlas page)` 分配唯一 token，并保存 token 到实际 `RuhunaD3d9AtlasSet/page` 的路由；提交时逐 batch 选择对应字体和页面，不再使用会在不同字体间冲突的 `page+1` 约定。
 
-游戏 texture handle 的绝对数值来自进程内 renderer 资源项，不由 SRD/RFZ 文件决定；它与更早存在的宿主纹理生命周期一样属于外部运行时输入。Rust 精确保留 handle equality、32 位 wrapping hash、batch 顺序和路由语义，但不声称编辑器自行分配的数值等于某次原版进程的资源 handle。真实 RFZ 专项测试构造主字体、`$F[n]` 第二字体和裸 `$F` 复位，确认输出 batch 同时命中两个字体各自的 atlas token。完整 91 文件语料当前没有 `$F` token，因此原有 550 draw/32694 vertices 回归保持不变。
+游戏 texture handle 的绝对数值来自进程内 renderer 资源项，不由 SRD/RFZ 文件决定；它与更早存在的宿主纹理生命周期一样属于外部运行时输入。Rust 精确保留 handle equality、32 位 wrapping hash、batch 顺序和路由语义，但不声称编辑器自行分配的数值等于某次原版进程的资源 handle。真实 RFZ 专项测试构造主字体、`$F[n]` 第二字体和裸 `$F` 复位，确认输出 batch 同时命中两个字体各自的 atlas token。完整 91 文件语料当前没有 `$F` token；接入 FontParam mode/shadow 后的初始帧回归为 551 draw/34326 vertices。
 
 ### FontManager 固定断行字符表
 
@@ -400,7 +402,7 @@ Rust 还保留 MAXSS 在 NaN/相等输入时选择第二操作数的语义，以
 - state `+0x130/+0x134` 随后由 `sub_AC5740` 进入三个非负提交量：`max((state.F4-state.130)*state.FC,0)`、`max(state.130*state.FC,0)`、`max(state.134*state.FC,0)`；state `+0x12C` 在 `sub_AD8D50` 的失败分支被复制到 state `+0xFC`。在更高层名字闭合前，Rust 保留这些偏移名，不把它们猜成通用 crop/scroll 属性；
 - `off_190E210` 的 SrTextCast 虚表不含此方法。当前 IDB 对 `0xADA300` 仅有 jump-island `0x45335F` 的跳转引用，而该 thunk 本身无代码或数据引用。因此现有游戏内部没有已证明的调用点，不能把它接到 SRD 首帧或动画轨道。
 
-Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固化上述完整状态变更，并增加 `build_fennel_normal_vertex_batches`：调用方必须显式提供 TextBox runtime flags 与 `+0x2E4/+0x2E8` clip size，函数才会在已经证明的 clipped/unclipped 顶点分支间选择。原有静态包装器仍固定 mode-zero 非裁剪行为；mode `2..5` 的写入源和任何自动属性映射仍留作证据 TODO。
+Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固化上述显式 API，并增加 `build_fennel_normal_vertex_batches`。CATR 首帧路径则由 `layout_fennel_static_srd_font_param` 接收顺序解析后的 `FontParamData`，自动生成最终 TextBox flags、选择默认/Flag20 排版，并把所属 CIMG 尺寸作为 `+0x2E4/+0x2E8` clip size。原有窄包装器仍保留用于逐个函数状态审计，不因新增上游而接受任意 flags。
 
 静态 mode-zero SrTextCast 的 normal-glyph 调用输入也已闭合：
 
@@ -411,7 +413,7 @@ Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固
 - TextBox position 由 `sub_AC6F50` 写为 `(-SrImage.origin_x,-SrImage.origin_y,0)`，Y 再加布局返回的 `+0x108`；
 - 2D 分支通过 `sub_604010` 计算 `TextBox.+0x2EC * local_translation` 后交给 `sub_7C10B0`；3D 分支给 CPU 顶点生成器的只有 local translation，`+0x2EC` 另交 renderer 状态。
 
-Rust 的 `build_fennel_static_unclipped_vertex_batches` 按已证明的 texture 前向链顺序执行上述 normal-glyph 路径，并校验 record/runtime glyph texture token 一致。完整 1292 条 RFZ TEXT 均成功建立批次，单条最多 1620 个顶点；当前语料构造输入未进入 effect。
+Rust 的初始 SRD draw 按已证明的 texture 前向链顺序执行 normal/effect 路径，并校验 record/runtime glyph texture token 一致。`diplayShadow=True` 的 110 个 TextCast 以初始 record bit `0x40000` 进入 effect-first buffer；颜色按 FontParam `shadowColor` 源字节 `2,1,0,3` 重排，位移取 `shadowX/Y`。完整语料 text `vertical=True` 为 0；14 个非默认 `pointX/pointY` 到最终 glyph resource/度量的下游仍需继续闭合。
 
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 
@@ -501,7 +503,7 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 此前直接用全局 RenderState reset 默认值 `1`（`D3DCULL_CCW`）会把 Fennel 的右上→左上→左下三角形全部剔除，导致顶点、alpha 和 viewport 均正常但 Composition 没有任何 changed pixel。这个失败只用于定位，最终实现使用上述二进制闭环得到的 `D3DCULL_CW`，没有保留诊断性的 `CULL_NONE`。
 
-真实语料初始帧审计得到 550 个可见 2D Fennel draw、32694 个顶点。`CHU_UI_Advertise_00_v10.srd` 的 smoke 为 1 draw、834 vertices，使用两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
+真实语料初始帧审计得到 551 个可见 2D Fennel draw、34326 个顶点。`CHU_UI_Advertise_00_v10.srd` 本身没有触发新增 mode/shadow 状态，smoke 仍为 1 draw、834 vertices、两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
 
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 
@@ -509,4 +511,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 - `sub_7C5A20` Flag40 排版器及 flags bit `0x40` 的真实写入来源；
 - 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- SrTextCast state `+0x108` 的 mode `2..5` 实际写入来源与 mode 6 显式 API 的真实调用点；
+- FontParam `pointX/pointY` 等 style 字段到 FontObject `+0x50..+0x64` 后的 glyph resource/度量下游，以及 mode 6 显式 API 的真实调用点；

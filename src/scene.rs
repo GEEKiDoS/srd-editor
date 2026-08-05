@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::animation::AnimationDefinition;
-use crate::attribute::{CastAttributeList, ExtParamData};
+use crate::attribute::{CastAttributeList, ExtParamData, FontParamData};
 use crate::camera::CameraDefinition;
 use crate::csli::{CsliDefinition, parent_cell_center_offset};
 use crate::image::ImageDefinition;
@@ -525,6 +525,11 @@ impl Layer {
     pub fn ext_param_for_node(&self, node_index: usize) -> Option<&ExtParamData> {
         let list_index = self.cast_attribute_list_by_node.get(node_index)?.as_ref()?;
         self.cast_attribute_lists.get(*list_index)?.ext_param()
+    }
+
+    pub fn font_param_for_node(&self, node_index: usize) -> Option<FontParamData> {
+        let list_index = self.cast_attribute_list_by_node.get(node_index)?.as_ref()?;
+        self.cast_attribute_lists.get(*list_index)?.font_param()
     }
 
     pub fn build_hierarchy(&self) -> Result<Hierarchy, SceneError> {

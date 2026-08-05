@@ -66,6 +66,25 @@ runtime CAST + 0x198 == SrImage(+0xF8) + 0xA0
 
 `srd_render_slice_cast` 在 `0xADA9ED` 明确计算 `CAST+0xF8` 并传给 `srd_select_image_render_preset`；后者在 `0xAC6D58` 读取参数 `+0xA0`，非负时原样提交给 `ceylon_set_draw_render_preset_id`。相同 selector 也由 CIMG、CNUM 等图像型路径调用。因此 `blendMode#N -> N+33` 不是名称推断，而是 `CATR -> type 30 -> CAST+0x198 -> SrImage+0xA0 -> draw packet preset` 的完整闭环。
 
+## FontParamData 与 SrTextCast
+
+`FontParamData` 不会像 `ExtParamData` 一样在通用 CATR 解析阶段转换为 type 30。SrTextCast 的虚方法 `sub_AD9BF0` 遍历 NODE `+0x44` 的原始 72 字节记录，固定把目标设为 `SrTextCast+0x2F4`，并按记录顺序调用 `sub_AB8720`。后者只有在名称与 `FontParamData` 完全相等时才把字符串先按逗号、再按 `#` 分词；每项至少需要名称和值两个字段，额外字段被忽略。
+
+扩展对象由 `sub_AE3580` 初始化。已闭合的字段、默认值和 token 为：
+
+| 扩展偏移 | 默认值 | token / 写入规则 |
+| --- | ---: | --- |
+| `+0x00..+0x03` | false | `vertical/prohibition/wordWrap/monospaced`，值仅在精确等于 `True` 时为真 |
+| `+0x04` | false | 游戏字符串拼写为 `diplayShadow` |
+| `+0x08` | 0 | `autoScalingHeight` 写 0/1；`noWrapPutMode` 用 `atoi` 后夹到 `0..6`；按 token 顺序后写覆盖前写 |
+| `+0x0C/+0x10` | 0/0 | `shadowX/shadowY` |
+| `+0x14/+0x18` | 32/32 | `pointX/pointY` |
+| `+0x1C/+0x20/+0x24/+0x28` | 0 | `outline/italic/bold/faceId` |
+| `+0x2C/+0x30/+0x34` | 40/2/2 | `scrollSpeed/scrollWait`；`+0x34` 当前没有命名 token |
+| `+0x38/+0x3C` | 0/0 | `shadowColor/outlineColor`；`atoi` 的 32 位结果按原字节保存 |
+
+`sub_AC6F50` 先根据 `+0x08` 执行 mode switch，随后总是把 `prohibition/wordWrap/monospaced` 分别写入 TextBox flags `0x01/0x02/0x200`，所以它们可以清掉构造器的低位。`vertical` 写 FontObject correction byte；`diplayShadow=True` 设置 record flag `0x40000`，把 `shadowX/Y` 转为 f32 写入 effect offset，并把 `shadowColor` 的源字节按 `2,1,0,3` 排列后复制到四个 effect color。Rust 按同样顺序解析记录并已把 mode、最终 flags、裁剪和 shadow effect 接到初始 Fennel draw；完整语料的 text `vertical=True` 为 0，因此尚未泛化未使用的 correction 分支。
+
 ## 层级键合成
 
 `srd_update_cast_tree` (`0xAC0F80`) 从父键开始，只在对应 enable bit 开启时替换字段：
@@ -85,6 +104,8 @@ if flags & 8: key bits 0..7  = layer_level
 - 29,138 个 `CATR` 列表，全部通过 `0x51` 挂接到合法 NODE；
 - 68,511 条通用属性记录；
 - 每个列表恰有一条 `ExtParamData`，共 29,138 条；
+- 17,825 个列表含 `FontParamData`；最终 mode 分布为 `0:17689, 1:1, 2:16, 4:119`；
+- 1,292 个 RFZ TextCast 的实际初始 mode 为 `0:1173, 2:12, 4:107`，其中 272 个 monospaced、110 个 shadow、0 个 vertical；
 - 28,863 条 render-preset override 为 `-1`；其余覆盖值分布在 `34..58` 和 `60`，没有把缺失的 `59` 自行补成合法样本值；
 - 图像型 CIMG/CSLI/CNUM 中，19,210 条 override 为 `-1`，274 条为非负覆盖；覆盖后有效 preset 除默认 `3/4/5/9` 外，确实出现 `34..58` 和 `60`。
 
@@ -92,6 +113,6 @@ Rust 语料测试同时保留旧 53 文件集合的独立精确统计，防止�
 
 ## 证据边界
 
-已经闭环：CATR 列表和 72 字节记录布局、NODE 挂接、四种已处理源 type、`ExtParamData` token、12 字节结构、SrImage preset 覆盖以及继承式层级键。
+已经闭环：CATR 列表和 72 字节记录布局、NODE 挂接、四种已处理源 type、`ExtParamData` token、12 字节结构、SrImage preset 覆盖、继承式层级键，以及 SrTextCast 对原始 `FontParamData` 的顺序解析与 mode/flags/shadow 输入。
 
-尚未闭环：其余命名 CATR 数据各自的业务结构、未处理源 type 的运行时对象、畸形/溢出 `atoi` 输入，以及 preset `34..60` 对最终 ShapeEnv shader 模块的逐项像素公式。后者必须继续由 Ceylon shader-key 与生成代码证明，不能仅凭 `blendMode` 名称猜测。
+尚未闭环：其余命名 CATR 数据各自的业务结构、未处理源 type 的运行时对象、畸形/溢出 `atoi` 输入、FontParam `pointX/pointY` 等 style 字段到最终 glyph resource/度量的完整下游，以及 preset `34..60` 对最终 ShapeEnv shader 模块的逐项像素公式。后者必须继续由 Ceylon shader-key 与生成代码证明，不能仅凭属性名称猜测。

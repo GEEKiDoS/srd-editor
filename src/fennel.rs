@@ -1,3 +1,4 @@
+use crate::attribute::FontParamData;
 use crate::projection::{Matrix4x4, identity_matrix4x4_game, mul_matrix4x4_game};
 use crate::render::{
     CeylonDrawPacketPresetState, CeylonRasterState, CeylonShaderKey, CeylonShaderKeyInput,
@@ -287,6 +288,25 @@ pub const fn fennel_fresh_srd_textbox_flags(text_flags: u32, mode: u32) -> u32 {
         6 => 0x7c00,
         _ => 0,
     }
+}
+
+/// Applies the three TextBox flag setters called by `sub_AC6F50` after its
+/// mode switch. These `FontParamData` values can clear the constructor's low
+/// bits as well as set the monospaced-layout bit `0x200`.
+pub const fn fennel_srd_textbox_flags(text_flags: u32, font_param: FontParamData) -> u32 {
+    let flags = fennel_fresh_srd_textbox_flags(text_flags, font_param.no_wrap_put_mode);
+    (flags & !(1 | 2 | 0x200))
+        | (font_param.prohibition as u32)
+        | ((font_param.word_wrap as u32) << 1)
+        | ((font_param.monospaced as u32) << 9)
+}
+
+/// Converts the color stored by the CATR parser into the AARRGGBB value
+/// written to TextBox `+0x80..+0x8C`. `sub_AC6F50` reads the source bytes in
+/// the exact order `2,1,0,3` before calling the four-byte setter.
+pub const fn fennel_font_param_effect_color(source: u32) -> u32 {
+    let bytes = source.to_le_bytes();
+    u32::from_le_bytes([bytes[2], bytes[1], bytes[0], bytes[3]])
 }
 
 /// The exact state touched by the non-virtual SrTextCast method at
@@ -924,6 +944,14 @@ pub struct FennelFlag20LayoutResult {
     pub field_358: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelSrdLayoutResult {
+    pub layout: FennelDefaultLayoutResult,
+    pub textbox_flags: u32,
+    /// Present only when the final flags dispatch to `sub_7C4070`.
+    pub field_358: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FennelDefaultLayoutError {
     InvalidLineTable,
@@ -1021,6 +1049,38 @@ pub enum FennelMode56LayoutError {
 pub enum FennelMode1LayoutError {
     TextFlagBypassesModeSwitch { text_flags: u32 },
     Layout(FennelDefaultLayoutError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelSrdLayoutError {
+    UnsupportedMode { mode: u32 },
+    Layout(FennelDefaultLayoutError),
+}
+
+impl std::fmt::Display for FennelSrdLayoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedMode { mode } => {
+                write!(formatter, "unsupported Fennel FontParamData mode {mode}")
+            }
+            Self::Layout(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FennelSrdLayoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsupportedMode { .. } => None,
+            Self::Layout(error) => Some(error),
+        }
+    }
+}
+
+impl From<FennelDefaultLayoutError> for FennelSrdLayoutError {
+    fn from(error: FennelDefaultLayoutError) -> Self {
+        Self::Layout(error)
+    }
 }
 
 impl std::fmt::Display for FennelMode1LayoutError {
@@ -1652,6 +1712,46 @@ where
         textbox_flags,
         glyph_metrics,
     )?)
+}
+
+/// Reproduces the actual SRD initialization path after all matching
+/// `FontParamData` records have been applied in CATR order. Altered low bits
+/// and `0x200` enter this API only through that binary-proven state object;
+/// the narrower mode-specific APIs keep their exact-state whitelists.
+pub fn layout_fennel_static_srd_font_param<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    font_param: FontParamData,
+    glyph_metrics: F,
+) -> Result<FennelSrdLayoutResult, FennelSrdLayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    if font_param.no_wrap_put_mode > 6 {
+        return Err(FennelSrdLayoutError::UnsupportedMode {
+            mode: font_param.no_wrap_put_mode,
+        });
+    }
+    let textbox_flags = fennel_srd_textbox_flags(input.text_flags, font_param);
+    let layout = layout_fennel_static_common(stream, input, textbox_flags, glyph_metrics)?;
+    let field_358 = if textbox_flags & 0x20 != 0 {
+        let mut minimum_line = 0usize;
+        for line_index in 1..layout.line_descriptions.len() {
+            if layout.line_descriptions[minimum_line].advance_width
+                > layout.line_descriptions[line_index].advance_width
+            {
+                minimum_line = line_index;
+            }
+        }
+        Some(minimum_line)
+    } else {
+        None
+    };
+    Ok(FennelSrdLayoutResult {
+        layout,
+        textbox_flags,
+        field_358,
+    })
 }
 
 fn layout_fennel_static_common<F>(
@@ -2927,6 +3027,74 @@ mod tests {
         );
         assert_eq!(fennel_layout_dispatch(0x60), FennelLayoutDispatch::Flag20);
         assert_eq!(fennel_layout_dispatch(0x40), FennelLayoutDispatch::Flag40);
+    }
+
+    #[test]
+    fn font_param_state_applies_post_mode_flags_and_effect_color_order() {
+        let font_param = FontParamData {
+            no_wrap_put_mode: 4,
+            prohibition: true,
+            word_wrap: true,
+            monospaced: true,
+            ..FontParamData::default()
+        };
+        assert_eq!(fennel_srd_textbox_flags(0, font_param), 0x2EA3);
+
+        let cleared = FontParamData {
+            no_wrap_put_mode: 4,
+            ..FontParamData::default()
+        };
+        assert_eq!(fennel_srd_textbox_flags(1, cleared), 0);
+        assert_eq!(fennel_font_param_effect_color(0xAABB_CCDD), 0xAADD_CCBB);
+    }
+
+    #[test]
+    fn srd_font_param_layout_uses_the_final_flag20_state() {
+        let mut stream = one_line_stream(&[1]);
+        let result = layout_fennel_static_srd_font_param(
+            &mut stream,
+            FennelStaticLayoutInput {
+                text_flags: 0,
+                box_width: 20.0,
+                box_height: 20.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                line_spacing: 0,
+            },
+            FontParamData {
+                no_wrap_put_mode: 2,
+                prohibition: true,
+                word_wrap: true,
+                monospaced: true,
+                ..FontParamData::default()
+            },
+            metrics,
+        )
+        .unwrap();
+        assert_eq!(result.textbox_flags, 0x1EA3);
+        assert_eq!(result.field_358, Some(0));
+
+        let mut invalid = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_srd_font_param(
+                &mut invalid,
+                FennelStaticLayoutInput {
+                    text_flags: 0,
+                    box_width: 20.0,
+                    box_height: 20.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    line_spacing: 0,
+                },
+                FontParamData {
+                    no_wrap_put_mode: 7,
+                    ..FontParamData::default()
+                },
+                metrics,
+            )
+            .unwrap_err(),
+            FennelSrdLayoutError::UnsupportedMode { mode: 7 }
+        );
     }
 
     #[test]

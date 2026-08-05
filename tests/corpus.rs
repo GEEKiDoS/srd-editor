@@ -672,6 +672,7 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     let mut files = Vec::new();
     collect_srd_files(&root, &mut files);
     files.sort();
+    let profile = srd_corpus_profile(files.len());
     let mut runtime_fonts = BTreeMap::new();
     let mut draw_count = 0usize;
     let mut vertex_count = 0usize;
@@ -734,6 +735,10 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     );
     assert!(draw_count > 0);
     assert!(vertex_count > 0);
+    if profile == CorpusProfile::Complete91 {
+        assert_eq!(draw_count, 551);
+        assert_eq!(vertex_count, 34_326);
+    }
 }
 
 #[test]
@@ -1100,6 +1105,17 @@ fn parses_cast_attribute_lists_and_ext_params() {
     let mut attached_node_count = 0usize;
     let mut attribute_count = 0usize;
     let mut ext_param_count = 0usize;
+    let mut font_param_count = 0usize;
+    let mut font_param_modes = std::collections::BTreeMap::new();
+    let mut initial_text_modes = std::collections::BTreeMap::new();
+    let mut initial_textbox_flags = std::collections::BTreeMap::new();
+    let mut initial_text_monospaced_count = 0usize;
+    let mut initial_text_shadow_count = 0usize;
+    let mut initial_text_vertical_count = 0usize;
+    let mut initial_text_prohibition_count = 0usize;
+    let mut initial_text_word_wrap_count = 0usize;
+    let mut initial_text_point_sizes = std::collections::BTreeMap::new();
+    let mut monospaced_font_param_count = 0usize;
     let mut render_preset_overrides = std::collections::BTreeMap::new();
     let mut image_override_counts = std::collections::BTreeMap::new();
     let mut effective_image_presets = std::collections::BTreeMap::new();
@@ -1121,6 +1137,13 @@ fn parses_cast_attribute_lists_and_ext_params() {
                             .or_insert(0usize) += 1;
                     }
                 }
+                if let Some(font_param) = list.font_param() {
+                    font_param_count += 1;
+                    *font_param_modes
+                        .entry(font_param.no_wrap_put_mode)
+                        .or_insert(0usize) += 1;
+                    monospaced_font_param_count += usize::from(font_param.monospaced);
+                }
             }
             for (node_index, list_index) in layer.cast_attribute_list_by_node.iter().enumerate() {
                 if let Some(list_index) = list_index {
@@ -1128,6 +1151,38 @@ fn parses_cast_attribute_lists_and_ext_params() {
                         layer.ext_param_for_node(node_index),
                         layer.cast_attribute_lists[*list_index].ext_param()
                     );
+                    assert_eq!(
+                        layer.font_param_for_node(node_index),
+                        layer.cast_attribute_lists[*list_index].font_param()
+                    );
+                }
+                if let Some(text) = layer.image_by_node[node_index]
+                    .as_ref()
+                    .and_then(|image| image.text.as_ref())
+                {
+                    let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
+                    let source_mode = font_param.no_wrap_put_mode;
+                    let active_mode = if text.field_78.unwrap_or(0) & 1 != 0 {
+                        0
+                    } else {
+                        source_mode
+                    };
+                    *initial_text_modes.entry(active_mode).or_insert(0usize) += 1;
+                    let mut textbox_flags =
+                        fennel_fresh_srd_textbox_flags(text.field_78.unwrap_or(0), source_mode);
+                    textbox_flags = (textbox_flags & !(1 | 2 | 0x200))
+                        | u32::from(font_param.prohibition)
+                        | (u32::from(font_param.word_wrap) << 1)
+                        | (u32::from(font_param.monospaced) << 9);
+                    *initial_textbox_flags.entry(textbox_flags).or_insert(0usize) += 1;
+                    initial_text_monospaced_count += usize::from(font_param.monospaced);
+                    initial_text_shadow_count += usize::from(font_param.display_shadow);
+                    initial_text_vertical_count += usize::from(font_param.vertical);
+                    initial_text_prohibition_count += usize::from(font_param.prohibition);
+                    initial_text_word_wrap_count += usize::from(font_param.word_wrap);
+                    *initial_text_point_sizes
+                        .entry((font_param.point_x, font_param.point_y))
+                        .or_insert(0usize) += 1;
                 }
                 let image = match layer.nodes[node_index].cast_type() {
                     Some(1) => layer.image_by_node[node_index].clone(),
@@ -1216,8 +1271,84 @@ fn parses_cast_attribute_lists_and_ext_params() {
     assert_eq!(attribute_count, expected_attributes);
     assert_eq!(ext_param_count, expected_lists);
     assert_eq!(render_preset_overrides, expected_overrides);
+    let (
+        expected_font_param_count,
+        expected_font_param_modes,
+        expected_initial_text_modes,
+        expected_initial_textbox_flags,
+        expected_monospaced_font_params,
+        expected_initial_text_counts,
+        expected_initial_point_sizes,
+    ) = match profile {
+        CorpusProfile::Legacy53 => (
+            13_731,
+            [(0, 13_613), (1, 1), (2, 14), (4, 103)]
+                .into_iter()
+                .collect(),
+            [(0, 1_133), (2, 10), (4, 94)].into_iter().collect(),
+            [
+                (0, 1),
+                (3, 577),
+                (7, 289),
+                (515, 5),
+                (516, 1),
+                (519, 260),
+                (7_331, 8),
+                (7_843, 2),
+                (11_425, 1),
+                (11_427, 93),
+            ]
+            .into_iter()
+            .collect(),
+            268,
+            (268, 85, 0, 1_235, 1_234),
+            [((28, 28), 12), ((32, 32), 1_225)].into_iter().collect(),
+        ),
+        CorpusProfile::Complete91 => (
+            17_825,
+            [(0, 17_689), (1, 1), (2, 16), (4, 119)]
+                .into_iter()
+                .collect(),
+            [(0, 1_173), (2, 12), (4, 107)].into_iter().collect(),
+            [
+                (0, 1),
+                (3, 601),
+                (7, 301),
+                (515, 6),
+                (516, 1),
+                (519, 263),
+                (7_331, 10),
+                (7_843, 2),
+                (11_425, 1),
+                (11_427, 106),
+            ]
+            .into_iter()
+            .collect(),
+            272,
+            (272, 110, 0, 1_290, 1_289),
+            [((21, 21), 2), ((28, 28), 12), ((32, 32), 1_278)]
+                .into_iter()
+                .collect(),
+        ),
+    };
+    assert_eq!(font_param_count, expected_font_param_count);
+    assert_eq!(font_param_modes, expected_font_param_modes);
+    assert_eq!(initial_text_modes, expected_initial_text_modes);
+    assert_eq!(initial_textbox_flags, expected_initial_textbox_flags);
+    assert_eq!(monospaced_font_param_count, expected_monospaced_font_params);
+    assert_eq!(
+        (
+            initial_text_monospaced_count,
+            initial_text_shadow_count,
+            initial_text_vertical_count,
+            initial_text_prohibition_count,
+            initial_text_word_wrap_count,
+        ),
+        expected_initial_text_counts
+    );
+    assert_eq!(initial_text_point_sizes, expected_initial_point_sizes);
     eprintln!(
-        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
+        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, FontParamData={font_param_count}, FontParam modes={font_param_modes:?}, initial text modes={initial_text_modes:?}, initial TextBox flags={initial_textbox_flags:?}, monospaced FontParamData={monospaced_font_param_count}, initial text monospaced={initial_text_monospaced_count}, shadow={initial_text_shadow_count}, vertical={initial_text_vertical_count}, prohibition={initial_text_prohibition_count}, word-wrap={initial_text_word_wrap_count}, point sizes={initial_text_point_sizes:?}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
     );
 }
 

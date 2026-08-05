@@ -3,10 +3,10 @@ use std::fmt;
 
 use crate::attribute::CastAttributeValue;
 use crate::fennel::{
-    FennelFontSlotRegistry, FennelFontSlotRequest, FennelOwnedTextureBatch, FennelResolvedGlyph,
-    FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
-    build_fennel_plain_record_stream_with_font_slots, build_fennel_static_unclipped_vertex_batches,
-    layout_fennel_static_default,
+    FENNEL_EFFECT_GLYPH_FLAG, FennelFontSlotRegistry, FennelFontSlotRequest, FennelNormalDrawInput,
+    FennelOwnedTextureBatch, FennelResolvedGlyph, FennelStaticTextProperties,
+    build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
+    fennel_font_param_effect_color, layout_fennel_static_srd_font_param,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -403,6 +403,12 @@ pub fn build_evidence_complete_initial_fennel_draws(
                 })?
                 .font_slot_id;
             let image_state = image.initial_runtime_state();
+            let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
+            if font_param.vertical {
+                return Err(SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}]/NODE[{node_index}] uses the unported FontParamData vertical correction"
+                )));
+            }
             let properties = FennelStaticTextProperties::from_text_definition(
                 text,
                 image_state.geometry.size[0],
@@ -438,22 +444,36 @@ pub fn build_evidence_complete_initial_fennel_draws(
             let mut stream = build_fennel_plain_record_stream_with_font_slots(
                 &text.text,
                 primary_slot,
-                properties.glyph_placement(0, 0, primary_colors),
+                properties.glyph_placement(
+                    0,
+                    if font_param.display_shadow {
+                        FENNEL_EFFECT_GLYPH_FLAG
+                    } else {
+                        0
+                    },
+                    primary_colors,
+                ),
                 2048,
                 resolve_glyph,
             )
             .map_err(|error| SrdDrawError(error.to_string()))?;
-            let layout = layout_fennel_static_default(&mut stream, properties.layout, |token| {
-                let (font_slot_id, code) = fennel_slot_code_from_token(token);
-                let resource_name = font_registry.resource_for_slot(font_slot_id)?;
-                let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
-                runtime_font.glyph(code).map(Into::into)
-            })
+            let layout = layout_fennel_static_srd_font_param(
+                &mut stream,
+                properties.layout,
+                font_param,
+                |token| {
+                    let (font_slot_id, code) = fennel_slot_code_from_token(token);
+                    let resource_name = font_registry.resource_for_slot(font_slot_id)?;
+                    let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
+                    runtime_font.glyph(code).map(Into::into)
+                },
+            )
             .map_err(|error| SrdDrawError(error.to_string()))?;
-            let vertex_build = build_fennel_static_unclipped_vertex_batches(
+            let effect_color = fennel_font_param_effect_color(font_param.shadow_color);
+            let vertex_build = build_fennel_normal_vertex_batches(
                 &stream,
                 -1,
-                FennelStaticUnclippedDrawInput {
+                FennelNormalDrawInput {
                     is_2d: true,
                     textbox_position: [
                         -image_state.geometry.origin[0],
@@ -461,9 +481,13 @@ pub fn build_evidence_complete_initial_fennel_draws(
                         0.0,
                     ],
                     textbox_scale: [properties.layout.scale_x, properties.layout.scale_y],
-                    textbox_vertical_offset: layout.textbox_vertical_offset,
+                    textbox_vertical_offset: layout.layout.textbox_vertical_offset,
                     textbox_transform: affine_to_matrix4x4(world_matrices[node_index]),
                     secondary_color,
+                    textbox_flags: layout.textbox_flags,
+                    clip_size: [properties.layout.box_width, properties.layout.box_height],
+                    effect_colors: [effect_color; 4],
+                    effect_offset: [font_param.shadow_x as f32, font_param.shadow_y as f32],
                 },
                 |token| {
                     let (font_slot_id, code) = fennel_slot_code_from_token(token);
