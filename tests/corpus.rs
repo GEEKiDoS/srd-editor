@@ -23,7 +23,9 @@ use srd_editor::fennel::{
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
-use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerRuntimeState};
+use srd_editor::reference_runtime::{
+    ProjectRuntime, ReferenceLayerParent, ReferenceLayerRuntimeState,
+};
 use srd_editor::render::{
     CeylonDrawPacketPresetState, apply_srd_image_field_0c_shader_bits,
     select_srd_image_render_preset,
@@ -38,7 +40,7 @@ use srd_editor::srd_draw::{
     FennelTextFontRole, SrdHostDrawContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
-    collect_fennel_font_resource_requests,
+    build_evidence_complete_initial_reference_image_draws, collect_fennel_font_resource_requests,
 };
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -332,6 +334,49 @@ fn builds_the_first_evidence_complete_srd_draw() {
             .camera
             .runtime_matrices(1920.0)
             .projection_view
+    );
+}
+
+#[test]
+fn reference_image_draws_are_a_forward_subsequence_of_structural_cast_order() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document = EditorDocument::load(
+        root.join("surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd"),
+    )
+    .unwrap();
+    let draws = build_evidence_complete_initial_reference_image_draws(
+        &document.project,
+        &document.textures,
+        0,
+        identity_host_context(),
+    )
+    .unwrap();
+    let copied_count = draws
+        .iter()
+        .filter(|draw| matches!(draw.owner, ReferenceLayerParent::ReferenceInstance(_)))
+        .count();
+    let plan = document.project.build_reference_runtime_plan().unwrap();
+    assert!(!plan.instances.is_empty());
+    let structural = plan.structural_cast_draw_order(&document.project, 0);
+    let mut cursor = 0usize;
+    for draw in &draws {
+        let relative = structural[cursor..]
+            .iter()
+            .position(|entry| {
+                entry.owner == draw.owner
+                    && entry.source.scene_index == draw.scene_index
+                    && entry.source.layer_index == draw.layer_index
+                    && entry.node_index == draw.node_index
+            })
+            .expect("image draw is not a forward subsequence of structural CAST traversal");
+        cursor += relative + 1;
+    }
+    eprintln!(
+        "reference image draws={}, copied={copied_count}",
+        draws.len()
     );
 }
 

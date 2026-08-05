@@ -92,6 +92,7 @@ Rust 已实现：
 - 2D 目标嵌入 3D RefCast 时的 Y 翻转；
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
 - `ProjectRuntime::compose_world_states` 已把上述组合应用到每个顶层 project layer 和每个独立 copied layer 的完整 CAST hierarchy：顶层从宿主 `FirstCalcMatrix` 起算，copied layer 从 owning RefCast 世界状态起算；CAST 的 `0x200/0x400/0x80000` 继承位、独立 runtime 2D/3D 模式和只发生一次的 copied-layer Y 翻转均进入结果，transform visibility 与 render gate 分栏保存；
+- 独立 ImageCast draw builder 已按 `structural_cast_draw_order` 逐 CAST 消费上述 owner/source/world/runtime SrImage 状态；测试覆盖“原始目标层 disabled、copied layer 由 RefCast 独立 enabled”时只生成 copied instance draw，并验证父 RefCast 与目标 CAST 平移进入最终顶点；
 - 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
@@ -103,4 +104,4 @@ Rust 已实现：
 
 2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
 
-后续仍需把已经闭合的结构顺序和世界/gate 结果接到每个 copied layer 的独立 Image/Text draw 数据及 target queue 统一提交，并实现源目标层对根 CAST 的附加抑制条件。本页不把已完成的动画、世界状态和顺序计划表述为已经完成 reference 像素渲染。
+后续仍需把已经闭合的结构顺序和世界/gate 结果接到 copied TextCast 独立 draw，并与当前 copied ImageCast 结果合并为 target queue 统一提交；同时仍需实现源目标层对根 CAST 的附加抑制条件。`CHU_UI_Common_BK_00_v11.srd` 的当前 100 个证据子集 Image draw 均来自原始层，copied 目标仍因未实现的特殊 CAST matrix 分支被整体排除，所以本页不把独立 Image builder 表述为已经完成 reference 像素渲染。

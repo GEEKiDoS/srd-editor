@@ -18,7 +18,9 @@ use crate::image::{
 use crate::projection::{
     Matrix4x4, identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
 };
-use crate::reference_runtime::{ProjectLayerRuntimeState, ProjectRuntime};
+use crate::reference_runtime::{
+    ProjectLayerRuntimeState, ProjectRuntime, ReferenceLayerParent, RuntimeWorldState,
+};
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
     CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw,
@@ -27,7 +29,7 @@ use crate::render::{
     select_srd_image_render_preset,
 };
 use crate::ruhuna::RuhunaRuntimeFont;
-use crate::scene::{Layer, Project};
+use crate::scene::{Layer, Project, ReferenceTarget};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
 use crate::texture::{TextureList, TextureSamplerState};
@@ -47,6 +49,7 @@ impl std::error::Error for SrdDrawError {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EvidenceCompleteSrdDraw {
+    pub owner: ReferenceLayerParent,
     pub scene_index: usize,
     pub layer_index: usize,
     pub node_index: usize,
@@ -69,6 +72,7 @@ pub struct EvidenceSrdTextureBinding {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvidenceCompleteFennelDraw {
+    pub owner: ReferenceLayerParent,
     pub scene_index: usize,
     pub layer_index: usize,
     pub node_index: usize,
@@ -301,6 +305,118 @@ pub fn build_evidence_complete_animation_set_image_draws(
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the runtime")))?;
     build_evidence_complete_image_draws(project, textures, scene_index, host, Some(runtime_layers))
+}
+
+/// Builds ImageCast draws for original and independently copied reference
+/// layers in the exact recursive CAST traversal order. The caller still must
+/// merge TextCast draws before using this as a complete Composition stream.
+pub fn build_evidence_complete_initial_reference_image_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    validate_host_draw_context(host)?;
+    let runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    build_evidence_complete_reference_image_draws_from_runtime(
+        project,
+        textures,
+        scene_index,
+        host,
+        &runtime,
+    )
+}
+
+pub fn build_evidence_complete_animation_set_reference_image_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    animation_set_index: usize,
+    frame: f32,
+    host: SrdHostDrawContext,
+) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    validate_host_draw_context(host)?;
+    let mut runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    runtime
+        .apply_animation_set(project, textures, scene_index, animation_set_index, frame)
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    build_evidence_complete_reference_image_draws_from_runtime(
+        project,
+        textures,
+        scene_index,
+        host,
+        &runtime,
+    )
+}
+
+fn build_evidence_complete_reference_image_draws_from_runtime(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    runtime: &ProjectRuntime,
+) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    let worlds = runtime
+        .compose_world_states(project, host.first_calc_matrix)
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    if project.scenes.get(scene_index).is_none() {
+        return Err(SrdDrawError(format!(
+            "scene index {scene_index} is outside the project"
+        )));
+    }
+
+    let external_inverse = inverse_matrix4x4_game(&host.target_projection_view);
+    let srd_projection_view = project
+        .camera
+        .runtime_matrices(host.target_render_size[0] as f32)
+        .projection_view;
+    let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+    let identity = identity_matrix4x4_game();
+    let mut packet_current_matrix = identity;
+    let mut draws = Vec::new();
+
+    for entry in runtime
+        .references
+        .plan
+        .structural_cast_draw_order(project, scene_index)
+    {
+        let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
+        if reject_special_matrix_branches(layer).is_err() {
+            continue;
+        }
+        let layer_worlds = worlds.layer(entry.owner).ok_or_else(|| {
+            SrdDrawError(format!(
+                "runtime draw owner {:?} has no composed world state",
+                entry.owner
+            ))
+        })?;
+        let cast_world = *layer_worlds.casts.get(entry.node_index).ok_or_else(|| {
+            SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{}] has no composed CAST world state",
+                entry.source.scene_index, entry.source.layer_index, entry.node_index
+            ))
+        })?;
+        let image_state = runtime_image_state_for_owner(&runtime, entry.owner, entry.node_index)?;
+        if let Some(draw) = build_evidence_complete_image_draw_for_runtime_cast(
+            textures,
+            entry.owner,
+            entry.source,
+            layer,
+            entry.node_index,
+            layer_worlds.is_2d,
+            cast_world,
+            image_state,
+            host,
+            camera_bridge,
+            identity,
+            &mut packet_current_matrix,
+        )? {
+            draws.push(draw);
+        }
+    }
+    Ok(draws)
 }
 
 /// Builds the initial, 2D RFZ TextCast subset whose normal-glyph layout,
@@ -741,6 +857,10 @@ fn build_evidence_complete_fennel_draws_impl(
             fixed_constants.vertex_c0_c3_world = identity;
             fixed_constants.vertex_c4_c7 = identity;
             draws.push(EvidenceCompleteFennelDraw {
+                owner: ReferenceLayerParent::ProjectLayer(crate::scene::ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                }),
                 scene_index,
                 layer_index,
                 node_index,
@@ -777,6 +897,188 @@ fn pack_fennel_record_color([red, green, blue, alpha]: [u8; 4]) -> u32 {
     // `sub_AC5740 -> sub_F25DA0` stores record colors as AARRGGBB, whose
     // little-endian bytes are B,G,R,A.
     u32::from_le_bytes([blue, green, red, alpha])
+}
+
+fn validate_host_draw_context(host: SrdHostDrawContext) -> Result<(), SrdDrawError> {
+    if host.target_render_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target render size must be non-zero, got {}x{}",
+            host.target_render_size[0], host.target_render_size[1]
+        )));
+    }
+    if host.target_screen_size.contains(&0) {
+        return Err(SrdDrawError(format!(
+            "target screen size must be non-zero, got {}x{}",
+            host.target_screen_size[0], host.target_screen_size[1]
+        )));
+    }
+    Ok(())
+}
+
+fn runtime_image_state_for_owner(
+    runtime: &ProjectRuntime,
+    owner: ReferenceLayerParent,
+    node_index: usize,
+) -> Result<crate::image::RuntimeImageState, SrdDrawError> {
+    let states = match owner {
+        ReferenceLayerParent::ProjectLayer(target) => runtime
+            .project_layers
+            .get(target.scene_index)
+            .and_then(|scene| scene.get(target.layer_index))
+            .map(|layer| layer.image_states.as_slice()),
+        ReferenceLayerParent::ReferenceInstance(instance_index) => runtime
+            .references
+            .layers
+            .get(instance_index)
+            .map(|layer| layer.image_states.as_slice()),
+    }
+    .ok_or_else(|| SrdDrawError(format!("runtime draw owner {owner:?} is unavailable")))?;
+    states.get(node_index).copied().ok_or_else(|| {
+        SrdDrawError(format!(
+            "runtime draw owner {owner:?} has no image state for NODE[{node_index}]"
+        ))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_evidence_complete_image_draw_for_runtime_cast(
+    textures: &TextureList,
+    owner: ReferenceLayerParent,
+    source: ReferenceTarget,
+    layer: &Layer,
+    node_index: usize,
+    is_2d: bool,
+    world: RuntimeWorldState,
+    image_state: crate::image::RuntimeImageState,
+    host: SrdHostDrawContext,
+    camera_bridge: Matrix4x4,
+    identity: Matrix4x4,
+    packet_current_matrix: &mut Matrix4x4,
+) -> Result<Option<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    let Some(image) = layer.image_by_node[node_index]
+        .as_ref()
+        .filter(|image| !image.creates_text_cast())
+    else {
+        return Ok(None);
+    };
+    if !world.visible || !world.render_gate {
+        return Ok(None);
+    }
+
+    let mut fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+        host.target_projection_view,
+        host.target_screen_size,
+    );
+    if is_2d {
+        fixed_constants.vertex_c0_c3_world = identity;
+        fixed_constants.vertex_c4_c7 = identity;
+        *packet_current_matrix = identity;
+    } else {
+        fixed_constants.vertex_c4_c7 = *packet_current_matrix;
+        fixed_constants.vertex_c0_c3_world = camera_bridge;
+        *packet_current_matrix = camera_bridge;
+    }
+
+    let preset =
+        select_srd_image_render_preset(image.flags, image_state.render_preset_override, false)
+            .ok_or_else(|| {
+                SrdDrawError(format!(
+                    "SCN[{}]/LAYR[{}]/NODE[{node_index}] does not select a proven render preset",
+                    source.scene_index, source.layer_index
+                ))
+            })?;
+    let slots = image
+        .resolve_texture_slots(
+            &image_state,
+            textures,
+            ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+            [false; 2],
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    let mut texture_bindings = [None; 3];
+    for (slot_index, destination) in texture_bindings.iter_mut().enumerate().take(2) {
+        match slots.slots[slot_index] {
+            Some(SrdTextureBindingSource::TextureList(texture_index)) => {
+                let sampler = slots.channels[slot_index].selected_sampler.ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{}]/LAYR[{}]/NODE[{node_index}] texture slot {slot_index} has no proven sampler",
+                        source.scene_index, source.layer_index
+                    ))
+                })?;
+                *destination = Some(EvidenceSrdTextureBinding {
+                    texture_index,
+                    sampler,
+                });
+            }
+            Some(SrdTextureBindingSource::ExplicitOverride) => continue,
+            None => {}
+        }
+    }
+    if slots
+        .slots
+        .iter()
+        .any(|slot| matches!(slot, Some(SrdTextureBindingSource::ExplicitOverride)))
+    {
+        return Ok(None);
+    }
+
+    let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+    packet.set_render_preset_id(preset);
+    packet.set_srd_quad_is_2d(is_2d);
+    apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
+    let mut renderer_counter = 0u8;
+    apply_srd_image_alpha_stencil_packet_fields(
+        &mut packet,
+        image_state.field_10,
+        image_state.field_14,
+        image_state.field_18,
+        0,
+        &mut renderer_counter,
+    );
+    apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
+
+    let shader_key = packet
+        .srd_quad_shader_key(slots.texture_present())
+        .srd_simple_shader_direct_contributions()
+        .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
+        .compact_key();
+    if embedded_simple_shader_pair(&shader_key).is_none() {
+        return Ok(None);
+    }
+    let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
+    if blend.alpha_test_enabled || packet.flags_0c & 0x100 != 0 {
+        return Ok(None);
+    }
+
+    let local_positions = image
+        .build_quad_with_geometry(image_state.geometry, is_2d)
+        .positions;
+    let positions = local_positions.map(|point| world.matrix.transform_point_game(point));
+    let quad = image.build_render_quad_from_positions(
+        positions,
+        image_state.coordinate_state(ImageReferenceChannel::Cref),
+        slots.channels[0],
+        slots.channels[1],
+        world.multiply_color,
+        world.additive_color,
+    );
+    let mut raster = CeylonRasterState::default();
+    raster.apply_draw_packet(packet);
+    Ok(Some(EvidenceCompleteSrdDraw {
+        owner,
+        scene_index: source.scene_index,
+        layer_index: source.layer_index,
+        node_index,
+        is_2d,
+        shader_key,
+        quad,
+        packet,
+        fixed_constants,
+        blend,
+        raster,
+        depth: CeylonDepthState::from_draw_flags(packet.draw_flags_00),
+        texture_bindings,
+    }))
 }
 
 fn build_evidence_complete_image_draws(
@@ -972,6 +1274,10 @@ fn build_evidence_complete_image_draws(
             let mut raster = CeylonRasterState::default();
             raster.apply_draw_packet(packet);
             draws.push(EvidenceCompleteSrdDraw {
+                owner: ReferenceLayerParent::ProjectLayer(crate::scene::ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                }),
                 scene_index,
                 layer_index,
                 node_index,
@@ -1072,7 +1378,8 @@ mod tests {
     use crate::attribute::{CastAttribute, CastAttributeList};
     use crate::camera::CameraDefinition;
     use crate::image::ImageDefinition;
-    use crate::scene::{NodeRecord, Scene};
+    use crate::reference::ReferenceDefinition;
+    use crate::scene::{NodeRecord, RawTransform, Scene};
     use crate::text::{FontDefinition, TextDefinition};
 
     fn text_image(node_index: i32, font_index: i32) -> ImageDefinition {
@@ -1114,6 +1421,29 @@ mod tests {
             first_child_index: -1,
             next_sibling_index: -1,
             field_a0: None,
+        }
+    }
+
+    fn plain_image(node_index: i32) -> ImageDefinition {
+        ImageDefinition {
+            flags: 0,
+            width: 100.0,
+            height: 50.0,
+            custom_origin: [0.0; 2],
+            origin_mode: 0,
+            vertex_colors: [[0xff; 4]; 4],
+            cref_index: -1,
+            cref_count: 0,
+            crefs: Vec::new(),
+            field_4c: 0,
+            cre1_index: -1,
+            cre1_count: 0,
+            cre1s: Vec::new(),
+            coordinate_offsets: [[0.0; 2]; 2],
+            field_a1: 0,
+            node_index,
+            has_text_child: false,
+            text: None,
         }
     }
 
@@ -1228,5 +1558,93 @@ mod tests {
         assert_eq!(input.default_d, FENNEL_DEFAULT_D_VALUE);
         assert_eq!(input.repeat_space_count, FENNEL_DEFAULT_REPEAT_SPACE_COUNT);
         assert_eq!(input.field_f4.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn reference_image_builder_draws_the_independent_copy_at_the_refcast_position() {
+        let root = Layer {
+            name: b"root".to_vec(),
+            flags: 0x100,
+            animation_count: 0,
+            animations: Vec::new(),
+            field_23: Vec::new(),
+            nodes: vec![NodeRecord {
+                type_flags: Some(3),
+                ..node()
+            }],
+            transforms: vec![RawTransform::Trs2(SpatialTransform {
+                translation: [10.0, 20.0, 0.0],
+                ..SpatialTransform::default()
+            })],
+            image_by_node: vec![None],
+            number_by_node: vec![None],
+            reference_by_node: vec![Some(ReferenceDefinition {
+                source_name: b"scene".to_vec(),
+                layer_name: b"target".to_vec(),
+                animation_enabled: 0,
+                animation_name: Vec::new(),
+                default_frame: 0.0,
+                node_index: 0,
+            })],
+            csli_by_node: vec![None],
+            cast_attribute_lists: Vec::new(),
+            cast_attribute_list_by_node: vec![None],
+        };
+        // The source target is disabled in the original runtime scene table;
+        // its copied layer is independently enabled by reference binding.
+        let target = Layer {
+            name: b"target".to_vec(),
+            flags: 0,
+            animation_count: 0,
+            animations: Vec::new(),
+            field_23: Vec::new(),
+            nodes: vec![node()],
+            transforms: vec![RawTransform::Trs2(SpatialTransform {
+                translation: [5.0, 7.0, 0.0],
+                ..SpatialTransform::default()
+            })],
+            image_by_node: vec![Some(plain_image(0))],
+            number_by_node: vec![None],
+            reference_by_node: vec![None],
+            csli_by_node: vec![None],
+            cast_attribute_lists: Vec::new(),
+            cast_attribute_list_by_node: vec![None],
+        };
+        let project = Project {
+            name: b"project".to_vec(),
+            declared_scene_count: 1,
+            declared_font_count: 0,
+            camera: CameraDefinition::default(),
+            scenes: vec![Scene {
+                name: b"scene".to_vec(),
+                declared_layer_count: 2,
+                declared_animation_set_count: 0,
+                width: 1920.0,
+                height: 1080.0,
+                layers: vec![root, target],
+                animation_sets: Vec::new(),
+            }],
+            fonts: Vec::new(),
+        };
+        let draws = build_evidence_complete_initial_reference_image_draws(
+            &project,
+            &TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            },
+            0,
+            SrdHostDrawContext::new(
+                Affine3x4::IDENTITY,
+                identity_matrix4x4_game(),
+                [1920, 1080],
+                [1920, 1080],
+            ),
+        )
+        .unwrap();
+        assert_eq!(draws.len(), 1);
+        assert_eq!(draws[0].owner, ReferenceLayerParent::ReferenceInstance(0));
+        assert_eq!((draws[0].scene_index, draws[0].layer_index), (0, 1));
+        assert_eq!(draws[0].node_index, 0);
+        assert_eq!(draws[0].quad.vertices[0].position, [15.0, 27.0, 0.0]);
     }
 }
