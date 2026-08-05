@@ -7,9 +7,10 @@ use crate::fennel::{
     FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelResolvedGlyph,
     FennelSrdDrawPreparation, FennelSrdDrawPreparationInput, FennelStaticTextProperties,
     build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
-    build_fennel_srd_repeated_text, fennel_font_param_effect_color, fennel_srd_font_style,
-    layout_fennel_static_srd_explicit_flags, layout_fennel_static_srd_font_param,
-    measure_fennel_srd_text_size_mode0, prepare_fennel_srd_draw, prepare_fennel_srd_runtime_text,
+    build_fennel_srd_repeated_text, fennel_default_draw_packet, fennel_font_param_effect_color,
+    fennel_srd_font_style, layout_fennel_static_srd_explicit_flags,
+    layout_fennel_static_srd_font_param, measure_fennel_srd_text_size_mode0,
+    prepare_fennel_srd_draw, prepare_fennel_srd_runtime_text,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -32,6 +33,7 @@ use crate::ruhuna::RuhunaRuntimeFont;
 use crate::scene::{Layer, Project, ReferenceTarget};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::embedded_simple_shader_pair;
+use crate::target_pass::{EvidenceScenePassProfile, build_evidence_srd_scene_submission_indices};
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::transform::{Affine3x4, SpatialTransform};
 use crate::{csli::add_color_saturating_game, csli::multiply_color_game};
@@ -78,6 +80,7 @@ pub struct EvidenceCompleteFennelDraw {
     pub node_index: usize,
     pub font_name: Vec<u8>,
     pub is_2d: bool,
+    pub packet: CeylonDrawPacketPresetState,
     pub fixed_constants: CeylonSrdFixedShaderConstants,
     pub batches: Vec<FennelOwnedTextureBatch>,
 }
@@ -105,6 +108,56 @@ impl EvidenceCompleteRuntimeCastDraw {
             Self::Fennel(draw) => draw.node_index,
         }
     }
+}
+
+/// One logical draw command before the still-open adjacent-packet merge. An
+/// image contributes one command; Fennel contributes one command per texture
+/// batch in the exact `sub_7C7F90` traversal order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRuntimeTargetCommandSource {
+    Image {
+        runtime_draw_index: usize,
+    },
+    FennelBatch {
+        runtime_draw_index: usize,
+        batch_index: usize,
+    },
+}
+
+/// Applies an already selected target's ScenePass/SceneModel profile to the
+/// runtime CAST stream. The caller remains responsible for proving that the
+/// target filter admitted these commands; this function only closes the exact
+/// target-local classification and stable flush order.
+pub fn build_evidence_runtime_target_submission(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    profile: &EvidenceScenePassProfile,
+) -> Result<Vec<EvidenceRuntimeTargetCommandSource>, SrdDrawError> {
+    let mut sources = Vec::new();
+    let mut packets = Vec::new();
+    for (runtime_draw_index, draw) in draws.iter().enumerate() {
+        match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(draw) => {
+                sources.push(EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index });
+                packets.push(draw.packet);
+            }
+            EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
+                for batch_index in 0..draw.batches.len() {
+                    sources.push(EvidenceRuntimeTargetCommandSource::FennelBatch {
+                        runtime_draw_index,
+                        batch_index,
+                    });
+                    packets.push(draw.packet);
+                }
+            }
+        }
+    }
+
+    let submission_indices = build_evidence_srd_scene_submission_indices(&packets, profile)
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    Ok(submission_indices
+        .into_iter()
+        .map(|command_index| sources[command_index])
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1172,6 +1225,7 @@ fn build_evidence_complete_fennel_draws_impl(
                 node_index,
                 font_name: font.name.clone(),
                 is_2d: true,
+                packet: fennel_default_draw_packet(true),
                 fixed_constants,
                 batches: vertex_build.batches,
             });
@@ -1454,6 +1508,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
         node_index,
         font_name: font.name.clone(),
         is_2d: true,
+        packet: fennel_default_draw_packet(true),
         fixed_constants,
         batches: vertex_build.batches,
     }))
@@ -2432,5 +2487,38 @@ mod tests {
             EvidenceCompleteRuntimeCastDraw::Fennel(draw)
                 if draw.owner == ReferenceLayerParent::ReferenceInstance(1)
         ));
+
+        let expected_target_commands = runtime_cast_draws
+            .iter()
+            .enumerate()
+            .flat_map(|(runtime_draw_index, draw)| match draw {
+                EvidenceCompleteRuntimeCastDraw::Image(_) => {
+                    vec![EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index }]
+                }
+                EvidenceCompleteRuntimeCastDraw::Fennel(draw) => (0..draw.batches.len())
+                    .map(
+                        |batch_index| EvidenceRuntimeTargetCommandSource::FennelBatch {
+                            runtime_draw_index,
+                            batch_index,
+                        },
+                    )
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let profile = crate::game_host::CHUSAN_MAIN_SCENE
+            .scene_pass_profile()
+            .unwrap();
+        assert_eq!(
+            build_evidence_runtime_target_submission(&runtime_cast_draws, &profile).unwrap(),
+            expected_target_commands
+        );
+        for draw in &runtime_cast_draws {
+            let packet = match draw {
+                EvidenceCompleteRuntimeCastDraw::Image(draw) => draw.packet,
+                EvidenceCompleteRuntimeCastDraw::Fennel(draw) => draw.packet,
+            };
+            assert_eq!(packet.flags_60 & 0x2000, 0);
+            assert_eq!(packet.flags_64, 0);
+        }
     }
 }

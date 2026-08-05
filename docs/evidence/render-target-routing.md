@@ -105,7 +105,7 @@ ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch 
 
 这仍不等于唯一最终 GPU 顺序。后续队列容器现已闭环：`sub_64BAB0` 选择第一个匹配 rule index，`sea::SceneModelModule` 对每个 pass 稳定前向追加，target 再按 32 个 EntryInfo 的数组顺序及各自 inclusive pass range 前向提交；这条链不存在额外 comparator sort。完整指令证据与 Rust planner 见 [`render-target-pass-order.md`](render-target-pass-order.md)。
 
-type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。尚缺的是 command 的实际 depth/order 宿主输入、active filter 集合、其他 target/common 宿主配置，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此当前 Rust 的 `EvidenceCompleteRuntimeCastDraw` 仍只声称复现“CAST render invocation / initial enqueue sequence”，不得直接作为 D3D9Ex 最终提交列表。
+type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。普通 Image/Fennel packet 还已证明始终是 class 3 / attribute group 0，而默认第一项 Back2DPass 对完整 u16 order 域恒真，所以这部分不再需要伪造 depth/order。Rust 可把一个 Image 和每个 Fennel texture batch 展平为逻辑 command，并为“已被 target filter 接纳”的 MainScene/BgScene 输入生成精确 target-local 顺序。尚缺的是 active filter 集合、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation / initial enqueue sequence，新 planner 也不宣称完整当帧 GPU packet 数或宿主 target 选择。
 
 ## Advertise 的已证明结论
 

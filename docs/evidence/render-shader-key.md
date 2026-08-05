@@ -12,6 +12,7 @@
 - packet `+0x2C` = `0`；
 - packet `+0x30/+0x34/+0x38` 三个纹理槽清零；
 - packet `+0x60` 清零后设置 bit `0x4000`；
+- packet `+0x64` 清零；
 - render preset setter 后续会更新 packet `+0x00` 低六位及 `+0x60` 的派生位。
 
 该构造函数写入 draw flags `0x00AFE000`，`srd_construct_renderer` 随后以 `0xFF79FFFF` 清除 SRD 不保留的位，因此 SRD renderer 的初始 packet `+0x00` 为 `0x0029E000`。packet `+0x58` 低字节为 `0xFF`，`+0x60` 为 `0x4000`。Rust 的 `CeylonDrawPacketPresetState::srd_renderer_initial` 保存这组已经由构造链闭环的初值。

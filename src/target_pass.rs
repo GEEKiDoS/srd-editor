@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::render::CeylonDrawPacketPresetState;
+
 /// The target renderer walks exactly 32 EntryInfo records when it flushes a
 /// scene model module.
 pub const SCENE_TARGET_ENTRY_COUNT: usize = 32;
@@ -165,6 +167,83 @@ pub fn select_evidence_scene_pass(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceScenePassInvariantError(pub String);
+
+impl fmt::Display for EvidenceScenePassInvariantError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EvidenceScenePassInvariantError {}
+
+/// Selects a pass only when the forward rule scan has a provably identical
+/// result for every possible command depth and every `u16` order value.
+///
+/// This is intentionally conservative. A depth-dependent condition, or an
+/// order condition that divides the `u16` domain, stops the proof instead of
+/// substituting an editor-owned value. Rules that are impossible over the
+/// complete domain are skipped; the first universally true rule is selected.
+pub fn select_evidence_scene_pass_without_depth_or_order(
+    rules: &[EvidenceScenePassRule],
+    command_class: u32,
+    attribute_group: u32,
+) -> Result<Option<EvidenceSelectedScenePass>, EvidenceScenePassInvariantError> {
+    if command_class >= 8 {
+        return Ok(None);
+    }
+
+    for (pass_index, rule) in rules.iter().copied().enumerate() {
+        if rule.attribute_group != attribute_group
+            || !class_selector_matches(rule.class_selector, command_class)
+        {
+            continue;
+        }
+
+        match condition_domain(rule) {
+            EvidenceConditionDomain::Never => continue,
+            EvidenceConditionDomain::Always => {
+                return Ok(Some(EvidenceSelectedScenePass {
+                    pass_index,
+                    stores_depth: rule.depth_store_selector < 8,
+                }));
+            }
+            EvidenceConditionDomain::InputDependent => {
+                return Err(EvidenceScenePassInvariantError(format!(
+                    "matching rule {pass_index} depends on unprovided depth/order input"
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceConditionDomain {
+    Never,
+    Always,
+    InputDependent,
+}
+
+fn condition_domain(rule: EvidenceScenePassRule) -> EvidenceConditionDomain {
+    match rule.condition_mode {
+        0 => EvidenceConditionDomain::Always,
+        // A NaN threshold makes either comparison false for every f32 input.
+        // All other depth thresholds retain at least one input-dependent edge,
+        // including infinities and NaN command depths.
+        1 | 2 if rule.depth_threshold.is_nan() => EvidenceConditionDomain::Never,
+        1 | 2 => EvidenceConditionDomain::InputDependent,
+        3 if rule.order_threshold == 0 => EvidenceConditionDomain::Always,
+        3 if rule.order_threshold > u32::from(u16::MAX) => EvidenceConditionDomain::Never,
+        3 => EvidenceConditionDomain::InputDependent,
+        4 if rule.order_threshold == 0 => EvidenceConditionDomain::Never,
+        4 if rule.order_threshold > u32::from(u16::MAX) => EvidenceConditionDomain::Always,
+        4 => EvidenceConditionDomain::InputDependent,
+        _ => EvidenceConditionDomain::Never,
+    }
+}
+
 const fn class_selector_matches(selector: u32, command_class: u32) -> bool {
     selector == command_class
         || selector == 6
@@ -319,6 +398,58 @@ pub fn build_evidence_scene_model_submission_indices(
         }
     }
     Ok(submission)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceSrdSceneSubmissionError(pub String);
+
+impl fmt::Display for EvidenceSrdSceneSubmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EvidenceSrdSceneSubmissionError {}
+
+/// Classifies already target-admitted normal SRD/Fennel commands and applies
+/// the target's exact SceneModelModule flush order without inventing depth or
+/// order values. Each packet must reach a pass invariant over those two inputs.
+///
+/// Target-filter activation and adjacent packet merging happen outside this
+/// helper; the returned indices preserve the logical command order on either
+/// side of a merge but do not claim a final GPU packet count.
+pub fn build_evidence_srd_scene_submission_indices(
+    packets: &[CeylonDrawPacketPresetState],
+    profile: &EvidenceScenePassProfile,
+) -> Result<Vec<usize>, EvidenceSrdSceneSubmissionError> {
+    let mut classified_pass_indices = Vec::with_capacity(packets.len());
+    for (command_index, packet) in packets.iter().copied().enumerate() {
+        let command_class = classify_evidence_srd_type1_command(packet.flags_60);
+        let attribute_group = evidence_type1_attribute_group(packet.flags_64);
+        let selected = select_evidence_scene_pass_without_depth_or_order(
+            &profile.rules,
+            command_class,
+            attribute_group,
+        )
+        .map_err(|error| {
+            EvidenceSrdSceneSubmissionError(format!(
+                "SRD command {command_index} cannot be classified without guessing: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            EvidenceSrdSceneSubmissionError(format!(
+                "SRD command {command_index} with class {command_class} and attribute group {attribute_group} matches no scene pass"
+            ))
+        })?;
+        classified_pass_indices.push(selected.pass_index);
+    }
+
+    build_evidence_scene_model_submission_indices(
+        &classified_pass_indices,
+        profile.rules.len(),
+        &profile.target_entries,
+    )
+    .map_err(|error| EvidenceSrdSceneSubmissionError(error.0))
 }
 
 #[cfg(test)]
@@ -554,6 +685,64 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn default_air_scene_selection_is_proven_without_depth_or_order_inputs() {
+        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        assert_eq!(
+            select_evidence_scene_pass_without_depth_or_order(&profile.rules, 3, 0),
+            Ok(Some(EvidenceSelectedScenePass {
+                pass_index: 0,
+                stores_depth: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn invariant_selector_rejects_a_rule_that_splits_the_order_domain() {
+        let rule = EvidenceScenePassRule {
+            class_selector: 3,
+            attribute_group: 0,
+            condition_mode: 4,
+            depth_store_selector: 5,
+            depth_threshold: 0.0,
+            order_threshold: 100,
+        };
+        let error = select_evidence_scene_pass_without_depth_or_order(&[rule], 3, 0).unwrap_err();
+        assert!(error.0.contains("depends on unprovided depth/order input"));
+    }
+
+    #[test]
+    fn normal_image_and_fennel_packets_share_the_exact_default_air_pass() {
+        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        let mut image = CeylonDrawPacketPresetState::srd_renderer_initial();
+        image.set_render_preset_id(4);
+        image.set_srd_quad_is_2d(false);
+        let fennel = CeylonDrawPacketPresetState {
+            draw_flags_00: 0x02af_e003,
+            flags_58: 0xff,
+            flags_60: 0x40a0,
+            ..CeylonDrawPacketPresetState::default()
+        };
+
+        assert_eq!(image.flags_64, 0);
+        assert_eq!(fennel.flags_64, 0);
+        assert_eq!(
+            build_evidence_srd_scene_submission_indices(&[image, fennel], &profile).unwrap(),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn class_four_packet_is_not_forced_into_an_unproven_default_pass() {
+        let profile = build_evidence_scene_pass_profile(&EVIDENCE_AIR_SCENE_BASE_PASSES).unwrap();
+        let packet = CeylonDrawPacketPresetState {
+            flags_60: 0x6000,
+            ..CeylonDrawPacketPresetState::srd_renderer_initial()
+        };
+        let error = build_evidence_srd_scene_submission_indices(&[packet], &profile).unwrap_err();
+        assert!(error.0.contains("matches no scene pass"));
     }
 
     #[test]

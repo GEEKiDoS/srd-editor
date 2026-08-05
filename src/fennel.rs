@@ -903,6 +903,7 @@ pub const fn fennel_default_draw_packet(is_2d: bool) -> CeylonDrawPacketPresetSt
         field_2c: 0,
         flags_58: 0xff,
         flags_60: FENNEL_DEFAULT_FLAGS_60 | ((is_2d as u32) << 7),
+        flags_64: 0,
     }
 }
 
@@ -3495,6 +3496,8 @@ mod tests {
         assert_eq!(fennel_default_draw_packet(false).encoded_preset_id(), 3);
         assert_eq!(fennel_default_draw_packet(false).flags_60, 0x4020);
         assert_eq!(fennel_default_draw_packet(true).flags_60, 0x40A0);
+        assert_eq!(fennel_default_draw_packet(false).flags_64, 0);
+        assert_eq!(fennel_default_draw_packet(true).flags_64, 0);
         assert_eq!(three_d.low, 0x0036_BFB0);
         assert_eq!(three_d.high, 0);
         assert_eq!(two_d.low, 0x0036_BFB8);

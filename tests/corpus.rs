@@ -20,6 +20,7 @@ use srd_editor::fennel::{
     layout_fennel_static_flag20, layout_fennel_static_mode1, layout_fennel_static_mode56,
     tokenize_fennel_plain_text,
 };
+use srd_editor::game_host::CHUSAN_MAIN_SCENE;
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
@@ -43,6 +44,7 @@ use srd_editor::srd_draw::{
     build_evidence_complete_initial_reference_fennel_draws,
     build_evidence_complete_initial_reference_image_draws, collect_fennel_font_resource_requests,
 };
+use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
 use srd_editor::vtbf::{Block, SrdFile};
@@ -289,6 +291,12 @@ fn builds_the_first_evidence_complete_srd_draw() {
         identity_host_context(),
     )
     .unwrap();
+    let target_profile = CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap();
+    let packets = draws.iter().map(|draw| draw.packet).collect::<Vec<_>>();
+    assert_eq!(
+        build_evidence_srd_scene_submission_indices(&packets, &target_profile).unwrap(),
+        (0..draws.len()).collect::<Vec<_>>()
+    );
     assert_eq!(draws.len(), 1);
     let draw = draws[0];
     assert_eq!((draw.layer_index, draw.node_index), (0, 1));
@@ -727,6 +735,7 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     let mut copied_reference_draw_count = 0usize;
     let mut reference_vertex_count = 0usize;
     let mut samples = Vec::new();
+    let target_profile = CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap();
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
         let project = Project::from_file(&file).unwrap();
@@ -772,6 +781,15 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
             if !draws.is_empty() && samples.len() < 10 {
                 samples.push(format!("{} scene={scene_index}", path.display()));
             }
+            let draw_packets = draws
+                .iter()
+                .flat_map(|draw| std::iter::repeat_n(draw.packet, draw.batches.len()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                build_evidence_srd_scene_submission_indices(&draw_packets, &target_profile)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+                (0..draw_packets.len()).collect::<Vec<_>>()
+            );
             draw_count += draws.len();
             vertex_count += draws
                 .iter()
@@ -797,6 +815,17 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
                 draws.iter().collect::<Vec<_>>(),
                 "{} project-layer helper diverged from the established Fennel builder",
                 path.display()
+            );
+            let reference_packets = reference_draws
+                .iter()
+                .flat_map(|draw| std::iter::repeat_n(draw.packet, draw.batches.len()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                build_evidence_srd_scene_submission_indices(&reference_packets, &target_profile)
+                    .unwrap_or_else(|error| {
+                        panic!("{} reference Fennel: {error}", path.display())
+                    }),
+                (0..reference_packets.len()).collect::<Vec<_>>()
             );
             reference_draw_count += reference_draws.len();
             copied_reference_draw_count += reference_draws
@@ -1522,6 +1551,7 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
     let mut optional_modules = std::collections::BTreeMap::new();
     let mut multi_tex0_variants = std::collections::BTreeMap::new();
     let mut multi_tex1_variants = std::collections::BTreeMap::new();
+    let mut target_packets = Vec::new();
     let shader_collection = std::env::var_os("GAME_DATA_CORPUS").map(|root| {
         let xml =
             fs::read_to_string(PathBuf::from(root).join("A000/shader/shadercollect.xml")).unwrap();
@@ -1601,6 +1631,7 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
                 let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
                 packet.set_render_preset_id(preset);
                 apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
+                target_packets.push(packet);
                 let key = packet.srd_quad_shader_key(texture_present);
                 let direct_simple_key = key
                     .srd_simple_shader_direct_contributions()
@@ -1682,6 +1713,11 @@ fn initial_srd_image_draws_select_binary_shader_keys() {
     assert_eq!(
         multi_tex1_variants,
         [(0, image_count)].into_iter().collect()
+    );
+    let target_profile = CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap();
+    assert_eq!(
+        build_evidence_srd_scene_submission_indices(&target_packets, &target_profile).unwrap(),
+        (0..target_packets.len()).collect::<Vec<_>>()
     );
     eprintln!(
         "shader-key profile={profile:?}, images={image_count}, field_0c={field_0c_counts:?}, texture masks={texture_presence_counts:?}, distinct ShapeEnv keys={}, distinct direct Simple keys={}, XML keys represented only by a position-2 counterpart={}, XML-unrepresented direct keys={}, MultiTex0={multi_tex0_variants:?}",

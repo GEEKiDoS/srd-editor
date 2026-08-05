@@ -472,6 +472,7 @@ case 14 在这四项之后才增加 TEXCOORD1。因此 Fennel format 13 精确�
 ```text
 draw_flags_00 = 0x02AFE003
 flags_60      = 0x00004020（2D 时再置 bit 7，成为 0x000040A0）
+flags_64      = 0x00000000
 field_28      = 31
 field_2c      = 0
 vertex_format = 13

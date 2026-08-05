@@ -18,6 +18,10 @@
 
 因此 SRD 固定的 packet `+0x84 low=0x11` 会使普通初始 `flags_60=0x4000` 得到 class 3；若后续状态含 `0x2000` 则得到 class 4。rule 的第二个筛选字段是 `(packet+0x64 >> 25) & 0x0F`；packet 构造初值为 0。
 
+普通 ImageCast/Fennel 路径的两个输入现已继续闭环。`sub_6CD8A0` 在 `0x6CD998/0x6CD99F` 分别把 packet `+0x60/+0x64` 清零，再于 `0x6CD9AA` 只设置 `+0x60 bit 0x4000`。ImageCast 的实际调用图从 `srd_render_image_cast` 只进入 render-preset setter、stencil helpers、matrix helpers 与 `srd_begin_quad_draw`；其中 preset 只更新 `0x20/0x40/0x800`，stencil/depth/matrix 分支不写 `+0x60/+0x64`，`ceylon_submit_vertex_batch` 只更新 `+0x60 bit 0x80`。完整 PE 对立即数 `0x2000` 的 75 个命中逐函数复核也没有任何一个属于该 packet 写入链。
+
+Fennel 的 builder 位于 TextBoxObject `+0x150`，packet 位于 `+0x170`。`sub_7BEB80 -> sub_6DE3F0 -> ceylon_construct_draw_packet` 建立同一初值，随后 `0x7BED37..0x7BED44` 对 packet 选择 preset 3 并只掩码 draw flags；`sub_7C7F90` 每个 texture batch 再选择 preset、写纹理槽并经 builder 虚表 `+0x10` 提交。它对 `+0x60` 的唯一提交期变化同样是 `sub_6DF020` 的 bit `0x80`，对 `+0x64` 没有写入。因此普通 ImageCast 与 Fennel batch 到达分类器时都严格满足 `flags_60 & 0x2000 == 0`、`packet+0x64 == 0`，command class 固定为 3、attribute group 固定为 0。
+
 `sub_64BAB0` 随后从 rule vector 首地址开始前向扫描。class selector 支持精确值，以及 `6=全部`、`7=class<2`、`5=class<=2`；attribute group 必须相等。condition mode 为 `0=无条件`、`1=depth<threshold`、`2=depth>=threshold`、`3=u16>=threshold`、`4=u16<threshold`，其他 mode 不匹配。它选择第一个匹配项，并以数组下标调用 `SceneModelModule` 虚表 `+0x08`。这里没有比较器或重排；depth 只参与 rule 条件，并在 rule `+0x0C < 8` 时写回 command `+0x30`。
 
 ## SceneModelModule 的 per-pass 容器
@@ -73,13 +77,17 @@ EntryInfo 范围允许重复或重叠；二进制会再次遍历同一个 pass�
 
 MainScene/BgScene 的默认 BasePass 与 EntryInfo 已继续闭环。共同 `air::Scene` 构造固定安装 5 项 rule；BasePass `PassIndex` 分别为 4、8、12、16、24，而对应 EntryInfo 值是 compact rule index 0、1、2、3、4。完整静态表与生成链见 [`chusan-air-scene-profiles.md`](chusan-air-scene-profiles.md)。Rust 的 `target_pass` 现已实现该 profile 构建、type-1/SRD class、attribute group、首个 rule 匹配、稳定分桶与 32-entry inclusive-range 遍历。
 
+对上述普通 SRD class 3 / attribute group 0，第一项 `Back2DPass` 使用 condition mode 4 和 order threshold `8,388,608`。packet order 是 `u16`，所以其完整取值域 `0..65,535` 全部严格小于该阈值；depth 在命中前不会参与任何判断。Rust 因此新增了“仅当结果对全部 f32 depth 与全部 u16 order 都不变时才允许分类”的保守入口：普通 ImageCast 每个产生一个逻辑 command，Fennel 每个 texture batch 产生一个逻辑 command，二者在 MainScene/BgScene 默认 profile 中都精确进入 compact rule 0，并按原始 enqueue/batch 顺序由 `EntryInfo[4]=(0,0)` 提交。遇到会切分输入域的 rule、class 4 或未匹配 attribute group 时直接报错，不填入编辑器自造值。
+
+本地完整 `D:\sdhd\assets\data\surfboard` 回归已把 19,484 个初始 image packet、551 个初始可见 Fennel draw 的全部 texture batch，以及包含 647 个 copied TextCast 的 1,198 个 reference Fennel draw 全部送入该 planner；所有 command 均保持原始逻辑顺序并通过同一 invariant 分类。这里验证的是 packet/profile 结论，不把语料覆盖当作二进制负向证据的替代。
+
 ## 仍未闭合的输入
 
 队列容器、稳定性和 flush 遍历已经闭环，但独立 SRD 文件仍不足以生成唯一最终 GPU 列表。还需继续证明：
 
 - common background 的实际宿主，以及 MainScene/BgScene 之外其他 target 在当前模式下安装的 `0x18` rule records/EntryInfo；
 - target filter 的激活集合和切换时序；
-- command 的实际 depth/order 宿主输入；
+- 非上述普通 MainScene/BgScene class-3 路径中，任何真正命中 depth/order 条件的 command 宿主输入；
 - `ceylon_enqueue_draw_packet` 在相邻 packet 状态相同情况下的 vertex-range 合并如何映射到编辑器的逻辑 draw 项。
 
-在这些 target-specific 输入闭环前，Rust planner 不能自行分配 pass index，也不能把 RefCast 的 CAST 调用序列直接提交给 D3D9Ex。
+因此 Rust 现在可以为“已经被某个 MainScene/BgScene target filter 接纳”的普通 Image/Fennel command 生成精确 target-local 逻辑提交顺序；在 active filter、common 宿主与相邻 packet 合并闭环前，仍不能把它宣称为完整当帧 GPU packet 列表或直接替代 Composition 的宿主选择。

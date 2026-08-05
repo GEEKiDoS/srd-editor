@@ -582,6 +582,7 @@ pub struct CeylonDrawPacketPresetState {
     pub field_2c: i32,
     pub flags_58: u32,
     pub flags_60: u32,
+    pub flags_64: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -632,6 +633,7 @@ impl CeylonDrawPacketPresetState {
             field_2c: 0,
             flags_58: 0xff,
             flags_60: 0x4000,
+            flags_64: 0,
         }
     }
 
@@ -1384,6 +1386,7 @@ mod tests {
         assert_eq!(packet.field_2c, 0);
         assert_eq!(packet.flags_58, 0xff);
         assert_eq!(packet.flags_60, 0x4000);
+        assert_eq!(packet.flags_64, 0);
 
         packet.set_render_preset_id(3);
         let key = packet.srd_quad_shader_key([true, true, false]);
