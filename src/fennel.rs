@@ -937,6 +937,9 @@ pub enum FennelDefaultLayoutError {
     NonProgressingZeroHeightWrap {
         record_index: usize,
     },
+    NonTerminatingWrapWithoutVerticalCutoff {
+        record_index: usize,
+    },
 }
 
 impl std::fmt::Display for FennelDefaultLayoutError {
@@ -957,6 +960,10 @@ impl std::fmt::Display for FennelDefaultLayoutError {
             Self::NonProgressingZeroHeightWrap { record_index } => write!(
                 formatter,
                 "Fennel wrap at record {record_index} neither advances the record pointer nor the vertical position"
+            ),
+            Self::NonTerminatingWrapWithoutVerticalCutoff { record_index } => write!(
+                formatter,
+                "Fennel wrap at record {record_index} does not advance the record pointer while flag 0x4000 disables the game's vertical termination"
             ),
         }
     }
@@ -997,6 +1004,43 @@ impl std::error::Error for FennelFlag20LayoutError {
 }
 
 impl From<FennelDefaultLayoutError> for FennelFlag20LayoutError {
+    fn from(error: FennelDefaultLayoutError) -> Self {
+        Self::Layout(error)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelMode56LayoutError {
+    UnsupportedMode { mode: u32 },
+    TextFlagBypassesModeSwitch { text_flags: u32 },
+    Layout(FennelDefaultLayoutError),
+}
+
+impl std::fmt::Display for FennelMode56LayoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedMode { mode } => {
+                write!(formatter, "unsupported Fennel mode-{mode} default layout")
+            }
+            Self::TextFlagBypassesModeSwitch { text_flags } => write!(
+                formatter,
+                "Fennel TEXT flags {text_flags:#010x} bypass the mode-5/6 switch"
+            ),
+            Self::Layout(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for FennelMode56LayoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsupportedMode { .. } | Self::TextFlagBypassesModeSwitch { .. } => None,
+            Self::Layout(error) => Some(error),
+        }
+    }
+}
+
+impl From<FennelDefaultLayoutError> for FennelMode56LayoutError {
     fn from(error: FennelDefaultLayoutError) -> Self {
         Self::Layout(error)
     }
@@ -1410,6 +1454,9 @@ pub enum FennelFittingLayoutError {
     VerticalOverflow {
         line_index: usize,
     },
+    NonTerminatingWrapWithoutVerticalCutoff {
+        record_index: usize,
+    },
 }
 
 impl std::fmt::Display for FennelFittingLayoutError {
@@ -1437,6 +1484,10 @@ impl std::fmt::Display for FennelFittingLayoutError {
             Self::VerticalOverflow { line_index } => write!(
                 formatter,
                 "Fennel line {line_index} reaches the game's vertical-overflow branch"
+            ),
+            Self::NonTerminatingWrapWithoutVerticalCutoff { record_index } => write!(
+                formatter,
+                "Fennel wrap at record {record_index} would not terminate while vertical cutoff is disabled"
             ),
         }
     }
@@ -1515,6 +1566,35 @@ where
     Ok(FennelFlag20LayoutResult { layout, field_358 })
 }
 
+/// Reproduces the fresh mode-5/6 states that still dispatch to
+/// `sub_7C1F90`. Their exact flags are `0x6C03` and `0x7C03`; bit `0x4000`
+/// disables the vertical `-254` termination used by mode zero.
+pub fn layout_fennel_static_mode56<F>(
+    stream: &mut FennelPlainRecordStream,
+    input: FennelStaticLayoutInput,
+    mode: u32,
+    glyph_metrics: F,
+) -> Result<FennelDefaultLayoutResult, FennelMode56LayoutError>
+where
+    F: FnMut(u32) -> Option<FennelLayoutGlyphMetrics>,
+{
+    if !matches!(mode, 5 | 6) {
+        return Err(FennelMode56LayoutError::UnsupportedMode { mode });
+    }
+    if input.text_flags & 1 != 0 {
+        return Err(FennelMode56LayoutError::TextFlagBypassesModeSwitch {
+            text_flags: input.text_flags,
+        });
+    }
+    let textbox_flags = fennel_fresh_srd_textbox_flags(input.text_flags, mode);
+    Ok(layout_fennel_static_common(
+        stream,
+        input,
+        textbox_flags,
+        glyph_metrics,
+    )?)
+}
+
 fn layout_fennel_static_common<F>(
     stream: &mut FennelPlainRecordStream,
     input: FennelStaticLayoutInput,
@@ -1541,6 +1621,7 @@ where
     let mut automatic_wrap_count = 0usize;
     let mut first_automatic_wrap = None;
     let mut vertical_overflow = None;
+    let vertical_cutoff_enabled = textbox_flags & FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG == 0;
 
     'explicit_lines: for (explicit_line_index, &(explicit_start, explicit_end)) in
         line_ranges.iter().enumerate()
@@ -1627,7 +1708,7 @@ where
             }
             previous_line_height = line_height;
 
-            if current_y.abs() + line_height > input.box_height {
+            if vertical_cutoff_enabled && current_y.abs() + line_height > input.box_height {
                 vertical_overflow = Some(FennelVerticalOverflow {
                     explicit_line_index,
                     positioned_line_count: measured_lines.len(),
@@ -1663,6 +1744,13 @@ where
                 return Err(FennelDefaultLayoutError::NonProgressingZeroHeightWrap {
                     record_index: segment_start,
                 });
+            }
+            if segment_end == segment_start && !vertical_cutoff_enabled {
+                return Err(
+                    FennelDefaultLayoutError::NonTerminatingWrapWithoutVerticalCutoff {
+                        record_index: segment_start,
+                    },
+                );
             }
             segment_start = segment_end;
         }
@@ -1910,6 +1998,9 @@ fn fennel_default_error_to_fitting(error: FennelDefaultLayoutError) -> FennelFit
                 line_index: 0,
                 record_index,
             }
+        }
+        FennelDefaultLayoutError::NonTerminatingWrapWithoutVerticalCutoff { record_index } => {
+            FennelFittingLayoutError::NonTerminatingWrapWithoutVerticalCutoff { record_index }
         }
     }
 }
@@ -3145,6 +3236,84 @@ mod tests {
             )
             .unwrap_err(),
             FennelFlag20LayoutError::TextFlagBypassesModeSwitch { text_flags: 1 }
+        );
+    }
+
+    #[test]
+    fn mode56_layout_disables_the_default_vertical_cutoff() {
+        let input = FennelStaticLayoutInput {
+            text_flags: 0,
+            box_width: 40.0,
+            box_height: 5.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            line_spacing: 0,
+        };
+        for mode in [5, 6] {
+            let mut stream = two_line_stream(&[1], &[2]);
+            let result = layout_fennel_static_mode56(&mut stream, input, mode, metrics).unwrap();
+            assert_eq!(result.positioned_line_count, 2);
+            assert_eq!(result.total_height, 24.0);
+            assert_eq!(result.vertical_overflow, None);
+            assert_eq!(result.record_limit, 2);
+        }
+    }
+
+    #[test]
+    fn mode56_layout_reports_the_binary_nonterminating_wrap_state() {
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_mode56(
+                &mut stream,
+                FennelStaticLayoutInput {
+                    text_flags: 0,
+                    box_width: 5.0,
+                    box_height: 5.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    line_spacing: 0,
+                },
+                5,
+                metrics,
+            )
+            .unwrap_err(),
+            FennelMode56LayoutError::Layout(
+                FennelDefaultLayoutError::NonTerminatingWrapWithoutVerticalCutoff {
+                    record_index: 0,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn mode56_layout_rejects_other_modes_and_the_text_bypass() {
+        let input = FennelStaticLayoutInput {
+            text_flags: 0,
+            box_width: 20.0,
+            box_height: 20.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            line_spacing: 0,
+        };
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_mode56(&mut stream, input, 4, metrics).unwrap_err(),
+            FennelMode56LayoutError::UnsupportedMode { mode: 4 }
+        );
+
+        let mut stream = one_line_stream(&[1]);
+        assert_eq!(
+            layout_fennel_static_mode56(
+                &mut stream,
+                FennelStaticLayoutInput {
+                    text_flags: 1,
+                    ..input
+                },
+                6,
+                metrics,
+            )
+            .unwrap_err(),
+            FennelMode56LayoutError::TextFlagBypassesModeSwitch { text_flags: 1 }
         );
     }
 

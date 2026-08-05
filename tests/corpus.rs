@@ -11,11 +11,12 @@ use srd_editor::dds::{
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::fennel::{
     FENNEL_TEXTBOX_CLIP_FLAG, FennelDefaultLayoutError, FennelFittingLayoutError,
-    FennelFontSlotRegistry, FennelLayoutGlyphMetrics, FennelPlainRecordError,
-    FennelStaticTextProperties, FennelStaticUnclippedDrawInput, FennelTextureBatchStop,
-    build_fennel_plain_record_stream, build_fennel_static_unclipped_vertex_batches,
-    build_fennel_texture_batch_membership, decode_fennel_game_text, fennel_fresh_srd_textbox_flags,
-    layout_fennel_static_default, layout_fennel_static_fitting_lines, layout_fennel_static_flag20,
+    FennelFontSlotRegistry, FennelLayoutGlyphMetrics, FennelMode56LayoutError,
+    FennelPlainRecordError, FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
+    FennelTextureBatchStop, build_fennel_plain_record_stream,
+    build_fennel_static_unclipped_vertex_batches, build_fennel_texture_batch_membership,
+    decode_fennel_game_text, fennel_fresh_srd_textbox_flags, layout_fennel_static_default,
+    layout_fennel_static_fitting_lines, layout_fennel_static_flag20, layout_fennel_static_mode56,
     tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
@@ -2226,6 +2227,8 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     let mut flag20_layout_count = 0usize;
     let mut flag20_nonzero_field_358_count = 0usize;
     let mut maximum_flag20_field_358 = 0usize;
+    let mut mode56_layout_count = 0usize;
+    let mut mode56_nonterminating_wrap_count = 0usize;
     let mut record_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut default_layout_error_counts = BTreeMap::<&'static str, usize>::new();
     let mut layout_error_counts = BTreeMap::<&'static str, usize>::new();
@@ -2392,6 +2395,9 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                         FennelDefaultLayoutError::NonProgressingZeroHeightWrap { .. } => {
                             "zero-height-wrap"
                         }
+                        FennelDefaultLayoutError::NonTerminatingWrapWithoutVerticalCutoff {
+                            ..
+                        } => "nonterminating-no-cutoff-wrap",
                     };
                     *default_layout_error_counts.entry(category).or_default() += 1;
                 }
@@ -2418,6 +2424,25 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                     "{}",
                     path.display()
                 );
+
+                let mut mode56_stream = stream.clone();
+                match layout_fennel_static_mode56(
+                    &mut mode56_stream,
+                    properties.layout,
+                    5,
+                    |token| {
+                        let code = u16::try_from(token).ok()?;
+                        runtime.glyph(code).map(FennelLayoutGlyphMetrics::from)
+                    },
+                ) {
+                    Ok(_) => mode56_layout_count += 1,
+                    Err(FennelMode56LayoutError::Layout(
+                        FennelDefaultLayoutError::NonTerminatingWrapWithoutVerticalCutoff {
+                            ..
+                        },
+                    )) => mode56_nonterminating_wrap_count += 1,
+                    Err(error) => panic!("{}: {error}", path.display()),
+                }
             }
             match layout_fennel_static_fitting_lines(&mut stream, properties.layout, |token| {
                 let code = u16::try_from(token).ok()?;
@@ -2431,6 +2456,9 @@ fn audits_binary_proven_static_fennel_layout_subset() {
                         FennelFittingLayoutError::MissingGlyphMetrics { .. } => "glyph-metrics",
                         FennelFittingLayoutError::HorizontalWrapRequired { .. } => "wrap",
                         FennelFittingLayoutError::VerticalOverflow { .. } => "vertical-overflow",
+                        FennelFittingLayoutError::NonTerminatingWrapWithoutVerticalCutoff {
+                            ..
+                        } => "nonterminating-no-cutoff-wrap",
                     };
                     *layout_error_counts.entry(category).or_default() += 1;
                     layout_error_samples
@@ -2452,7 +2480,7 @@ fn audits_binary_proven_static_fennel_layout_subset() {
     }
 
     eprintln!(
-        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, texts with line metadata={line_metadata_text_count}, line positions={line_position_count}, line descriptions={line_description_count}, maximum line metadata/text={maximum_line_metadata_count}, Flag20-eligible texts={flag20_eligible_text_count}, Flag20 layouts={flag20_layout_count}, nonzero Flag20 +0x358={flag20_nonzero_field_358_count}, maximum Flag20 +0x358={maximum_flag20_field_358}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
+        "static RFZ texts={text_count}, initial unclipped texts={initial_unclipped_text_count}, default layout={default_layout_count}, wrapped texts={wrapped_text_count}, automatic logical wraps={automatic_wrap_count}, vertical-overflow texts={vertical_overflow_text_count}, texts with line metadata={line_metadata_text_count}, line positions={line_position_count}, line descriptions={line_description_count}, maximum line metadata/text={maximum_line_metadata_count}, Flag20-eligible texts={flag20_eligible_text_count}, Flag20 layouts={flag20_layout_count}, nonzero Flag20 +0x358={flag20_nonzero_field_358_count}, maximum Flag20 +0x358={maximum_flag20_field_358}, mode-5 layouts={mode56_layout_count}, mode-5 nonterminating wraps={mode56_nonterminating_wrap_count}, batch builds={batch_build_count}, maximum texture batches/text={maximum_batch_count}, batch -254 stops={batch_overflow_stop_count}, vertex batch builds={vertex_batch_build_count}, maximum vertices/text={maximum_vertices_per_text}, default errors={default_layout_error_counts:?}, fitting subset={fitting_count}, record errors={record_error_counts:?}, fitting-only branches={layout_error_counts:?}"
     );
     for (category, samples) in &layout_error_samples {
         for sample in samples {
@@ -2479,6 +2507,8 @@ fn audits_binary_proven_static_fennel_layout_subset() {
         assert_eq!(flag20_layout_count, 684);
         assert_eq!(flag20_nonzero_field_358_count, 12);
         assert_eq!(maximum_flag20_field_358, 1);
+        assert_eq!(mode56_layout_count, 684);
+        assert_eq!(mode56_nonterminating_wrap_count, 0);
     }
     assert_eq!(batch_build_count, text_count);
     assert!(maximum_batch_count > 0);

@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 排版器与动态 mode 来源。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 5/6 的 `0x4000` 垂直截止关闭，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链也已实现，并通过完整 RFZ TEXT 审计。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源、通用 flags `0x200` 排版分支与动态 mode 来源。
 
 ## TEXT 记录
 
@@ -255,7 +255,7 @@ TextBoxObject 基类构造路径把 token iterator 的初始 x/y 状态 `+0x68/+
 - 当前 glyph 首次越宽且属于 FontManager `+0xE4` 集合时，仍把该 glyph 纳入当前逻辑行并只允许一次该状态；
 - 其他越宽情况先检查前一个 glyph 是否属于 `+0xE0` 集合，命中时把断点回退一条记录；若存在空格候选，则候选断点最后覆盖该结果；
 - 首 glyph 自身越宽且没有可回退断点时，游戏会产生不推进 record 指针的空逻辑行；后续由垂直边界终止，而不是强制把 glyph 塞入一行；
-- 垂直检查使用 `abs(current_y) + line_height > box_height`，不包含当前行即将插入的行距；命中后把该逻辑行首记录 kind 改为 `-254` 并停止定位；
+- flags `0x4000` 清零时，垂直检查使用 `abs(current_y) + line_height > box_height`，不包含当前行即将插入的行距；命中后把该逻辑行首记录 kind 改为 `-254` 并停止定位。fresh mode 5/6 的 `0x6C03/0x7C03` 置位 `0x4000`，因此完全跳过这些检查；
 - 中/下对齐的测量 pass 若先命中垂直边界，会不写纵向 offset，随后定位出来的前缀因此保持顶对齐；
 - 中/下对齐量写入 TextBoxObject `+0x108`，不会折进 layout record `+0x14`；`sub_7C7F90` 随后把它加到 TextBox 的 Y 平移。Rust 因此把 `textbox_vertical_offset` 与 record `y` 分开保存；
 - `sub_7C90A0` 尾部扫描所有记录：没有 `-254` 时返回 glyph count；有标记时返回最后一个标记的记录下标，标记位于下标零时返回 `-1`。Rust 的 `record_limit` 保留这一结果。
@@ -292,6 +292,18 @@ TextBoxObject `+0x12C` 是 8 字节元素向量，`begin/end/capacity` 位于 `+
 
 Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状态机，并单独返回 host-independent `field_358`。完整语料中 TEXT bit 0 清零、因而允许进入 mode switch 的 RFZ TEXT 为 684 条；用已知 `0x0CA3` 状态逐条审计全部成功，其中 12 条得到非零 `+0x358`，最大下标为 1。该审计证明实现覆盖现有资源输入，不声称这些文本在原版首帧实际启用了动态 mode。
 
+### fresh mode 5/6 的默认排版
+
+`sub_AC6F50` 对 fresh mode 5/6 生成 `0x6C03/0x7C03`，两者既不含 `0x20` 也不含 `0x40`，所以仍调用默认 `sub_7C1F90`。该函数在 `0x7C1FCF..0x7C1FEA` 仅当 flags `0x4000` 清零时执行垂直边界检查；mode 5/6 因而不会写入垂直 `-254` 截止。Rust 的 `layout_fennel_static_mode56` 只接受 mode 5 或 6 且要求 TEXT bit 0 清零，不把其他 flags 组合泛化进来。
+
+若自动断行产生空逻辑行、record 指针不推进且 `0x4000` 又关闭垂直终止，原函数会重复同一状态。编辑器不能复制这种挂死，因此返回 `NonTerminatingWrapWithoutVerticalCutoff`，错误名明确描述原版控制流而不伪造排版结果。把 mode 5 假设应用到完整语料中 684 条允许 mode switch 的 RFZ TEXT 时，684 条全部终止且成功，没有命中该 guard；这仍只是资源覆盖审计，不证明原版运行时实际选择了 mode 5。
+
+### Flag40 `sub_7C5A20` 的差分与来源审计
+
+`sub_7C5A20` 大小 `0x1427`、1250 条指令；`sub_7C4070` 大小 `0x1487`、1276 条指令。完整指令流审计得到两者的外部 call target 多重集、字符串、全局引用和有效对象字段 displacement 一致，唯一新增对象字段为 Flag20 的 `+0x358` 五次访问：一次初始化、两组各两次的读/写最小值更新。Flag20 额外的两个 `comiss/jbe/sub/sar/dec` 组与这两次更新一一对应；其余差异是寄存器分配、vector append 分支排布和 NOP 对齐，不引入新的调用或对象字段。
+
+flags 来源仍未闭合。对 Surfride 文本组件 `0x7B0000..0x7D0000` 的 rendered listing 分段扫描显示：上层对象 `+0x230` 只有构造初值、已枚举 setters 和 `sub_7BC1B0` 的整 DWORD 读取；TextBoxObject `+0x2E0` 只有构造、同一批 setters、该 DWORD 复制和排版/绘制读取。`sub_7C04F0` 的整 DWORD 写入只是在一次重建文本时以 `0xFFFF835F` 临时清位，随后在 `0x7C065C` 恢复原值，不生成新 bit；`sub_AC6F50` 的 mode 0..6 也不生成 `0x40`。远处 `sub_12E4B20` 的 `[edi+0x230]` 是包围对象中的另一字段，`sub_41E01F -> sub_F2C160` 写的是对象 `+0x98/+0x58`，均不能作为 TextBox flags 证据。因此当前只能闭合 Flag40 函数与 Flag20 的差分，不能声称本游戏存在已知可达的 `0x40` 状态，也暂不把它接入 Rust 布局入口。
+
 `layout_fennel_static_fitting_lines` 仍作为原子 guard 保留：它在完整默认布局结果需要自动断行或垂直截止时返回明确错误且不修改输入，便于调用方只接受完整可见矩形；实际游戏路径由 `layout_fennel_static_default` 复现。
 
 真实 1292 条 RFZ TEXT 与对应六套 RFZ runtime font 的逐条审计为：
@@ -304,6 +316,8 @@ Rust 的 `layout_fennel_static_flag20` 复用已经逐字段闭合的公共状�
 含非空行元数据的 TEXT=1242
 行位置/行描述元素=1404/1404
 单条 TEXT 最大行元数据数=9
+fresh mode-5 假设布局成功=684
+fresh mode-5 非终止 guard=0
 成功建立 texture batch 的 TEXT=1292
 单条 TEXT 最大 texture batch 数=6
 因 -254 停止 batch 扫描的 TEXT=19
