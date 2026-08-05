@@ -88,6 +88,6 @@ MainScene/BgScene 的默认 BasePass 与 EntryInfo 已继续闭环。共同 `air
 - common background 的实际宿主，以及 MainScene/BgScene 之外其他 target 在当前模式下安装的 `0x18` rule records/EntryInfo；
 - 构造完成之后 Scene Enable / manager current-target 的切换时序；
 - 非上述普通 MainScene/BgScene class-3 路径中，任何真正命中 depth/order 条件的 command 宿主输入；
-- `ceylon_enqueue_draw_packet` 在相邻 packet 状态相同情况下的 vertex-range 合并如何映射到编辑器的逻辑 draw 项。
+- stencil/special-depth 等非普通路径的相邻 packet 合并键，以及合并 record 到统一 D3D9Ex 提交的最终接线。
 
-Rust 已实现 type-1 filter；对 Chusan Advertise 的构造完成状态可精确得到 MainScene 接纳、BgScene 拒绝，再为接纳的普通 Image/Fennel command 生成 target-local 逻辑提交顺序。在后续 Enable 时序、common 宿主与相邻 packet 合并闭环前，仍不能把它宣称为所有运行阶段的完整 GPU packet 列表或直接替代 Composition 的宿主选择。
+Rust 已实现 type-1 filter；对 Chusan Advertise 的构造完成状态可精确得到 MainScene 接纳、BgScene 拒绝，再为接纳的普通 Image/Fennel command 执行相邻 record 合并并生成 target-local 顺序。在后续 Enable 时序、common 宿主和非普通 merge 状态闭环前，仍不能把它宣称为所有运行阶段的完整 GPU packet 列表或直接替代 Composition 的宿主选择。

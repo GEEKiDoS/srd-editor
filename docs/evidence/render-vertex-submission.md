@@ -50,6 +50,29 @@ vertex_count     = 4
 
 四顶点的几何顺序是左上、左下、右上、右下，正好形成 triangle strip。后端 `d3d9_map_internal_primitive_type` (`0xE5B490`) 使用表 `[1,2,3,4,5,6]`，所以内部类型 `4` 映射为 D3D9 primitive 值 `5`，即 `D3DPT_TRIANGLESTRIP`。`d3d9_primitive_count_from_vertex_count` (`0xE5B420`) 对内部类型 `4` 返回 `vertex_count - 2`，四顶点因此提交两个 primitive。
 
+## `ceylon_enqueue_draw_packet` 的相邻合并
+
+`ceylon_enqueue_draw_packet` (`0x670BE0`) 总是先建立新的 304-byte record；只有上一条 record 存在且 enqueue target 指针相同，才尝试与紧邻上一条合并。比较范围由逐 DWORD 循环直接给出：
+
+| 新旧 record 比较区间 | 大小 | 当前已闭环含义 |
+| --- | ---: | --- |
+| `+0x00..+0x6B` | 108 | DrawPacket flags、深度/stencil、三个 texture wrapper 等前缀 |
+| `+0x70..+0x7B` | 12 | vertex format、primitive type、固定零字段 |
+| `+0x80..+0x8B` | 12 | DrawMask/command flags/renderer sequence byte |
+| `+0xA0..+0xDB` | 60 | 仅当新 record `+0x9E != 0` 时比较 packet current matrix 的前 15 个 f32 |
+
+任一区间不相等即保留独立 record。矩阵 setter `0x6DF2D0` 证明：2D/null matrix 清零 `+0x9E`，因此不比较矩阵；3D/non-null matrix 设置 `+0x9E=1`，因此不同 world matrix 会阻止合并。
+
+比较全部通过后，仅 primitive type `0/1/3/6` 和 `4` 允许合并：
+
+- type `0/1/3/6`：上一条 `vertex_count += 新条 vertex_count`；Fennel 的 type 3 triangle list 属于此分支；
+- type `4`：先在 vertex buffer 中写入两个退化连接顶点，再执行 `上一条 vertex_count += 新条 vertex_count + 2`；SRD quad triangle strip 属于此分支；
+- 其他 type 不合并。
+
+新建 record 随后从 vector 尾部移除并析构；因此 target queue 看到的是合并后的单个 command，不是两个 command 的后期视觉批处理。
+
+Rust 的 `build_evidence_filtered_merged_runtime_target_submission` 已对普通 Image/Fennel 路径复现上述相邻比较、strip `+2` 与 triangle-list 直接累加，并保留每个合并 record 对应的逻辑 source 列表。它只接受当前能够完整构造比较键的路径：单一 SrPlayer/同一 enqueue target 状态、无显式 texture override、无 special-depth，且 stencil 关闭。Stencil 开启时 renderer `+0x198` 的逐提交 sequence byte 尚未进入 runtime draw record，函数会报错而不是静默少合并。
+
 ## 绘制包到 IDirect3DDevice9
 
 `ceylon_apply_draw_packet_state` (`0x6CEE30`) 同步渲染状态、纹理和采样器，再进入 `ceylon_submit_draw_packet` (`0x6CF110`)。后者完成以下设备调用：
@@ -70,6 +93,6 @@ DrawPrimitive(D3DPT_TRIANGLESTRIP, start_vertex, 2)
 
 ## 仍未闭环
 
-- draw packet 的 shader、blend、depth、stencil、scissor、cull、fill 与 color-write 已分别闭环；剩余的是把这些已建模状态接到编辑器的真实 draw submission，并继续追踪尚未命名的其他 packet 状态。
+- draw packet 的 shader、blend、depth、stencil、scissor、cull、fill 与 color-write 已分别闭环；普通 Image/Fennel 的相邻 record 合并也已接入逻辑 planner。剩余的是把合并后的统一 submission 接到编辑器真实 D3D9Ex draw，并补齐 stencil sequence/special-depth 等尚未进入 runtime record 的状态。
 - Image/Text 双 UV 在 shader 或固定管线中的组合公式。
 - DDS 描述符、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；内部格式转换、cube request 和设备丢失/重建仍待闭环。

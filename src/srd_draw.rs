@@ -127,6 +127,37 @@ pub enum EvidenceRuntimeTargetCommandSource {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceMergedRuntimeTargetCommand {
+    pub sources: Vec<EvidenceRuntimeTargetCommandSource>,
+    pub packet: CeylonDrawPacketPresetState,
+    pub vertex_format: u32,
+    pub primitive_type: u32,
+    pub vertex_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceMergeTextureIdentity {
+    Srd(EvidenceSrdTextureBinding),
+    Fennel(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceAdjacentMergeKey {
+    packet: CeylonDrawPacketPresetState,
+    vertex_format: u32,
+    primitive_type: u32,
+    textures: [Option<EvidenceMergeTextureIdentity>; 3],
+    packet_matrix_prefix: Option<[u32; 15]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceAdjacentMergeCommand {
+    source: EvidenceRuntimeTargetCommandSource,
+    key: EvidenceAdjacentMergeKey,
+    vertex_count: usize,
+}
+
 /// Applies an already selected target's ScenePass/SceneModel profile to the
 /// runtime CAST stream. The caller remains responsible for proving that the
 /// target filter admitted these commands; this function only closes the exact
@@ -148,6 +179,161 @@ pub fn build_evidence_filtered_runtime_target_submission(
     filter: EvidenceSrdType1TargetFilter,
 ) -> Result<Vec<EvidenceRuntimeTargetCommandSource>, SrdDrawError> {
     build_evidence_runtime_target_submission_impl(draws, profile, |packet| filter.accepts(packet))
+}
+
+/// Reproduces the adjacent-record merge in `ceylon_enqueue_draw_packet` for
+/// the evidence-complete ordinary SRD/Fennel path, then applies the target
+/// filter and ScenePass order.
+///
+/// The input stream belongs to one SrPlayer, so its enqueue target pointer and
+/// packet `+0x80..+0x8B` host block are shared. The current draw builders also
+/// exclude explicit texture overrides and renderer special-depth mode. Stencil
+/// packets are rejected here because their renderer `+0x198` sequence byte is
+/// outside the current runtime draw record; silently under-merging them would
+/// not reproduce the binary.
+pub fn build_evidence_filtered_merged_runtime_target_submission(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    profile: &EvidenceScenePassProfile,
+    filter: EvidenceSrdType1TargetFilter,
+) -> Result<Vec<EvidenceMergedRuntimeTargetCommand>, SrdDrawError> {
+    let commands = build_evidence_adjacent_merge_commands(draws)?;
+    let groups = merge_evidence_adjacent_commands(commands);
+
+    let mut admitted_groups = Vec::new();
+    let mut packets = Vec::new();
+    for group in groups {
+        if filter.accepts(group.packet) {
+            packets.push(group.packet);
+            admitted_groups.push(group);
+        }
+    }
+
+    let submission_indices = build_evidence_srd_scene_submission_indices(&packets, profile)
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    Ok(submission_indices
+        .into_iter()
+        .map(|command_index| admitted_groups[command_index].clone())
+        .collect())
+}
+
+fn build_evidence_adjacent_merge_commands(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+) -> Result<Vec<EvidenceAdjacentMergeCommand>, SrdDrawError> {
+    let mut commands = Vec::new();
+    for (runtime_draw_index, draw) in draws.iter().enumerate() {
+        match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(draw) => {
+                validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
+                let textures = draw
+                    .texture_bindings
+                    .map(|binding| binding.map(EvidenceMergeTextureIdentity::Srd));
+                commands.push(EvidenceAdjacentMergeCommand {
+                    source: EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index },
+                    key: EvidenceAdjacentMergeKey {
+                        packet: draw.packet,
+                        vertex_format: 14,
+                        primitive_type: 4,
+                        textures,
+                        packet_matrix_prefix: packet_matrix_prefix(
+                            draw.is_2d,
+                            draw.fixed_constants.vertex_c0_c3_world,
+                        ),
+                    },
+                    vertex_count: 4,
+                });
+            }
+            EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
+                validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
+                let packet_matrix_prefix =
+                    packet_matrix_prefix(draw.is_2d, draw.fixed_constants.vertex_c0_c3_world);
+                for (batch_index, batch) in draw.batches.iter().enumerate() {
+                    commands.push(EvidenceAdjacentMergeCommand {
+                        source: EvidenceRuntimeTargetCommandSource::FennelBatch {
+                            runtime_draw_index,
+                            batch_index,
+                        },
+                        key: EvidenceAdjacentMergeKey {
+                            packet: draw.packet,
+                            vertex_format: 13,
+                            primitive_type: 3,
+                            textures: [
+                                Some(EvidenceMergeTextureIdentity::Fennel(batch.texture_token)),
+                                None,
+                                None,
+                            ],
+                            packet_matrix_prefix,
+                        },
+                        vertex_count: batch.vertices.len(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(commands)
+}
+
+fn validate_evidence_merge_packet(
+    packet: CeylonDrawPacketPresetState,
+    runtime_draw_index: usize,
+) -> Result<(), SrdDrawError> {
+    if packet.flags_0c & 0x100 != 0 {
+        return Err(SrdDrawError(format!(
+            "runtime draw {runtime_draw_index} uses stencil state whose renderer sequence byte is not recorded for exact adjacent merging"
+        )));
+    }
+    if packet.field_2c != 0 {
+        return Err(SrdDrawError(format!(
+            "runtime draw {runtime_draw_index} uses packet field_2c={} outside the ordinary merge profile",
+            packet.field_2c
+        )));
+    }
+    Ok(())
+}
+
+fn packet_matrix_prefix(is_2d: bool, matrix: Matrix4x4) -> Option<[u32; 15]> {
+    if is_2d {
+        return None;
+    }
+    let mut prefix = [0u32; 15];
+    for (destination, value) in prefix.iter_mut().zip(matrix.rows.iter().flatten().take(15)) {
+        *destination = value.to_bits();
+    }
+    Some(prefix)
+}
+
+fn merge_evidence_adjacent_commands(
+    commands: Vec<EvidenceAdjacentMergeCommand>,
+) -> Vec<EvidenceMergedRuntimeTargetCommand> {
+    let mut groups: Vec<(EvidenceAdjacentMergeKey, EvidenceMergedRuntimeTargetCommand)> =
+        Vec::new();
+    for command in commands {
+        if let Some((previous_key, previous)) = groups.last_mut()
+            && *previous_key == command.key
+        {
+            previous.sources.push(command.source);
+            previous.vertex_count += if previous.primitive_type == 4 {
+                command.vertex_count + 2
+            } else {
+                command.vertex_count
+            };
+            continue;
+        }
+
+        let packet = command.key.packet;
+        let vertex_format = command.key.vertex_format;
+        let primitive_type = command.key.primitive_type;
+        groups.push((
+            command.key,
+            EvidenceMergedRuntimeTargetCommand {
+                sources: vec![command.source],
+                packet,
+                vertex_format,
+                primitive_type,
+                vertex_count: command.vertex_count,
+            },
+        ));
+    }
+    groups.into_iter().map(|(_, group)| group).collect()
 }
 
 fn build_evidence_runtime_target_submission_impl(
@@ -2562,6 +2748,54 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+        let merged = build_evidence_filtered_merged_runtime_target_submission(
+            &runtime_cast_draws,
+            &profile,
+            crate::game_host::CHUSAN_ADVERTISE_LOGO_PLAYER
+                .initial_srd_target_filter(crate::game_host::CHUSAN_MAIN_SCENE),
+        )
+        .unwrap();
+        assert_eq!(
+            merged
+                .iter()
+                .flat_map(|group| group.sources.iter().copied())
+                .collect::<Vec<_>>(),
+            expected_target_commands
+        );
+        for group in &merged {
+            let source_vertex_count = group
+                .sources
+                .iter()
+                .map(|source| match *source {
+                    EvidenceRuntimeTargetCommandSource::Image { .. } => 4,
+                    EvidenceRuntimeTargetCommandSource::FennelBatch {
+                        runtime_draw_index,
+                        batch_index,
+                    } => match &runtime_cast_draws[runtime_draw_index] {
+                        EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
+                            draw.batches[batch_index].vertices.len()
+                        }
+                        EvidenceCompleteRuntimeCastDraw::Image(_) => unreachable!(),
+                    },
+                })
+                .sum::<usize>();
+            let connector_count = if group.primitive_type == 4 {
+                (group.sources.len() - 1) * 2
+            } else {
+                0
+            };
+            assert_eq!(group.vertex_count, source_vertex_count + connector_count);
+        }
+        assert!(
+            build_evidence_filtered_merged_runtime_target_submission(
+                &runtime_cast_draws,
+                &background_profile,
+                crate::game_host::CHUSAN_ADVERTISE_LOGO_PLAYER
+                    .initial_srd_target_filter(crate::game_host::CHUSAN_BG_SCENE),
+            )
+            .unwrap()
+            .is_empty()
+        );
         for draw in &runtime_cast_draws {
             let packet = match draw {
                 EvidenceCompleteRuntimeCastDraw::Image(draw) => draw.packet,
@@ -2570,5 +2804,63 @@ mod tests {
             assert_eq!(packet.flags_60 & 0x2000, 0);
             assert_eq!(packet.flags_64, 0);
         }
+    }
+
+    #[test]
+    fn adjacent_merge_adds_strip_connectors_but_not_triangle_list_vertices() {
+        let packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+        let strip_key = EvidenceAdjacentMergeKey {
+            packet,
+            vertex_format: 14,
+            primitive_type: 4,
+            textures: [None; 3],
+            packet_matrix_prefix: None,
+        };
+        let list_key = EvidenceAdjacentMergeKey {
+            packet,
+            vertex_format: 13,
+            primitive_type: 3,
+            textures: [Some(EvidenceMergeTextureIdentity::Fennel(7)), None, None],
+            packet_matrix_prefix: None,
+        };
+        let commands = vec![
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::Image {
+                    runtime_draw_index: 0,
+                },
+                key: strip_key.clone(),
+                vertex_count: 4,
+            },
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::Image {
+                    runtime_draw_index: 1,
+                },
+                key: strip_key,
+                vertex_count: 4,
+            },
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::FennelBatch {
+                    runtime_draw_index: 2,
+                    batch_index: 0,
+                },
+                key: list_key.clone(),
+                vertex_count: 6,
+            },
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::FennelBatch {
+                    runtime_draw_index: 3,
+                    batch_index: 0,
+                },
+                key: list_key,
+                vertex_count: 12,
+            },
+        ];
+
+        let groups = merge_evidence_adjacent_commands(commands);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].vertex_count, 10);
+        assert_eq!(groups[0].sources.len(), 2);
+        assert_eq!(groups[1].vertex_count, 18);
+        assert_eq!(groups[1].sources.len(), 2);
     }
 }

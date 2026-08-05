@@ -107,7 +107,7 @@ ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch 
 
 type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。普通 Image/Fennel packet 还已证明始终是 class 3 / attribute group 0，而默认第一项 Back2DPass 对完整 u16 order 域恒真，所以这部分不再需要伪造 depth/order。Rust 可把一个 Image 和每个 Fennel texture batch 展平为逻辑 command，先执行已证明的 type-1 filter，再生成 target-local 顺序。
 
-Chusan 的 MainScene/BgScene 构造完成状态也已闭环：两者 Scene Enable 均为 true、Attribute 均为 0，DrawIndex 分别为 0/16；Advertise DrawMask `0xFFFF` 因此接纳 MainScene、拒绝 BgScene。注册调用的第三个布尔量只控制 manager `+0x11C` current-target 指针，不是 Enable。尚缺的是后续帧可能发生的 Enable/manager-current 切换时序、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 `ceylon_enqueue_draw_packet` 的相邻 vertex-range 合并映射。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation / initial enqueue sequence，新 planner 也不宣称任意运行阶段的完整 GPU packet 数。
+Chusan 的 MainScene/BgScene 构造完成状态也已闭环：两者 Scene Enable 均为 true、Attribute 均为 0，DrawIndex 分别为 0/16；Advertise DrawMask `0xFFFF` 因此接纳 MainScene、拒绝 BgScene。注册调用的第三个布尔量只控制 manager `+0x11C` current-target 指针，不是 Enable。普通 Image/Fennel 的相邻 enqueue merge 也已实现，包括 SRD triangle-strip 的两个退化连接顶点和 Fennel triangle-list 的直接 vertex-count 累加。尚缺的是后续帧可能发生的 Enable/manager-current 切换时序、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 stencil/special-depth merge 状态。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation；merged planner 只对其声明的普通路径给出精确 record 数。
 
 ## Advertise 的已证明结论
 
