@@ -15,9 +15,10 @@ use srd_editor::fennel::{
     FennelPlainRecordError, FennelStaticTextProperties, FennelStaticUnclippedDrawInput,
     FennelTextureBatchStop, build_fennel_plain_record_stream,
     build_fennel_static_unclipped_vertex_batches, build_fennel_texture_batch_membership,
-    decode_fennel_game_text, fennel_fresh_srd_textbox_flags, layout_fennel_static_default,
-    layout_fennel_static_fitting_lines, layout_fennel_static_flag20, layout_fennel_static_mode1,
-    layout_fennel_static_mode56, tokenize_fennel_plain_text,
+    decode_fennel_game_text, fennel_fresh_srd_textbox_flags, fennel_srd_font_style,
+    fennel_srd_textbox_flags, layout_fennel_static_default, layout_fennel_static_fitting_lines,
+    layout_fennel_static_flag20, layout_fennel_static_mode1, layout_fennel_static_mode56,
+    tokenize_fennel_plain_text,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
@@ -1115,6 +1116,9 @@ fn parses_cast_attribute_lists_and_ext_params() {
     let mut initial_text_prohibition_count = 0usize;
     let mut initial_text_word_wrap_count = 0usize;
     let mut initial_text_point_sizes = std::collections::BTreeMap::new();
+    let mut initial_text_style_flags = std::collections::BTreeMap::new();
+    let mut initial_text_nonzero_style_counts = [0usize; 4];
+    let mut initial_text_nondefault_point_y_guard_count = 0usize;
     let mut monospaced_font_param_count = 0usize;
     let mut render_preset_overrides = std::collections::BTreeMap::new();
     let mut image_override_counts = std::collections::BTreeMap::new();
@@ -1168,18 +1172,27 @@ fn parses_cast_attribute_lists_and_ext_params() {
                         source_mode
                     };
                     *initial_text_modes.entry(active_mode).or_insert(0usize) += 1;
-                    let mut textbox_flags =
-                        fennel_fresh_srd_textbox_flags(text.field_78.unwrap_or(0), source_mode);
-                    textbox_flags = (textbox_flags & !(1 | 2 | 0x200))
-                        | u32::from(font_param.prohibition)
-                        | (u32::from(font_param.word_wrap) << 1)
-                        | (u32::from(font_param.monospaced) << 9);
+                    let textbox_flags =
+                        fennel_srd_textbox_flags(text.field_78.unwrap_or(0), font_param);
                     *initial_textbox_flags.entry(textbox_flags).or_insert(0usize) += 1;
+                    let font_style = fennel_srd_font_style(font_param);
+                    *initial_text_style_flags
+                        .entry(font_style.record_flags)
+                        .or_insert(0usize) += 1;
                     initial_text_monospaced_count += usize::from(font_param.monospaced);
                     initial_text_shadow_count += usize::from(font_param.display_shadow);
                     initial_text_vertical_count += usize::from(font_param.vertical);
                     initial_text_prohibition_count += usize::from(font_param.prohibition);
                     initial_text_word_wrap_count += usize::from(font_param.word_wrap);
+                    initial_text_nonzero_style_counts[0] += usize::from(font_param.outline != 0);
+                    initial_text_nonzero_style_counts[1] += usize::from(font_param.italic != 0);
+                    initial_text_nonzero_style_counts[2] += usize::from(font_param.bold != 0);
+                    initial_text_nonzero_style_counts[3] += usize::from(font_param.face_id != 0);
+                    initial_text_nondefault_point_y_guard_count += usize::from(
+                        font_param.point_y != 32
+                            && textbox_flags & 0x800 != 0
+                            && textbox_flags & 0x20 == 0,
+                    );
                     *initial_text_point_sizes
                         .entry((font_param.point_x, font_param.point_y))
                         .or_insert(0usize) += 1;
@@ -1276,6 +1289,7 @@ fn parses_cast_attribute_lists_and_ext_params() {
         expected_font_param_modes,
         expected_initial_text_modes,
         expected_initial_textbox_flags,
+        expected_initial_text_style_flags,
         expected_monospaced_font_params,
         expected_initial_text_counts,
         expected_initial_point_sizes,
@@ -1300,6 +1314,7 @@ fn parses_cast_attribute_lists_and_ext_params() {
             ]
             .into_iter()
             .collect(),
+            [(1, 1_152), (262_145, 85)].into_iter().collect(),
             268,
             (268, 85, 0, 1_235, 1_234),
             [((28, 28), 12), ((32, 32), 1_225)].into_iter().collect(),
@@ -1324,6 +1339,7 @@ fn parses_cast_attribute_lists_and_ext_params() {
             ]
             .into_iter()
             .collect(),
+            [(1, 1_182), (262_145, 110)].into_iter().collect(),
             272,
             (272, 110, 0, 1_290, 1_289),
             [((21, 21), 2), ((28, 28), 12), ((32, 32), 1_278)]
@@ -1335,6 +1351,7 @@ fn parses_cast_attribute_lists_and_ext_params() {
     assert_eq!(font_param_modes, expected_font_param_modes);
     assert_eq!(initial_text_modes, expected_initial_text_modes);
     assert_eq!(initial_textbox_flags, expected_initial_textbox_flags);
+    assert_eq!(initial_text_style_flags, expected_initial_text_style_flags);
     assert_eq!(monospaced_font_param_count, expected_monospaced_font_params);
     assert_eq!(
         (
@@ -1347,8 +1364,10 @@ fn parses_cast_attribute_lists_and_ext_params() {
         expected_initial_text_counts
     );
     assert_eq!(initial_text_point_sizes, expected_initial_point_sizes);
+    assert_eq!(initial_text_nonzero_style_counts, [0; 4]);
+    assert_eq!(initial_text_nondefault_point_y_guard_count, 0);
     eprintln!(
-        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, FontParamData={font_param_count}, FontParam modes={font_param_modes:?}, initial text modes={initial_text_modes:?}, initial TextBox flags={initial_textbox_flags:?}, monospaced FontParamData={monospaced_font_param_count}, initial text monospaced={initial_text_monospaced_count}, shadow={initial_text_shadow_count}, vertical={initial_text_vertical_count}, prohibition={initial_text_prohibition_count}, word-wrap={initial_text_word_wrap_count}, point sizes={initial_text_point_sizes:?}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
+        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, FontParamData={font_param_count}, FontParam modes={font_param_modes:?}, initial text modes={initial_text_modes:?}, initial TextBox flags={initial_textbox_flags:?}, initial record style flags={initial_text_style_flags:?}, monospaced FontParamData={monospaced_font_param_count}, initial text monospaced={initial_text_monospaced_count}, shadow={initial_text_shadow_count}, vertical={initial_text_vertical_count}, prohibition={initial_text_prohibition_count}, word-wrap={initial_text_word_wrap_count}, nonzero outline/italic/bold/faceId={initial_text_nonzero_style_counts:?}, point sizes={initial_text_point_sizes:?}, nondefault pointY in 7C04F0 point-margin branch={initial_text_nondefault_point_y_guard_count}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
     );
 }
 

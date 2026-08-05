@@ -309,6 +309,68 @@ pub const fn fennel_font_param_effect_color(source: u32) -> u32 {
     u32::from_le_bytes([bytes[2], bytes[1], bytes[0], bytes[3]])
 }
 
+/// The binary-proven parts of the 24-byte FontObject style copied by
+/// `sub_AC6F50 -> sub_F2C100`. The per-token character code occupying style
+/// bytes `+0x00/+0x01` is deliberately omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FennelSrdFontStyle {
+    /// Style `+0x02`; `sub_F2C100` clears its high byte after the initializer
+    /// has selected `max(source, 1)` using a signed comparison.
+    pub point_x: u8,
+    /// Style `+0x04`, transformed by the same instruction chain as point X.
+    pub point_y: u8,
+    /// Style `+0x08`; copied by `FontDriverRFO` to runtime glyph `+0x08` and
+    /// by `sub_7C90A0` to layout record `+0x0C`.
+    pub record_flags: u32,
+    /// Style `+0x0C`. A zero FontParam leaves the constructor value `-1`.
+    pub bold_value: i32,
+    /// Style `+0x10`, always masked to four bits by `sub_F2C100`.
+    pub outline_value: u32,
+    /// Style `+0x14`, always masked to two bits by `sub_F2C100`.
+    pub italic_value: u32,
+}
+
+const fn fennel_srd_point_byte(source: i32) -> u8 {
+    let selected = if source > 1 { source } else { 1 };
+    selected as u8
+}
+
+/// Reproduces the initial SrTextCast style mutation before the token iterator
+/// writes a character code into style `+0x00`. `faceId` is absent from
+/// `sub_AC6F50`; the RFZ `FontDriverRFO` lookup reads only that character code
+/// and copies `record_flags`, so it does not consume either point byte or the
+/// three numeric style values when selecting a runtime glyph.
+pub const fn fennel_srd_font_style(font_param: FontParamData) -> FennelSrdFontStyle {
+    let mut record_flags = 1;
+    if font_param.bold != 0 {
+        record_flags |= 2;
+    }
+    if font_param.italic != 0 {
+        record_flags |= 4;
+    }
+    if font_param.outline != 0 {
+        record_flags |= 8;
+    }
+    if font_param.display_shadow {
+        record_flags |= FENNEL_EFFECT_GLYPH_FLAG;
+    }
+    let bold_value = if font_param.bold == 0 {
+        -1
+    } else if font_param.bold > 0 {
+        font_param.bold & 0xF
+    } else {
+        font_param.bold
+    };
+    FennelSrdFontStyle {
+        point_x: fennel_srd_point_byte(font_param.point_x),
+        point_y: fennel_srd_point_byte(font_param.point_y),
+        record_flags,
+        bold_value,
+        outline_value: font_param.outline as u32 & 0xF,
+        italic_value: font_param.italic as u32 & 3,
+    }
+}
+
 /// The exact state touched by the non-virtual SrTextCast method at
 /// `0xADA300..0xADA348`. Field names retain their offsets within the text
 /// state at `SrTextCast+0x1F4`; their higher-level authoring names are not yet
@@ -3046,6 +3108,48 @@ mod tests {
         };
         assert_eq!(fennel_srd_textbox_flags(1, cleared), 0);
         assert_eq!(fennel_font_param_effect_color(0xAABB_CCDD), 0xAADD_CCBB);
+    }
+
+    #[test]
+    fn srd_font_style_matches_ac6f50_f2c100_and_rfo_record_flags() {
+        assert_eq!(
+            fennel_srd_font_style(FontParamData::default()),
+            FennelSrdFontStyle {
+                point_x: 32,
+                point_y: 32,
+                record_flags: 1,
+                bold_value: -1,
+                outline_value: 0,
+                italic_value: 0,
+            }
+        );
+        assert_eq!(
+            fennel_srd_font_style(FontParamData {
+                display_shadow: true,
+                point_x: 257,
+                point_y: -20,
+                outline: -1,
+                italic: 6,
+                bold: 18,
+                ..FontParamData::default()
+            }),
+            FennelSrdFontStyle {
+                point_x: 1,
+                point_y: 1,
+                record_flags: 1 | 2 | 4 | 8 | FENNEL_EFFECT_GLYPH_FLAG,
+                bold_value: 2,
+                outline_value: 15,
+                italic_value: 2,
+            }
+        );
+        assert_eq!(
+            fennel_srd_font_style(FontParamData {
+                bold: -2,
+                ..FontParamData::default()
+            })
+            .bold_value,
+            -2
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。CATR `FontParamData` 到实际 mode、低位 flags、monospaced、裁剪和 shadow effect 的初始运行时链也已闭合并接入。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链同样已实现。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源，以及 FontParam point/style 字段的完整 glyph 下游。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。CATR `FontParamData` 到实际 mode、低位 flags、monospaced、裁剪、FontObject style/RFZ record flags 和 shadow effect 的初始运行时链也已闭合并接入。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链同样已实现。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源，以及 FontParam vertical/scroll 与 mode 6 调用点。
 
 ## TEXT 记录
 
@@ -413,7 +413,11 @@ Rust 现已用 `FennelSrdMode6ControlState`/`fennel_apply_srd_mode6_control` 固
 - TextBox position 由 `sub_AC6F50` 写为 `(-SrImage.origin_x,-SrImage.origin_y,0)`，Y 再加布局返回的 `+0x108`；
 - 2D 分支通过 `sub_604010` 计算 `TextBox.+0x2EC * local_translation` 后交给 `sub_7C10B0`；3D 分支给 CPU 顶点生成器的只有 local translation，`+0x2EC` 另交 renderer 状态。
 
-Rust 的初始 SRD draw 按已证明的 texture 前向链顺序执行 normal/effect 路径，并校验 record/runtime glyph texture token 一致。`diplayShadow=True` 的 110 个 TextCast 以初始 record bit `0x40000` 进入 effect-first buffer；颜色按 FontParam `shadowColor` 源字节 `2,1,0,3` 重排，位移取 `shadowX/Y`。完整语料 text `vertical=True` 为 0；14 个非默认 `pointX/pointY` 到最终 glyph resource/度量的下游仍需继续闭合。
+Rust 的初始 SRD draw 按已证明的 texture 前向链顺序执行 normal/effect 路径，并校验 record/runtime glyph texture token 一致。`diplayShadow=True` 的 110 个 TextCast 以初始 record bit `0x40000` 进入 effect-first buffer；颜色按 FontParam `shadowColor` 源字节 `2,1,0,3` 重排，位移取 `shadowX/Y`。完整语料 text `vertical=True` 为 0。
+
+FontParam style 的初始 RFZ 下游现也已闭合。`sub_AC6F50` 从 FontObject 当前 style 开始，把 point X/Y 以 signed `max(value,1)` 写入两个 WORD；`sub_F2C100` 随后清除各自高字节，所以结果保留低 8 位。outline/italic/bold 分别设置 style flags `0x08/0x04/0x02` 和数值槽 `+0x10/+0x14/+0x0C`，style 构造基础 flag 为 `1`。`sub_F3BB80/sub_F3BD40` 把 style 带入每个 token；`FontDriverRFO` 虚表 `+0x08 -> sub_F3B780` 只读取 token style `+0x00` 的字符码调用 `sub_F41C50`，并只复制 `+0x08` flags 到 runtime glyph `+0x08`。它不以 point 或 numeric style 选择 glyph；`faceId` 在 `sub_AC6F50` 中没有读取。`sub_7C90A0` 原样把 flags 写到 layout record `+0x0C`，已知 RFZ batch/render 消费者仅检测 shadow bit `0x40000`。Rust 现在生成真实的默认 `1` 或 shadow `0x40001`，并保留任意 outline/italic/bold 输入对应的 flags/value 变换。
+
+完整 1,292 个 TextCast 的 record style flags 为 `1:1182, 0x40001:110`；outline/italic/bold/faceId 非零数都是 0。14 个非默认 point 为 `28x28:12, 21x21:2`；pointY 的另一处读取位于 `sub_7C04F0`，仅在 flags 含 `0x800` 且不含 `0x20` 时减去 `pointY/2` 作边界比较，而这 14 个真实输入全部来自 mode 2/4 并含 `0x20`，因此初始路径不会进入该 margin 分支。
 
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 
@@ -511,4 +515,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 - `sub_7C5A20` Flag40 排版器及 flags bit `0x40` 的真实写入来源；
 - 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- FontParam `pointX/pointY` 等 style 字段到 FontObject `+0x50..+0x64` 后的 glyph resource/度量下游，以及 mode 6 显式 API 的真实调用点；
+- FontParam `vertical` correction、scroll 状态的实际消费，以及 mode 6 显式 API 的真实调用点；

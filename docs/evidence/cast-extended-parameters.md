@@ -85,6 +85,8 @@ runtime CAST + 0x198 == SrImage(+0xF8) + 0xA0
 
 `sub_AC6F50` 先根据 `+0x08` 执行 mode switch，随后总是把 `prohibition/wordWrap/monospaced` 分别写入 TextBox flags `0x01/0x02/0x200`，所以它们可以清掉构造器的低位。`vertical` 写 FontObject correction byte；`diplayShadow=True` 设置 record flag `0x40000`，把 `shadowX/Y` 转为 f32 写入 effect offset，并把 `shadowColor` 的源字节按 `2,1,0,3` 排列后复制到四个 effect color。Rust 按同样顺序解析记录并已把 mode、最终 flags、裁剪和 shadow effect 接到初始 Fennel draw；完整语料的 text `vertical=True` 为 0，因此尚未泛化未使用的 correction 分支。
 
+同函数把当前 FontObject 24 字节 style 复制到栈上，把 `pointX/pointY` 分别写入 style `+0x02/+0x04`，随后 `sub_F2C100` 清除两者高字节；因此精确结果是 signed `max(value,1)` 的低 8 位。outline/italic/bold 分别控制 style flags `0x08/0x04/0x02`，数值落在 `+0x10/+0x14/+0x0C` 并按 `0xF/0x3/正数时 0xF` 掩码。token iterator 将这 24 字节 style 复制到 glyph 请求；RFZ 的 `FontDriverRFO` 虚方法 `sub_F3B780` 只用请求 `+0x00` 的字符码调用 `sub_F41C50`，并只把请求 `+0x08` 的 flags 复制到 runtime glyph `+0x08`。它不读取两个 point 值或三个数值 style 字段；`faceId` 在整个 `sub_AC6F50` 中没有读取。`sub_7C90A0` 再把请求 flags 写到 layout record `+0x0C`，当前 record batch/render 消费者只检测其中的 shadow bit `0x40000`。
+
 ## 层级键合成
 
 `srd_update_cast_tree` (`0xAC0F80`) 从父键开始，只在对应 enable bit 开启时替换字段：
@@ -105,7 +107,8 @@ if flags & 8: key bits 0..7  = layer_level
 - 68,511 条通用属性记录；
 - 每个列表恰有一条 `ExtParamData`，共 29,138 条；
 - 17,825 个列表含 `FontParamData`；最终 mode 分布为 `0:17689, 1:1, 2:16, 4:119`；
-- 1,292 个 RFZ TextCast 的实际初始 mode 为 `0:1173, 2:12, 4:107`，其中 272 个 monospaced、110 个 shadow、0 个 vertical；
+- 1,292 个 RFZ TextCast 的实际初始 mode 为 `0:1173, 2:12, 4:107`，其中 272 个 monospaced、110 个 shadow、0 个 vertical；record style flags 精确为 `1:1182, 0x40001:110`；
+- point size 为 `32x32:1278, 28x28:12, 21x21:2`；14 个非默认值全部处于 `sub_7C04F0` 的 `flags&0x20` 路径，不进入 pointY/2 margin 分支；outline/italic/bold/faceId 非零数均为 0；
 - 28,863 条 render-preset override 为 `-1`；其余覆盖值分布在 `34..58` 和 `60`，没有把缺失的 `59` 自行补成合法样本值；
 - 图像型 CIMG/CSLI/CNUM 中，19,210 条 override 为 `-1`，274 条为非负覆盖；覆盖后有效 preset 除默认 `3/4/5/9` 外，确实出现 `34..58` 和 `60`。
 
@@ -113,6 +116,6 @@ Rust 语料测试同时保留旧 53 文件集合的独立精确统计，防止�
 
 ## 证据边界
 
-已经闭环：CATR 列表和 72 字节记录布局、NODE 挂接、四种已处理源 type、`ExtParamData` token、12 字节结构、SrImage preset 覆盖、继承式层级键，以及 SrTextCast 对原始 `FontParamData` 的顺序解析与 mode/flags/shadow 输入。
+已经闭环：CATR 列表和 72 字节记录布局、NODE 挂接、四种已处理源 type、`ExtParamData` token、12 字节结构、SrImage preset 覆盖、继承式层级键，以及 SrTextCast 对原始 `FontParamData` 的顺序解析与初始 RFZ mode/TextBox flags/style record/shadow 输入。
 
-尚未闭环：其余命名 CATR 数据各自的业务结构、未处理源 type 的运行时对象、畸形/溢出 `atoi` 输入、FontParam `pointX/pointY` 等 style 字段到最终 glyph resource/度量的完整下游，以及 preset `34..60` 对最终 ShapeEnv shader 模块的逐项像素公式。后者必须继续由 Ceylon shader-key 与生成代码证明，不能仅凭属性名称猜测。
+尚未闭环：其余命名 CATR 数据各自的业务结构、未处理源 type 的运行时对象、畸形/溢出 `atoi` 输入、FontParam vertical/scroll 的实际消费与 mode 6 显式 API 调用点，以及 preset `34..60` 对最终 ShapeEnv shader 模块的逐项像素公式。后者必须继续由 Ceylon shader-key 与生成代码证明，不能仅凭属性名称猜测。

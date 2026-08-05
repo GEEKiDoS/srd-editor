@@ -3,10 +3,10 @@ use std::fmt;
 
 use crate::attribute::CastAttributeValue;
 use crate::fennel::{
-    FENNEL_EFFECT_GLYPH_FLAG, FennelFontSlotRegistry, FennelFontSlotRequest, FennelNormalDrawInput,
-    FennelOwnedTextureBatch, FennelResolvedGlyph, FennelStaticTextProperties,
-    build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
-    fennel_font_param_effect_color, layout_fennel_static_srd_font_param,
+    FennelFontSlotRegistry, FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch,
+    FennelResolvedGlyph, FennelStaticTextProperties, build_fennel_normal_vertex_batches,
+    build_fennel_plain_record_stream_with_font_slots, fennel_font_param_effect_color,
+    fennel_srd_font_style, layout_fennel_static_srd_font_param,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -433,6 +433,7 @@ pub fn build_evidence_complete_initial_fennel_draws(
             }
             let primary_colors = primary_rgba.map(pack_fennel_record_color);
             let secondary_color = pack_fennel_record_color(secondary_rgba);
+            let font_style = fennel_srd_font_style(font_param);
             let resolve_glyph = |font_slot_id: u16, code: u16| {
                 let resource_name = font_registry.resource_for_slot(font_slot_id)?;
                 let runtime_font = runtime_fonts.get(resource_name.as_slice())?;
@@ -444,15 +445,7 @@ pub fn build_evidence_complete_initial_fennel_draws(
             let mut stream = build_fennel_plain_record_stream_with_font_slots(
                 &text.text,
                 primary_slot,
-                properties.glyph_placement(
-                    0,
-                    if font_param.display_shadow {
-                        FENNEL_EFFECT_GLYPH_FLAG
-                    } else {
-                        0
-                    },
-                    primary_colors,
-                ),
+                properties.glyph_placement(0, font_style.record_flags, primary_colors),
                 2048,
                 resolve_glyph,
             )
