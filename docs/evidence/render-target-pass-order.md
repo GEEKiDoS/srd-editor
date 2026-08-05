@@ -10,7 +10,15 @@
 - `ScenePassModule+0x18..+0x20` 是步长 `0x18` 的 rule vector；
 - rule vector 的构造 reserve 数为 128。
 
-`sub_64BAB0` 从 rule vector 首地址开始前向扫描，按 packet 分类值、rule mode 和 depth/u16 threshold 选择第一个匹配项。匹配后以该 rule 的数组下标调用 `SceneModelModule` 虚表 `+0x08`。这里没有比较器或重排；depth 只参与 rule 条件，并可写回 command `+0x30`。
+`sub_64BAB0` 先由 `sub_63E760` 计算 command class。SRD 经全局队列进入 type-1 command 分支时，覆盖顺序为：
+
+1. packet `+0x60 bit 0x20` 产生 class 2，否则 bit `0x40` 产生 class 1，否则 class 0；
+2. packet `+0x60 bit 0x80` 或 packet `+0x84 bit 0x10` 覆盖为 class 3；
+3. packet `+0x60 bit 0x2000` 最后覆盖为 class 4。
+
+因此 SRD 固定的 packet `+0x84 low=0x11` 会使普通初始 `flags_60=0x4000` 得到 class 3；若后续状态含 `0x2000` 则得到 class 4。rule 的第二个筛选字段是 `(packet+0x64 >> 25) & 0x0F`；packet 构造初值为 0。
+
+`sub_64BAB0` 随后从 rule vector 首地址开始前向扫描。class selector 支持精确值，以及 `6=全部`、`7=class<2`、`5=class<=2`；attribute group 必须相等。condition mode 为 `0=无条件`、`1=depth<threshold`、`2=depth>=threshold`、`3=u16>=threshold`、`4=u16<threshold`，其他 mode 不匹配。它选择第一个匹配项，并以数组下标调用 `SceneModelModule` 虚表 `+0x08`。这里没有比较器或重排；depth 只参与 rule 条件，并在 rule `+0x0C < 8` 时写回 command `+0x30`。
 
 ## SceneModelModule 的 per-pass 容器
 
@@ -63,13 +71,12 @@
 
 EntryInfo 范围允许重复或重叠；二进制会再次遍历同一个 pass，因此不能擅自去重。
 
-Rust 的 `target_pass::build_evidence_scene_model_submission_indices` 已复现这一段已经闭环的稳定分桶与 32-entry inclusive-range 遍历。它要求调用者提供已经分类出的 rule index 和明确的 target EntryInfo，不负责猜测 target profile。
+Rust 的 `target_pass` 已实现 type-1/SRD class、attribute group、首个 rule 匹配，以及稳定分桶与 32-entry inclusive-range 遍历。API 仍要求调用者提供明确的 target rule 表、depth/order 输入和 EntryInfo，不负责猜测 target profile。
 
 ## 仍未闭合的输入
 
 队列容器、稳定性和 flush 遍历已经闭环，但独立 SRD 文件仍不足以生成唯一最终 GPU 列表。还需继续证明：
 
-- `sub_443095` 对全部 SRD packet 状态产生的分类值；
 - Chusan 实际 `MainScene`、`BgScene`、common background 宿主及其他 target 在当前模式下安装的 `0x18` rule records；
 - 对应 target 当前 swap buffer 的 32 个 EntryInfo `(first,last)`；
 - target filter 的激活集合和切换时序；
