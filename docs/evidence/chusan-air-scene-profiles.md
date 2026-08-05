@@ -28,6 +28,7 @@ Chusan 构造路径 `sub_AE4660 -> sub_AE52B0` 创建两个 1752-byte `air::Scen
 | `DrawIndex` (property 2) | 0 | 16 | `sub_424B1D -> sub_604440` 固定写 property 2 |
 | `Attribute` (property 3) | 0 | 0 | `0x6002CC..0x600310` 以默认 0、范围 0..7 注册；具体初始化没有改写 |
 | `PresentMode` (property 4) | 1（构造默认） | 0 | `sub_43B97B -> sub_604850` 固定写 property 4 |
+| `RotationMode` (property 6) | 0 | 0 | 构造默认 0；当前 ROM 配置使 Main 的条件写 2 不执行 |
 | `ShaderOnDemand` (property 7) | false | false | `0xAE5390..0xAE53A1` / `0xAE5491..0xAE54A2` |
 | `RequestColorOffscreen` (property 14) | true | true | `0xAE53A6..0xAE53B7` / `0xAE54A7..0xAE54B8` |
 | `RequestDepthOffscreen` (property 15) | true | true | `0xAE53BC..0xAE53CD` / `0xAE54BD..0xAE54CE` |
@@ -111,6 +112,12 @@ scene_width / max(scene_height, 1)
 
 因此 MainScene/BgScene 的已证明 target Camera 是上述构造参数，加上运行时 present buffer 的宽高比。
 
+## RotationMode 的当前游戏值
+
+`air::Scene` 构造在 `0x60040E..0x600452` 把 property 6 注册为 `RotationMode`，默认 0。Chusan MainScene 构造 `sub_AE52B0` 在 `0xAE53DC..0xAE53EA` 仅当 `sub_43404F()==1` 时才写 2；BgScene 没有写该属性。
+
+`sub_43404F -> sub_7D7DB0` 只读取全局配置 `0x1CB01B8` 的低字节。完整 xref 只有 ROM setup `sub_7D8390` 写该位置；`0x7D8ABC` 执行 `LOWORD(...)=0x0100`，所以低字节为 0。当前二进制的 MainScene 条件分支因此不执行，MainScene/BgScene 的 RotationMode 都是 0。该属性不能用来解释 Common background 的窄投影，也不能作为编辑器侧旋转补偿。
+
 ## Width / Height 的来源边界
 
 `sub_5FFF60` 从 `MEMORY[0x1CC520C][PresentIndex]` 取得 present wrapper，再以 `sub_E7C8F0` / `sub_E7C8E0` 读取 wrapper `+0x18/+0x1C` 作为 scene Width/Height。wrapper 构造 `sub_E7CD10` 又从 primary framebuffer `+0x10/+0x14` 复制这两个值；primary framebuffer 最终使用图形启动配置或实际 display mode 建立。
@@ -124,6 +131,7 @@ scene_width / max(scene_height, 1)
 - `CHUSAN_MAIN_SCENE`；
 - `CHUSAN_BG_SCENE`；
 - 两个 target 的初始 Enable、DrawIndex、Attribute、dispatch mask；
+- 两个 target 的当前 `RotationMode=0`；
 - Advertise `DrawMask=0xFFFF` 对 Main 接纳、对 Bg 拒绝的 type-1 filter；
 - 两个 target 共用的五项 BasePass/rule 与 32 项 EntryInfo profile；
 - `projection_view_for_present_size(width, height)`。

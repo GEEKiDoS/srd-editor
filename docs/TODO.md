@@ -24,7 +24,7 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 
 - 游戏模式切换之后 MainScene/BgScene Enable、manager current-target，以及可能存在的专用 offscreen target 的当帧组合时序。当前只外推到已证明的构造完成状态。
 - 游戏最终 target rotation/offscreen 合成是否在 camera/vertex shader 之后提供额外矩阵；当前证据只证明 target Camera 的 `Projection*View` provider。
-- 原版运行时该样本的最终 GPU 常量、viewport 和 SrPlayer `+0x1C/+0x64/+0x94/+0xC4` 实值。
+- 原版运行时该样本的最终 GPU 常量与 viewport。SrPlayer parent、local/composite matrix、`FirstCalcMatrix` 选择位及其 renderer 调用点已闭环为 null/identity/false，不再列为未知输入。
 
 恢复调查时应继续追 target rotation/offscreen 合成路径，或取得原版运行时 viewport、最终 VS 常量和 SrPlayer 矩阵捕获。禁止以 `Aspect = Width / Height`、自动 fit-to-view、强制 2D 或任意 X scale 作为游戏逻辑修复。
 

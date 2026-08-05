@@ -41,6 +41,7 @@ pub struct ChusanAirSceneTargetProfile {
     pub draw_index: u8,
     pub attribute: u8,
     pub present_mode: u8,
+    pub rotation_mode: u8,
     pub shader_on_demand: bool,
     pub request_color_offscreen: bool,
     pub request_depth_offscreen: bool,
@@ -56,6 +57,7 @@ pub const CHUSAN_MAIN_SCENE: ChusanAirSceneTargetProfile = ChusanAirSceneTargetP
     draw_index: 0,
     attribute: 0,
     present_mode: 1,
+    rotation_mode: 0,
     shader_on_demand: false,
     request_color_offscreen: true,
     request_depth_offscreen: true,
@@ -71,6 +73,7 @@ pub const CHUSAN_BG_SCENE: ChusanAirSceneTargetProfile = ChusanAirSceneTargetPro
     draw_index: 16,
     attribute: 0,
     present_mode: 0,
+    rotation_mode: 0,
     shader_on_demand: false,
     request_color_offscreen: true,
     request_depth_offscreen: true,
@@ -260,11 +263,13 @@ mod tests {
         assert_eq!(CHUSAN_MAIN_SCENE.registration_order, 10_000);
         assert_eq!(CHUSAN_MAIN_SCENE.draw_index, 0);
         assert_eq!(CHUSAN_MAIN_SCENE.present_mode, 1);
+        assert_eq!(CHUSAN_MAIN_SCENE.rotation_mode, 0);
 
         assert_eq!(CHUSAN_BG_SCENE.name, "BgScene");
         assert_eq!(CHUSAN_BG_SCENE.registration_order, 9_900);
         assert_eq!(CHUSAN_BG_SCENE.draw_index, 16);
         assert_eq!(CHUSAN_BG_SCENE.present_mode, 0);
+        assert_eq!(CHUSAN_BG_SCENE.rotation_mode, 0);
 
         assert!(CHUSAN_MAIN_SCENE.registration_sets_manager_current_target);
         assert!(!CHUSAN_BG_SCENE.registration_sets_manager_current_target);

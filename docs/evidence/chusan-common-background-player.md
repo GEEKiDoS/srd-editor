@@ -25,6 +25,8 @@ SrPlayer 的 GraphNode 构造把 parent 清零，并把 local/composite 3x4 矩�
 
 对象以精确名称 `CommonBackGroundObject` 注册到全局 object manager，其他画面按该名称查找；它不是被保存进每个引用该背景的 SRD 画面对象中的成员。因此当前已证明的 `FirstCalcMatrix` 输入是构造 identity，而不是编辑器为了扩大画面加入的补偿矩阵。
 
+调用点也已闭合：`srd_player_impl_prepare_renderer` (`0xAACA80`) 在 `0xAACB05..0xAACB19` 通过 SrPlayer 虚表 `+0x40` 取得 `sea_node_get_first_calc_affine_matrix` (`0x60A230`) 的返回指针，并原样传给 `srd_renderer_configure_project_camera`。SrPlayer `+0xC4` 只是 property 3 的选择 byte；false 返回 composite `+0x94`，true 才返回 local `+0x64`。Common 为 false、parent 为空，因此这里不存在尚未建模的 `+0xC4` 矩阵或内部横向缩放。
+
 ## `2DLayer=6` 到 renderer key
 
 `sub_AAD040` (`0xAAD040`) 对 property 6 的同步直接读写 `SrPlayer::Impl+0x1A8` bits `8..14`。`srd_player_get_renderer` 返回 `Impl+0x10`，所以该地址同时就是嵌入式 `SrRenderer+0x198`，中间不存在复制层。
