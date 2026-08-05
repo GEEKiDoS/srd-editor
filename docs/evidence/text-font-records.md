@@ -419,7 +419,9 @@ FontParam style 的初始 RFZ 下游现也已闭合。`sub_AC6F50` 从 FontObjec
 
 完整 1,292 个 TextCast 的 record style flags 为 `1:1182, 0x40001:110`；outline/italic/bold/faceId 非零数都是 0。14 个非默认 point 为 `28x28:12, 21x21:2`；pointY 的另一处读取位于 `sub_7C04F0`，仅在 flags 含 `0x800` 且不含 `0x20` 时减去 `pointY/2` 作边界比较，而这 14 个真实输入全部来自 mode 2/4 并含 `0x20`，因此初始路径不会进入该 margin 分支。
 
-scroll 初始状态也已闭合。`sub_AD8D50` 搜索运行时文本中的 `$D` 与 `$L`；两者都不存在时，text state `+0xF4/+0xF8/+0xFC` 分别成为 `0.0/-1/scrollSpeed(+0x12C)`。`sub_AD8D00` 在 Cast enable byte `+0x88` 非零时按 `(host+0x94 * argument) * 0x3C888889` 的 f32 顺序累加 `+0xF4`。`sub_AC5740` 再生成：
+scroll 文本预处理和状态也已闭合。`sub_AD8D50` 先按索引顺序对 `$[0]..$[7]` 各执行一次 replace-all；`sub_5FDDB0` 每次替换后从插入串末尾继续，因此同一槽不会递归展开，但后续槽仍会处理先前替换新生成的 token。随后 `sub_AD9D80` 先处理 `$D`、再在删 D 后的结果上处理 `$L`。每种控制都先全串搜索大写形式，只有完全不存在大写时才搜索小写；只删除选中的第一个。若紧随 `[` 且之后存在 `]`，括号内容交给 CRT `atoi`，并连同完整括号删除；缺失右括号时只删两字节控制串；没有完整参数时保留调用方默认整数。FontManager 构造函数把 `$D` 默认值 `+0x38` 初始化为 `20`。
+
+`$D` 命中时 text state `+0xF8` 取解析值，否则为 `-1`；`$L` 命中时 `+0xFC=0`，否则取 `scrollSpeed(+0x12C)`；`+0xF4` 总是清零。`sub_AD8D00` 在 Cast enable byte `+0x88` 非零时按 `(host+0x94 * argument) * 0x3C888889` 的 f32 顺序累加 `+0xF4`。`sub_AC5740` 再生成：
 
 ```text
 TextBox +0x2C0 = F8 > 0 ? cvttss2si(float(F8) * F4) : -1
@@ -428,7 +430,9 @@ TextBox +0x2C8 = max(float(+0x130) * float(FC), 0)
 TextBox +0x2CC = max(float(+0x134) * float(FC), 0)
 ```
 
-`sub_7C04F0` 把最终二维 draw offset 作为参数 7 交给 `sub_7C7F90`，后者在 `0x7C84F5/0x7C84F9` 从 normal/effect glyph origin 两轴减去它。Rust 的 `FennelNormalDrawInput` 现已显式携带该值。完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 分支输入 `+0x2C4=0`，两轴 draw offset 精确为零。动态 `$D/$L` 解析及非零时钟下的完整循环位移仍保留为下一证据边界。
+`sub_7C04F0` 把最终二维 draw offset 作为参数 7 交给 `sub_7C7F90`，后者在 `0x7C84F5/0x7C84F9` 从 normal/effect glyph origin 两轴减去它。其滚动位移现已逐指令闭合：入口仅在 flags 含 `0x20`（横向）或 `0x4000`（纵向）时启用；`0x800` fit guard 横向比较实际几何宽与 clip width，纵向比较 `几何高 - floor(pointY/2)` 与 clip height，命中后临时以 `flags & 0xFFFF835F` 重排版并使用零位移。横向 `0x1000` 为 `fmod(+0x2C4 + clipWidth, clipWidth + textWidth) - clipWidth`；另一支实际重排版 `text + gap + text`，再以 `fmod(+0x2C4, measuredWidth - textWidth)` 循环。`0x2000` 的 gap 是 FontManager `+0x34` 个全角空格，构造默认值为 `3`；常量 CP932 `81 40` 经 `sub_103DC90` 转为 UTF-8 `E3 80 80`。纵向实际重排版 `text + "$n$n$n" + text`；`0x1000` 分支把 overflow、`+0x2C8` wait 与 `+0x2CC` tail 组成三段停留/移动函数，非 `0x1000` 分支只在 `fmod(+0x2C4, clipHeight + repeatedHeight) < repeatedHeight - textHeight` 时采用余数。所有 fmod 均来自 `sub_10461A0 -> UCRT _CIfmod`。
+
+Rust 的 `prepare_fennel_srd_runtime_text`、`build_fennel_srd_repeated_text` 与 `prepare_fennel_srd_draw` 已分别固化上述文本、辅助串和位移/重排版决策；无法证明的 `atoi` 溢出不会伪造 CRT 结果，而是显式报错。完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 输入 `+0x2C4=0`，两轴 draw offset 精确为零。当前剩余接线边界是把 `sub_7BFAB0` 的实际几何测量、fit guard 二次排版和编辑器宿主时钟/8 个替换槽送入 draw-list，而不是再猜测循环公式。
 
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 

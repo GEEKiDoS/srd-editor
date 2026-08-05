@@ -418,9 +418,9 @@ pub fn fennel_apply_srd_mode6_control(
 /// host-frame value and the SrTextCast update argument by `sub_AD8D00`.
 pub const FENNEL_SRD_CLOCK_SCALE: f32 = f32::from_bits(0x3C88_8889);
 
-/// SrTextCast runtime fields used by `sub_AD8D00` and `sub_AC5740`. Offset
-/// names are retained because `$D`/`$L` control parsing has not yet been
-/// generalized beyond the no-control SRD initialization path.
+/// SrTextCast runtime fields used by `sub_AD8D50`, `sub_AD8D00`, and
+/// `sub_AC5740`. Offset names are retained until the surrounding runtime text
+/// state has a complete evidence-backed host representation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FennelSrdScrollState {
     /// Text state `+0xF4` (`SrTextCast+0x2E8`).
@@ -440,6 +440,385 @@ pub struct FennelSrdScrollOutputs {
     pub field_2c4: f32,
     pub field_2c8: f32,
     pub field_2cc: f32,
+}
+
+/// Exact single-precision threshold compared by the two horizontal period
+/// branches in `sub_7C04F0` (`dword_1796030`).
+pub const FENNEL_SRD_SCROLL_PERIOD_EPSILON: f32 = f32::from_bits(0x3400_0000);
+/// `font::FontManager` constructor field `+0x34`, read by the horizontal
+/// mode-4 repeated-string builder in `sub_7C04F0`.
+pub const FENNEL_DEFAULT_REPEAT_SPACE_COUNT: i32 = 3;
+/// `font::FontManager` constructor field `+0x38`, used as `$D`'s value when
+/// the selected control has no complete bracket argument.
+pub const FENNEL_DEFAULT_D_VALUE: i32 = 20;
+/// `unk_18E8078` is CP932 `0x81,0x40`; `sub_103DC90` converts it through
+/// UTF-16 to the UTF-8 text consumed by Fennel.
+pub const FENNEL_REPEAT_SPACE_UTF8: &[u8; 3] = b"\xE3\x80\x80";
+
+/// Measurements consumed after `sub_7C04F0` has laid out the current text.
+/// `repeated_text_size` is deliberately supplied by the caller: the binary
+/// measures a second, actually laid-out string rather than deriving its size
+/// arithmetically.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelSrdDrawPreparationInput {
+    pub textbox_flags: u32,
+    pub text_size: [f32; 2],
+    pub clip_size: [f32; 2],
+    pub font_point_y: u16,
+    pub scroll: FennelSrdScrollOutputs,
+    /// Horizontal non-`0x1000`: `text + gap + text`, where mode `0x2000`
+    /// inserts the host-configured count of full-width spaces. Vertical:
+    /// `text + "$n$n$n" + text`.
+    pub repeated_text_size: Option<[f32; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FennelSrdDrawPreparation {
+    DrawOffset([f32; 2]),
+    /// The `0x800` fit guard temporarily clears exactly `0x7CA0`, rebuilds
+    /// the TextBox records, restores the original flags, and then draws with
+    /// a zero offset.
+    RelayoutWithoutScrollModes {
+        layout_flags: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelSrdDrawPreparationError {
+    MissingRepeatedTextMeasurement { textbox_flags: u32 },
+}
+
+impl std::fmt::Display for FennelSrdDrawPreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRepeatedTextMeasurement { textbox_flags } => write!(
+                formatter,
+                "Fennel TextBox flags {textbox_flags:#010x} require the binary's repeated-text measurement"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FennelSrdDrawPreparationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FennelSrdRepeatedTextError {
+    LengthOverflow,
+    AllocationFailed,
+}
+
+impl std::fmt::Display for FennelSrdRepeatedTextError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LengthOverflow => {
+                formatter.write_str("Fennel repeated text length overflows usize")
+            }
+            Self::AllocationFailed => formatter.write_str("Fennel repeated text allocation failed"),
+        }
+    }
+}
+
+impl std::error::Error for FennelSrdRepeatedTextError {}
+
+/// Constructs the exact auxiliary text that `sub_7C04F0` submits for a second
+/// layout/measurement pass. `None` means the selected branch does not issue
+/// that pass.
+pub fn build_fennel_srd_repeated_text(
+    source: &[u8],
+    textbox_flags: u32,
+    repeat_space_count: i32,
+) -> Result<Option<Vec<u8>>, FennelSrdRepeatedTextError> {
+    if textbox_flags & 0x4020 == 0 || textbox_flags & 0x20 != 0 && textbox_flags & 0x1000 != 0 {
+        return Ok(None);
+    }
+
+    let separator = if textbox_flags & 0x20 != 0 {
+        if textbox_flags & 0x2000 != 0 {
+            FENNEL_REPEAT_SPACE_UTF8.as_slice()
+        } else {
+            &[]
+        }
+    } else {
+        b"$n$n$n"
+    };
+    let separator_count = if textbox_flags & 0x20 != 0 {
+        usize::try_from(repeat_space_count.max(0)).expect("nonnegative i32 fits usize")
+    } else {
+        1
+    };
+    let separator_bytes = separator
+        .len()
+        .checked_mul(separator_count)
+        .ok_or(FennelSrdRepeatedTextError::LengthOverflow)?;
+    let capacity = source
+        .len()
+        .checked_mul(2)
+        .and_then(|length| length.checked_add(separator_bytes))
+        .ok_or(FennelSrdRepeatedTextError::LengthOverflow)?;
+    let mut repeated = Vec::new();
+    repeated
+        .try_reserve_exact(capacity)
+        .map_err(|_| FennelSrdRepeatedTextError::AllocationFailed)?;
+    repeated.extend_from_slice(source);
+    for _ in 0..separator_count {
+        repeated.extend_from_slice(separator);
+    }
+    repeated.extend_from_slice(source);
+    Ok(Some(repeated))
+}
+
+/// Reproduces the fit guard and final two-float draw preparation at
+/// `0x7C0582..0x7C0A4A`. The caller remains responsible for constructing and
+/// laying out the repeated string documented by `repeated_text_size`.
+pub fn prepare_fennel_srd_draw(
+    input: FennelSrdDrawPreparationInput,
+) -> Result<FennelSrdDrawPreparation, FennelSrdDrawPreparationError> {
+    let flags = input.textbox_flags;
+    if flags & 0x4020 == 0 {
+        return Ok(FennelSrdDrawPreparation::DrawOffset([0.0; 2]));
+    }
+
+    let [text_width, text_height] = input.text_size;
+    let [clip_width, clip_height] = input.clip_size;
+    if flags & 0x800 != 0 {
+        let fits = if flags & 0x20 != 0 {
+            // `comiss text_width, clip_width` followed by `jbe` also treats
+            // unordered input as fitting.
+            !(text_width > clip_width)
+        } else {
+            let point_y_half = (input.font_point_y >> 1) as f32;
+            !(text_height - point_y_half > clip_height)
+        };
+        if fits {
+            return Ok(FennelSrdDrawPreparation::RelayoutWithoutScrollModes {
+                layout_flags: flags & 0xFFFF_835F,
+            });
+        }
+    }
+
+    if flags & 0x20 != 0 {
+        let offset_x = if flags & 0x1000 != 0 {
+            let period = clip_width + text_width;
+            if period > FENNEL_SRD_SCROLL_PERIOD_EPSILON {
+                fennel_cifmod(input.scroll.field_2c4 + clip_width, period) - clip_width
+            } else {
+                0.0
+            }
+        } else {
+            let repeated_width = input.repeated_text_size.ok_or(
+                FennelSrdDrawPreparationError::MissingRepeatedTextMeasurement {
+                    textbox_flags: flags,
+                },
+            )?[0];
+            // Preserve `subss repeated, text*2; addss text` rather than
+            // algebraically shortening the single-precision chain.
+            let period = (repeated_width - text_width * 2.0) + text_width;
+            if period > FENNEL_SRD_SCROLL_PERIOD_EPSILON {
+                fennel_cifmod(input.scroll.field_2c4, period)
+            } else {
+                0.0
+            }
+        };
+        return Ok(FennelSrdDrawPreparation::DrawOffset([offset_x, 0.0]));
+    }
+
+    let repeated_height = input.repeated_text_size.ok_or(
+        FennelSrdDrawPreparationError::MissingRepeatedTextMeasurement {
+            textbox_flags: flags,
+        },
+    )?[1];
+    let offset_y = if flags & 0x1000 != 0 {
+        let overflow = text_height - clip_height;
+        let tail_end = input.scroll.field_2cc + overflow;
+        let period_core = ((repeated_height + tail_end) - text_height) - text_height + clip_height;
+        let remainder = fennel_cifmod(input.scroll.field_2c4, input.scroll.field_2c8 + period_core);
+        if overflow > remainder {
+            remainder
+        } else if tail_end > remainder {
+            overflow
+        } else if period_core > remainder {
+            (remainder + overflow) - tail_end
+        } else {
+            0.0
+        }
+    } else {
+        let remainder = fennel_cifmod(input.scroll.field_2c4, clip_height + repeated_height);
+        if repeated_height - text_height > remainder {
+            remainder
+        } else {
+            0.0
+        }
+    };
+    Ok(FennelSrdDrawPreparation::DrawOffset([0.0, offset_y]))
+}
+
+fn fennel_cifmod(dividend: f32, divisor: f32) -> f32 {
+    // `sub_10461A0` loads both f32 arguments onto the x87 stack and tail-jumps
+    // to UCRT `_CIfmod`; f64 represents both source operands exactly before
+    // the result is rounded back by the caller's `fstp dword ptr`.
+    ((dividend as f64) % (divisor as f64)) as f32
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FennelPreparedRuntimeText {
+    pub text: Vec<u8>,
+    pub scroll_state: FennelSrdScrollState,
+    pub found_d: bool,
+    pub found_l: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FennelRuntimeTextControlError {
+    AtoiOverflow { control: u8, value: Vec<u8> },
+}
+
+impl std::fmt::Display for FennelRuntimeTextControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtoiOverflow { control, value } => write!(
+                formatter,
+                "Fennel ${} control atoi input overflows i32: {:?}",
+                char::from(*control),
+                String::from_utf8_lossy(value)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FennelRuntimeTextControlError {}
+
+/// Reproduces `sub_AD8D50`'s narrow-string preprocessing order:
+///
+/// 1. replace every `$[0]..$[7]` occurrence in ascending index order;
+/// 2. remove one `$D` (or `$d` only when no uppercase occurrence exists),
+///    optionally consuming an immediately following complete `[value]`;
+/// 3. repeat the same operation for `$L`/`$l` on the D-stripped text.
+///
+/// The game initializes the D value from its host-global default before the
+/// optional bracketed `atoi`. Integer overflow is rejected here because the
+/// exact UCRT overflow result is outside the currently proven domain.
+pub fn prepare_fennel_srd_runtime_text(
+    source: &[u8],
+    substitutions: [&[u8]; 8],
+    default_d: i32,
+    font_param: FontParamData,
+) -> Result<FennelPreparedRuntimeText, FennelRuntimeTextControlError> {
+    let mut text = source.to_vec();
+    for (index, replacement) in substitutions.into_iter().enumerate() {
+        let token = [b'$', b'[', b'0' + index as u8, b']'];
+        fennel_replace_all_forward(&mut text, &token, replacement);
+    }
+
+    let (found_d, d_value) = fennel_remove_runtime_control(&mut text, b'D', default_d)?;
+    let (found_l, _) = fennel_remove_runtime_control(&mut text, b'L', d_value)?;
+    Ok(FennelPreparedRuntimeText {
+        text,
+        scroll_state: FennelSrdScrollState {
+            field_f4: 0.0,
+            field_f8: if found_d { d_value } else { -1 },
+            field_fc: if found_l { 0 } else { font_param.scroll_speed },
+            field_130: font_param.scroll_wait,
+            field_134: font_param.field_34,
+        },
+        found_d,
+        found_l,
+    })
+}
+
+fn fennel_replace_all_forward(text: &mut Vec<u8>, token: &[u8], replacement: &[u8]) {
+    let mut start = 0usize;
+    while let Some(relative) = text[start..]
+        .windows(token.len())
+        .position(|candidate| candidate == token)
+    {
+        let position = start + relative;
+        text.splice(
+            position..position + token.len(),
+            replacement.iter().copied(),
+        );
+        // `sub_5FDDB0` resumes after the inserted replacement, so a token
+        // inside replacement text is not recursively expanded in this pass.
+        start = position + replacement.len();
+    }
+}
+
+fn fennel_remove_runtime_control(
+    text: &mut Vec<u8>,
+    upper: u8,
+    default_value: i32,
+) -> Result<(bool, i32), FennelRuntimeTextControlError> {
+    let uppercase = [b'$', upper];
+    let lowercase = [b'$', upper.to_ascii_lowercase()];
+    let position = text
+        .windows(uppercase.len())
+        .position(|candidate| candidate == uppercase)
+        .or_else(|| {
+            text.windows(lowercase.len())
+                .position(|candidate| candidate == lowercase)
+        });
+    let Some(position) = position else {
+        return Ok((false, default_value));
+    };
+
+    let mut remove_end = position + 2;
+    let mut value = default_value;
+    if text.get(remove_end) == Some(&b'[') {
+        if let Some(close_offset) = text[remove_end + 1..].iter().position(|byte| *byte == b']') {
+            let close = remove_end + 1 + close_offset;
+            let source = &text[remove_end + 1..close];
+            value = fennel_checked_c_atoi(source).ok_or_else(|| {
+                FennelRuntimeTextControlError::AtoiOverflow {
+                    control: upper,
+                    value: source.to_vec(),
+                }
+            })?;
+            remove_end = close + 1;
+        }
+    }
+    text.drain(position..remove_end);
+    Ok((true, value))
+}
+
+fn fennel_checked_c_atoi(bytes: &[u8]) -> Option<i32> {
+    let mut index = 0usize;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C))
+    {
+        index += 1;
+    }
+    let negative = match bytes.get(index) {
+        Some(b'-') => {
+            index += 1;
+            true
+        }
+        Some(b'+') => {
+            index += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut found = false;
+    let mut magnitude = 0u64;
+    while let Some(byte @ b'0'..=b'9') = bytes.get(index) {
+        found = true;
+        magnitude = magnitude
+            .checked_mul(10)?
+            .checked_add(u64::from(byte - b'0'))?;
+        index += 1;
+    }
+    if !found {
+        return Some(0);
+    }
+    if negative {
+        if magnitude == 0x8000_0000 {
+            Some(i32::MIN)
+        } else {
+            i32::try_from(magnitude).ok().map(|value| -value)
+        }
+    } else {
+        i32::try_from(magnitude).ok()
+    }
 }
 
 impl FennelSrdScrollState {
@@ -3348,6 +3727,234 @@ mod tests {
         assert_eq!(revealed.field_2c4, 70.0);
         assert_eq!(revealed.field_2c8, 0.0);
         assert_eq!(revealed.field_2cc, 0.0);
+    }
+
+    fn draw_preparation_input(textbox_flags: u32) -> FennelSrdDrawPreparationInput {
+        FennelSrdDrawPreparationInput {
+            textbox_flags,
+            text_size: [50.0, 100.0],
+            clip_size: [100.0, 40.0],
+            font_point_y: 32,
+            scroll: FennelSrdScrollOutputs {
+                maximum_glyphs: -1,
+                field_2c4: 0.0,
+                field_2c8: 20.0,
+                field_2cc: 10.0,
+            },
+            repeated_text_size: None,
+        }
+    }
+
+    #[test]
+    fn srd_draw_preparation_matches_the_800_fit_relayout_guard() {
+        assert_eq!(
+            prepare_fennel_srd_draw(draw_preparation_input(0x1CA3)).unwrap(),
+            FennelSrdDrawPreparation::RelayoutWithoutScrollModes { layout_flags: 3 }
+        );
+
+        let mut vertical = draw_preparation_input(0x6C03);
+        vertical.text_size[1] = 56.0;
+        assert_eq!(
+            prepare_fennel_srd_draw(vertical).unwrap(),
+            FennelSrdDrawPreparation::RelayoutWithoutScrollModes { layout_flags: 3 }
+        );
+    }
+
+    #[test]
+    fn srd_draw_preparation_matches_horizontal_7c04f0_branches() {
+        let mut entering = draw_preparation_input(0x1020);
+        entering.scroll.field_2c4 = 80.0;
+        assert_eq!(
+            prepare_fennel_srd_draw(entering).unwrap(),
+            FennelSrdDrawPreparation::DrawOffset([-70.0, 0.0])
+        );
+
+        let mut repeating = draw_preparation_input(0x2020);
+        repeating.scroll.field_2c4 = 100.0;
+        repeating.repeated_text_size = Some([140.0, 0.0]);
+        assert_eq!(
+            prepare_fennel_srd_draw(repeating).unwrap(),
+            FennelSrdDrawPreparation::DrawOffset([10.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn srd_repeated_text_matches_horizontal_and_vertical_binary_builders() {
+        assert_eq!(
+            build_fennel_srd_repeated_text(b"text", 0x2020, FENNEL_DEFAULT_REPEAT_SPACE_COUNT,)
+                .unwrap()
+                .unwrap(),
+            b"text\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80text"
+        );
+        assert_eq!(
+            build_fennel_srd_repeated_text(b"text", 0x0020, -7)
+                .unwrap()
+                .unwrap(),
+            b"texttext"
+        );
+        assert_eq!(
+            build_fennel_srd_repeated_text(b"text", 0x4000, 99)
+                .unwrap()
+                .unwrap(),
+            b"text$n$n$ntext"
+        );
+        assert_eq!(
+            build_fennel_srd_repeated_text(b"text", 0x1020, 3).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn srd_draw_preparation_matches_vertical_1000_wait_and_tail_segments() {
+        let mut input = draw_preparation_input(0x7C03);
+        input.repeated_text_size = Some([0.0, 260.0]);
+        for (clock_distance, expected) in [(30.0, 30.0), (65.0, 60.0), (100.0, 90.0), (180.0, 0.0)]
+        {
+            input.scroll.field_2c4 = clock_distance;
+            assert_eq!(
+                prepare_fennel_srd_draw(input).unwrap(),
+                FennelSrdDrawPreparation::DrawOffset([0.0, expected])
+            );
+        }
+    }
+
+    #[test]
+    fn srd_draw_preparation_matches_vertical_non_1000_visible_interval() {
+        let mut input = draw_preparation_input(0x6C03);
+        input.repeated_text_size = Some([0.0, 260.0]);
+        input.scroll.field_2c4 = 100.0;
+        assert_eq!(
+            prepare_fennel_srd_draw(input).unwrap(),
+            FennelSrdDrawPreparation::DrawOffset([0.0, 100.0])
+        );
+        input.scroll.field_2c4 = 200.0;
+        assert_eq!(
+            prepare_fennel_srd_draw(input).unwrap(),
+            FennelSrdDrawPreparation::DrawOffset([0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn srd_draw_preparation_requires_the_binary_measured_repeated_string() {
+        assert_eq!(
+            prepare_fennel_srd_draw(draw_preparation_input(0x2020)).unwrap_err(),
+            FennelSrdDrawPreparationError::MissingRepeatedTextMeasurement {
+                textbox_flags: 0x2020,
+            }
+        );
+    }
+
+    #[test]
+    fn srd_runtime_text_substitutions_follow_ad8d50_index_order() {
+        let mut substitutions: [&[u8]; 8] = [b""; 8];
+        substitutions[0] = b"$[1]";
+        substitutions[1] = b"expanded";
+        let prepared = prepare_fennel_srd_runtime_text(
+            b"$[0]|$[1]",
+            substitutions,
+            23,
+            FontParamData::default(),
+        )
+        .unwrap();
+        assert_eq!(prepared.text, b"expanded|expanded");
+
+        substitutions[0] = b"$[0]";
+        substitutions[1] = b"";
+        let self_reference =
+            prepare_fennel_srd_runtime_text(b"$[0]", substitutions, 23, FontParamData::default())
+                .unwrap();
+        assert_eq!(self_reference.text, b"$[0]");
+    }
+
+    #[test]
+    fn srd_runtime_text_controls_prefer_uppercase_and_update_scroll_state() {
+        let prepared = prepare_fennel_srd_runtime_text(
+            b"a$d[1]b$D[ \t-12junk]c$l[99]d",
+            [b""; 8],
+            23,
+            FontParamData {
+                scroll_speed: 61,
+                scroll_wait: 3,
+                field_34: 4,
+                ..FontParamData::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared.text, b"a$d[1]bcd");
+        assert!(prepared.found_d);
+        assert!(prepared.found_l);
+        assert_eq!(
+            prepared.scroll_state,
+            FennelSrdScrollState {
+                field_f4: 0.0,
+                field_f8: -12,
+                field_fc: 0,
+                field_130: 3,
+                field_134: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn srd_runtime_text_controls_match_bracket_and_atoi_edges() {
+        let incomplete =
+            prepare_fennel_srd_runtime_text(b"$D[12tail", [b""; 8], 37, FontParamData::default())
+                .unwrap();
+        assert_eq!(incomplete.text, b"[12tail");
+        assert_eq!(incomplete.scroll_state.field_f8, 37);
+
+        let no_digits = prepare_fennel_srd_runtime_text(
+            b"$D[words]$Ltail",
+            [b""; 8],
+            37,
+            FontParamData::default(),
+        )
+        .unwrap();
+        assert_eq!(no_digits.text, b"tail");
+        assert_eq!(no_digits.scroll_state.field_f8, 0);
+        assert_eq!(no_digits.scroll_state.field_fc, 0);
+
+        let minimum = prepare_fennel_srd_runtime_text(
+            b"$D[-2147483648]",
+            [b""; 8],
+            37,
+            FontParamData::default(),
+        )
+        .unwrap();
+        assert_eq!(minimum.scroll_state.field_f8, i32::MIN);
+    }
+
+    #[test]
+    fn srd_runtime_text_scans_controls_created_by_substitution() {
+        let mut substitutions: [&[u8]; 8] = [b""; 8];
+        substitutions[0] = b"$D[7]$L";
+        let prepared = prepare_fennel_srd_runtime_text(
+            b"before$[0]after",
+            substitutions,
+            23,
+            FontParamData::default(),
+        )
+        .unwrap();
+        assert_eq!(prepared.text, b"beforeafter");
+        assert_eq!(prepared.scroll_state.field_f8, 7);
+        assert_eq!(prepared.scroll_state.field_fc, 0);
+    }
+
+    #[test]
+    fn srd_runtime_text_rejects_unproven_atoi_overflow() {
+        assert_eq!(
+            prepare_fennel_srd_runtime_text(
+                b"$D[2147483648]",
+                [b""; 8],
+                23,
+                FontParamData::default(),
+            )
+            .unwrap_err(),
+            FennelRuntimeTextControlError::AtoiOverflow {
+                control: b'D',
+                value: b"2147483648".to_vec(),
+            }
+        );
     }
 
     #[test]
