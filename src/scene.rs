@@ -36,6 +36,12 @@ impl NodeRecord {
     pub fn cast_type(&self) -> Option<u8> {
         self.type_flags.map(|value| value as u8)
     }
+
+    /// Low byte loaded from parsed NODE `+0x58` by `srd_render_cast`.
+    /// Missing property `0xA0` stays zero in the binary's parsed record.
+    pub fn render_layer_offset(&self) -> u8 {
+        self.field_a0.unwrap_or(0) as u8
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -530,6 +536,32 @@ impl Layer {
     pub fn font_param_for_node(&self, node_index: usize) -> Option<FontParamData> {
         let list_index = self.cast_attribute_list_by_node.get(node_index)?.as_ref()?;
         self.cast_attribute_lists.get(*list_index)?.font_param()
+    }
+
+    /// Reproduces the inherited key stored at runtime CAST `+0x50` by
+    /// `srd_update_cast_tree`. NODE `0xA0` is deliberately not added here:
+    /// the render wrapper applies that offset only after loading this key.
+    pub fn compose_runtime_cast_layer_keys(&self, inherited: u32) -> Result<Vec<u32>, SceneError> {
+        let hierarchy = self.build_hierarchy()?;
+        let mut keys = vec![inherited; self.nodes.len()];
+        let mut stack = hierarchy
+            .roots
+            .iter()
+            .rev()
+            .map(|&node_index| (node_index, inherited))
+            .collect::<Vec<_>>();
+        while let Some((node_index, parent_key)) = stack.pop() {
+            let key = self
+                .ext_param_for_node(node_index)
+                .copied()
+                .unwrap_or_default()
+                .compose_layer_key(parent_key);
+            keys[node_index] = key;
+            for &child_index in hierarchy.children[node_index].iter().rev() {
+                stack.push((child_index, key));
+            }
+        }
+        Ok(keys)
     }
 
     pub fn build_hierarchy(&self) -> Result<Hierarchy, SceneError> {

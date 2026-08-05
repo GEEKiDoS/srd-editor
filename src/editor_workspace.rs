@@ -33,6 +33,13 @@ pub enum PreviewTargetSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewPlayerSelection {
+    Unselected,
+    AdvertiseLogo,
+    CommonBackground,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewScissorSelection {
     Unselected,
     Disabled,
@@ -43,6 +50,7 @@ pub struct PreviewHostSettings {
     pub scene_index: usize,
     pub animation_set_index: usize,
     pub animation_frame: i32,
+    pub player: PreviewPlayerSelection,
     pub target: PreviewTargetSelection,
     pub present_width: i32,
     pub present_height: i32,
@@ -63,6 +71,7 @@ pub struct EditorWorkspace {
     selected_node: Option<usize>,
     composition_texture: Option<(TextureId, [u32; 2])>,
     composition_unavailable_reason: Option<String>,
+    preview_player: PreviewPlayerSelection,
     preview_target: PreviewTargetSelection,
     preview_present_width: i32,
     preview_present_height: i32,
@@ -93,6 +102,7 @@ impl EditorWorkspace {
             selected_node: None,
             composition_texture: None,
             composition_unavailable_reason: None,
+            preview_player: PreviewPlayerSelection::Unselected,
             preview_target: PreviewTargetSelection::Unselected,
             preview_present_width: DEFAULT_PRESENT_WIDTH,
             preview_present_height: DEFAULT_PRESENT_HEIGHT,
@@ -149,6 +159,7 @@ impl EditorWorkspace {
             scene_index: self.selected_scene,
             animation_set_index: self.selected_animation_set,
             animation_frame: self.frame,
+            player: self.preview_player,
             target: self.preview_target,
             present_width: self.preview_present_width,
             present_height: self.preview_present_height,
@@ -175,6 +186,9 @@ impl EditorWorkspace {
             return Err("No SRD loaded".to_string());
         }
         let settings = self.preview_host_settings();
+        if settings.player == PreviewPlayerSelection::Unselected {
+            return Err("Select a Chusan SrPlayer host profile".to_string());
+        }
         if settings.target == PreviewTargetSelection::Unselected {
             return Err("Select a Chusan target profile".to_string());
         }
@@ -413,6 +427,26 @@ impl EditorWorkspace {
                 ui.text_colored([0.92, 0.68, 0.25, 1.0], "Scene has no ANMS entries");
             }
         }
+        let mut player_index = match self.preview_player {
+            PreviewPlayerSelection::Unselected => 0,
+            PreviewPlayerSelection::AdvertiseLogo => 1,
+            PreviewPlayerSelection::CommonBackground => 2,
+        };
+        if ui.combo_simple_string(
+            "SrPlayer host",
+            &mut player_index,
+            &[
+                "Not selected",
+                "AdvertiseLogoObject",
+                "CommonBackGroundObject",
+            ],
+        ) {
+            self.preview_player = match player_index {
+                1 => PreviewPlayerSelection::AdvertiseLogo,
+                2 => PreviewPlayerSelection::CommonBackground,
+                _ => PreviewPlayerSelection::Unselected,
+            };
+        }
         let mut target_index = match self.preview_target {
             PreviewTargetSelection::Unselected => 0,
             PreviewTargetSelection::MainScene => 1,
@@ -454,7 +488,23 @@ impl EditorWorkspace {
                 _ => PreviewScissorSelection::Unselected,
             };
         }
-        ui.text_wrapped("AdvertiseLogo FirstCalcMatrix: identity (game binary evidence)");
+        match self.preview_player {
+            PreviewPlayerSelection::AdvertiseLogo => ui.text_wrapped(
+                "AdvertiseLogo: FirstCalc identity, 2DLayer 100, root key 0xE480 (game binary evidence)",
+            ),
+            PreviewPlayerSelection::CommonBackground => {
+                ui.text_wrapped(
+                    "CommonBackGround: FirstCalc identity, 2DLayer 6, root key 0x8680 (game binary evidence)",
+                );
+                ui.text_colored(
+                    [0.92, 0.68, 0.25, 1.0],
+                    "Its final host composition/viewport compensation remains unresolved; the proven SRD camera path stays narrow.",
+                );
+            }
+            PreviewPlayerSelection::Unselected => {
+                ui.text_wrapped("Choose a binary-proven SrPlayer host profile.");
+            }
+        }
         match self.validate_preview_host_settings() {
             Ok(_) => ui.text_colored([0.35, 0.82, 0.48, 1.0], "Host inputs complete"),
             Err(reason) => ui.text_colored([0.92, 0.68, 0.25, 1.0], reason),
@@ -829,6 +879,7 @@ mod tests {
         assert_eq!(settings.present_height, 1920);
         assert_eq!(settings.screen_width, 1920);
         assert_eq!(settings.screen_height, 1080);
+        assert_eq!(settings.player, PreviewPlayerSelection::Unselected);
     }
 
     #[test]

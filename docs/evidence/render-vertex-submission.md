@@ -58,7 +58,7 @@ vertex_count     = 4
 | --- | ---: | --- |
 | `+0x00..+0x6B` | 108 | DrawPacket flags、深度/stencil、三个 texture wrapper 等前缀 |
 | `+0x70..+0x7B` | 12 | vertex format、primitive type、固定零字段 |
-| `+0x80..+0x8B` | 12 | DrawMask/command flags/renderer sequence byte |
+| `+0x80..+0x8B` | 12 | DrawMask、command flags、完整 renderer layer key；其最低字节也承载 stencil sequence |
 | `+0xA0..+0xDB` | 60 | 仅当新 record `+0x9E != 0` 时比较 packet current matrix 的前 15 个 f32 |
 
 任一区间不相等即保留独立 record。矩阵 setter `0x6DF2D0` 证明：2D/null matrix 清零 `+0x9E`，因此不比较矩阵；3D/non-null matrix 设置 `+0x9E=1`，因此不同 world matrix 会阻止合并。
@@ -71,7 +71,9 @@ vertex_count     = 4
 
 新建 record 随后从 vector 尾部移除并析构；因此 target queue 看到的是合并后的单个 command，不是两个 command 的后期视觉批处理。
 
-Rust 的 `build_evidence_filtered_merged_runtime_target_submission` 已对普通 Image/Fennel 路径复现上述相邻比较、strip `+2` 与 triangle-list 直接累加，并保留每个合并 record 对应的逻辑 source 列表。它只接受当前能够完整构造比较键的路径：单一 SrPlayer/同一 enqueue target 状态、无显式 texture override、无 special-depth，且 stencil 关闭。Stencil 开启时 renderer `+0x198` 的逐提交 sequence byte 尚未进入 runtime draw record，函数会报错而不是静默少合并。
+Rust 的 `build_evidence_filtered_merged_runtime_target_submission` 已对普通 Image/Fennel 路径复现上述相邻比较、完整 renderer layer key、strip `+2` 与 triangle-list 直接累加，并保留每个合并 record 对应的逻辑 source 列表。不同宿主 `2DLayer`、CATR layer override、NODE `0xA0` 偏移或 RefCast 低字节结果都会阻止错误合并。它只接受当前能够完整构造比较键的路径：单一 SrPlayer/同一 enqueue target 状态、无显式 texture override、无 special-depth，且 stencil 关闭。Stencil 开启时逐提交 sequence 生命周期尚未作为独立 runtime 状态闭合，函数会报错而不是静默少合并。
+
+Common 实际样本 `yellow_loop` 第 0 帧的 100 个普通 draw 全部携带 `0x8680`，并精确合并为 9 个 record；该固定回归同时验证 source 映射总数仍为 100。
 
 ## 绘制包到 IDirect3DDevice9
 

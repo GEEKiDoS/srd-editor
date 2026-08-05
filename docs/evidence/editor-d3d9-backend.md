@@ -93,4 +93,4 @@ cargo run -- --srd-fennel-smoke "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_
 
 - 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
-- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列，已继续推进到 type-1 target filter、普通 Image/Fennel 相邻 record merge、MainScene/BgScene 默认 rule/EntryInfo、首个 rule 匹配、per-pass 稳定队列和 32-entry flush planner；仍需闭合后续 Enable/current-target 时序、其他 target/common 宿主、真正依赖 depth/order 的输入、stencil/special-depth merge 状态及统一 D3D9Ex 提交计划。
+- 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列，已继续推进到 Advertise/Common 宿主根 key、type-1 target filter、普通 Image/Fennel 完整 layer-key 相邻 record merge、MainScene/BgScene 默认 rule/EntryInfo、首个 rule 匹配、per-pass 稳定队列和 32-entry flush planner；仍需闭合后续 Enable/current-target 时序、其他 target、真正依赖 depth/order 的输入、stencil/special-depth merge 状态及统一 D3D9Ex 提交计划。

@@ -91,6 +91,10 @@ runtime CAST + 0x198 == SrImage(+0xF8) + 0xA0
 
 ## 层级键合成
 
+`ceylon_construct_draw_packet` (`0x6B8B10`) 在 packet/renderer `+0x88/+0x198` 建立默认值 `0x00008580`：bit 15 为 kind，bits `8..14` 为默认 `2DLayer=5`，最低字节为 level `0x80`。`srd_construct_player` 注册 property 6 `2DLayer`；`sub_AAD040` (`0xAAD040`) 直接把它同步到 `SrPlayer::Impl+0x1A8` bits `8..14`。由于嵌入式 `SrRenderer` 位于 Impl `+0x10`，这就是同一个 `SrRenderer+0x198` dword，不存在中间复制。
+
+`srd_update_runtime_scene_layers` (`0xAC21A0`) 在 `0xAC21D0..0xAC21DE` 把该 dword 的地址作为顶层继承 key 传入运行时 LAYR/CAST 树。具体 Chusan profile 因而得到 Advertise `2DLayer=100 -> 0xE480`、Common `2DLayer=6 -> 0x8680`；这两个值是宿主输入，不属于 SRD 文件默认值。
+
 `srd_update_cast_tree` (`0xAC0F80`) 从父键开始，只在对应 enable bit 开启时替换字段：
 
 ```text
@@ -99,7 +103,9 @@ if flags & 4: key bits 8..14 = sign_extend(layer) & 0x7F
 if flags & 8: key bits 0..7  = layer_level
 ```
 
-结果写入运行时 CAST `+0x50`。`srd_render_cast` 随后把该值复制到 renderer `+0x198`，并把解析 NODE `+0x58` 的低字节偏移加到最低字节；`srd_render_runtime_layer` 在层遍历结束后恢复 renderer 原值。这证明三个 layer token 控制的是继承式绘制层级键，而不是纹理坐标或像素着色公式。
+结果写入运行时 CAST `+0x50`。`srd_render_cast` (`0xAD45E0`) 在 `0xAD4627..0xAD463C` 把它复制到 renderer `+0x198`，再对完整 dword 执行 `wrapping_add(parsed NODE+0x58 low byte)`；解析 NODE 的该字段来自 NODE `0xA0`，缺省为 0。普通调用的低字节溢出因此会进位到 layer 字段。RefCast 的 copied-layer 递归则先仅替换低字节为 wrapping sum，丢弃进位后再进入被引用层；Rust 分别实现了这两种不同运算。
+
+packet `+0x88` 的低 16 位随后复制为 command `+0x14` 的 `u16 order`，同时完整 `+0x80..+0x8B` host block 参与相邻 packet 比较。因此层级键既影响 pass 条件输入，也会阻止不同 key 的相邻 draw 被合并。这证明三个 layer token 和宿主 `2DLayer` 控制的是继承式绘制层级/批次键，而不是 2D/3D 分类、纹理坐标或像素着色公式。
 
 ## 完整语料回归
 

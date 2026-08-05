@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::camera::{build_look_at_rh_game, build_perspective_fov_rh_game};
 use crate::projection::{Matrix4x4, mul_matrix4x4_game};
+use crate::render::srd_renderer_layer_key_for_2d_layer;
 use crate::srd_draw::SrdHostDrawContext;
 use crate::target_pass::{
     EVIDENCE_AIR_SCENE_BASE_PASSES, EvidenceBasePassProfile, EvidenceScenePassProfile,
@@ -100,6 +101,31 @@ pub const CHUSAN_ADVERTISE_LOGO_PLAYER: ChusanAdvertiseLogoPlayerProfile =
         common_init_ends_enabled: false,
     };
 
+/// Concrete `CommonBackGroundObject` embedded SrPlayer state after resource
+/// initialization. The later mode transition re-enables the player; this
+/// profile keeps that lifecycle distinction explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChusanCommonBackgroundPlayerProfile {
+    pub draw_target_scene_only: bool,
+    pub target_scene: &'static str,
+    pub first_calc_matrix_enabled: bool,
+    pub draw_mask: u32,
+    pub layer_2d: u8,
+    pub common_init_ends_enabled: bool,
+    pub mode_transition_enables: bool,
+}
+
+pub const CHUSAN_COMMON_BACKGROUND_PLAYER: ChusanCommonBackgroundPlayerProfile =
+    ChusanCommonBackgroundPlayerProfile {
+        draw_target_scene_only: true,
+        target_scene: "",
+        first_calc_matrix_enabled: false,
+        draw_mask: 0xFFFF,
+        layer_2d: 6,
+        common_init_ends_enabled: false,
+        mode_transition_enables: true,
+    };
+
 impl ChusanAirSceneTargetProfile {
     /// MainScene and BgScene both retain the five `PassBasic` objects installed
     /// by the common `air::Scene` constructor.
@@ -176,6 +202,47 @@ impl ChusanAdvertiseLogoPlayerProfile {
             target.projection_view_for_present_size(present_width, present_height)?;
         Ok(SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
+            srd_renderer_layer_key_for_2d_layer(self.layer_2d),
+            target_projection_view,
+            [present_width, present_height],
+            target_screen_size,
+        ))
+    }
+}
+
+impl ChusanCommonBackgroundPlayerProfile {
+    pub const fn initial_srd_target_filter(
+        self,
+        target: ChusanAirSceneTargetProfile,
+    ) -> EvidenceSrdType1TargetFilter {
+        EvidenceSrdType1TargetFilter {
+            target_dispatch_mask: target.initial_dispatch_mask(),
+            target_attribute: target.attribute,
+            command_draw_mask: self.draw_mask,
+        }
+    }
+
+    /// CommonBackGroundObject is globally registered and looked up by name;
+    /// its audited class methods never attach the embedded SrPlayer to a
+    /// GraphNode parent. The root FirstCalc matrix therefore remains identity.
+    pub fn host_context_for_target(
+        self,
+        target: ChusanAirSceneTargetProfile,
+        present_width: u32,
+        present_height: u32,
+        target_screen_size: [u32; 2],
+    ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+        if target_screen_size.contains(&0) {
+            return Err(GameHostProfileError(format!(
+                "{} target screen size must be non-zero, got {}x{}",
+                target.name, target_screen_size[0], target_screen_size[1]
+            )));
+        }
+        let target_projection_view =
+            target.projection_view_for_present_size(present_width, present_height)?;
+        Ok(SrdHostDrawContext::new(
+            Affine3x4::IDENTITY,
+            srd_renderer_layer_key_for_2d_layer(self.layer_2d),
             target_projection_view,
             [present_width, present_height],
             target_screen_size,
@@ -284,6 +351,7 @@ mod tests {
             .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
             .unwrap();
         assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
+        assert_eq!(context.renderer_layer_key, 0xe480);
         assert_eq!(
             context.target_projection_view,
             CHUSAN_MAIN_SCENE
@@ -292,5 +360,36 @@ mod tests {
         );
         assert_eq!(context.target_render_size, [1080, 1920]);
         assert_eq!(context.target_screen_size, [1920, 1080]);
+    }
+
+    #[test]
+    fn common_background_profile_matches_the_concrete_player_writes() {
+        assert_eq!(
+            CHUSAN_COMMON_BACKGROUND_PLAYER,
+            ChusanCommonBackgroundPlayerProfile {
+                draw_target_scene_only: true,
+                target_scene: "",
+                first_calc_matrix_enabled: false,
+                draw_mask: 0xFFFF,
+                layer_2d: 6,
+                common_init_ends_enabled: false,
+                mode_transition_enables: true,
+            }
+        );
+        let context = CHUSAN_COMMON_BACKGROUND_PLAYER
+            .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+            .unwrap();
+        assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
+        assert_eq!(context.renderer_layer_key, 0x8680);
+        assert!(
+            CHUSAN_COMMON_BACKGROUND_PLAYER
+                .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
+                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+        );
+        assert!(
+            !CHUSAN_COMMON_BACKGROUND_PLAYER
+                .initial_srd_target_filter(CHUSAN_BG_SCENE)
+                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+        );
     }
 }

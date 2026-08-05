@@ -59,6 +59,7 @@ pub struct EvidenceCompleteSrdDraw {
     pub layer_index: usize,
     pub node_index: usize,
     pub is_2d: bool,
+    pub renderer_layer_key: u32,
     pub shader_key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH],
     pub quad: SrdQuadDraw,
     pub packet: CeylonDrawPacketPresetState,
@@ -83,6 +84,7 @@ pub struct EvidenceCompleteFennelDraw {
     pub node_index: usize,
     pub font_name: Vec<u8>,
     pub is_2d: bool,
+    pub renderer_layer_key: u32,
     pub packet: CeylonDrawPacketPresetState,
     pub fixed_constants: CeylonSrdFixedShaderConstants,
     pub batches: Vec<FennelOwnedTextureBatch>,
@@ -111,6 +113,13 @@ impl EvidenceCompleteRuntimeCastDraw {
             Self::Fennel(draw) => draw.node_index,
         }
     }
+
+    pub const fn renderer_layer_key(&self) -> u32 {
+        match self {
+            Self::Image(draw) => draw.renderer_layer_key,
+            Self::Fennel(draw) => draw.renderer_layer_key,
+        }
+    }
 }
 
 /// One logical draw command before the still-open adjacent-packet merge. An
@@ -131,6 +140,7 @@ pub enum EvidenceRuntimeTargetCommandSource {
 pub struct EvidenceMergedRuntimeTargetCommand {
     pub sources: Vec<EvidenceRuntimeTargetCommandSource>,
     pub packet: CeylonDrawPacketPresetState,
+    pub renderer_layer_key: u32,
     pub vertex_format: u32,
     pub primitive_type: u32,
     pub vertex_count: usize,
@@ -145,6 +155,7 @@ enum EvidenceMergeTextureIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EvidenceAdjacentMergeKey {
     packet: CeylonDrawPacketPresetState,
+    renderer_layer_key: u32,
     vertex_format: u32,
     primitive_type: u32,
     textures: [Option<EvidenceMergeTextureIdentity>; 3],
@@ -231,6 +242,7 @@ fn build_evidence_adjacent_merge_commands(
                     source: EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index },
                     key: EvidenceAdjacentMergeKey {
                         packet: draw.packet,
+                        renderer_layer_key: draw.renderer_layer_key,
                         vertex_format: 14,
                         primitive_type: 4,
                         textures,
@@ -254,6 +266,7 @@ fn build_evidence_adjacent_merge_commands(
                         },
                         key: EvidenceAdjacentMergeKey {
                             packet: draw.packet,
+                            renderer_layer_key: draw.renderer_layer_key,
                             vertex_format: 13,
                             primitive_type: 3,
                             textures: [
@@ -320,6 +333,7 @@ fn merge_evidence_adjacent_commands(
         }
 
         let packet = command.key.packet;
+        let renderer_layer_key = command.key.renderer_layer_key;
         let vertex_format = command.key.vertex_format;
         let primitive_type = command.key.primitive_type;
         groups.push((
@@ -327,6 +341,7 @@ fn merge_evidence_adjacent_commands(
             EvidenceMergedRuntimeTargetCommand {
                 sources: vec![command.source],
                 packet,
+                renderer_layer_key,
                 vertex_format,
                 primitive_type,
                 vertex_count: command.vertex_count,
@@ -537,6 +552,8 @@ pub fn assign_fennel_font_resource_requests(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SrdHostDrawContext {
     pub first_calc_matrix: Affine3x4,
+    /// Root `SrRenderer+0x198` key established by the concrete SrPlayer host.
+    pub renderer_layer_key: u32,
     pub target_projection_view: Matrix4x4,
     pub target_render_size: [u32; 2],
     pub target_screen_size: [u32; 2],
@@ -545,12 +562,14 @@ pub struct SrdHostDrawContext {
 impl SrdHostDrawContext {
     pub const fn new(
         first_calc_matrix: Affine3x4,
+        renderer_layer_key: u32,
         target_projection_view: Matrix4x4,
         target_render_size: [u32; 2],
         target_screen_size: [u32; 2],
     ) -> Self {
         Self {
             first_calc_matrix,
+            renderer_layer_key,
             target_projection_view,
             target_render_size,
             target_screen_size,
@@ -671,7 +690,8 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
     for entry in runtime
         .references
         .plan
-        .structural_cast_draw_order(project, scene_index)
+        .structural_cast_draw_order(project, scene_index, host.renderer_layer_key)
+        .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
         if reject_special_matrix_branches(layer).is_err() {
@@ -696,6 +716,7 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
             entry.source,
             layer,
             entry.node_index,
+            entry.renderer_layer_key,
             layer_worlds.is_2d,
             cast_world,
             image_state,
@@ -912,7 +933,8 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
     for entry in runtime
         .references
         .plan
-        .structural_cast_draw_order(project, scene_index)
+        .structural_cast_draw_order(project, scene_index, host.renderer_layer_key)
+        .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
         if reject_special_matrix_branches(layer).is_err() {
@@ -941,6 +963,7 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
             entry.source,
             layer,
             entry.node_index,
+            entry.renderer_layer_key,
             layer_worlds.is_2d,
             cast_world,
             image_state,
@@ -1048,7 +1071,8 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
     for entry in runtime
         .references
         .plan
-        .structural_cast_draw_order(project, scene_index)
+        .structural_cast_draw_order(project, scene_index, host.renderer_layer_key)
+        .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
         if reject_special_matrix_branches(layer).is_err() {
@@ -1073,6 +1097,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             entry.source,
             layer,
             entry.node_index,
+            entry.renderer_layer_key,
             layer_worlds.is_2d,
             cast_world,
             image_state,
@@ -1094,6 +1119,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             entry.source,
             layer,
             entry.node_index,
+            entry.renderer_layer_key,
             layer_worlds.is_2d,
             cast_world,
             image_state,
@@ -1169,6 +1195,9 @@ fn build_evidence_complete_fennel_draws_impl(
             .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
             .map_err(|error| SrdDrawError(error.to_string()))?;
         let world_colors = compose_initial_world_colors(layer, &transforms, layer_enabled)?;
+        let cast_layer_keys = layer
+            .compose_runtime_cast_layer_keys(host.renderer_layer_key)
+            .map_err(|error| SrdDrawError(error.to_string()))?;
 
         for node_index in 0..layer.nodes.len() {
             let Some(image) = layer.image_by_node[node_index]
@@ -1438,6 +1467,8 @@ fn build_evidence_complete_fennel_draws_impl(
                 node_index,
                 font_name: font.name.clone(),
                 is_2d: true,
+                renderer_layer_key: cast_layer_keys[node_index]
+                    .wrapping_add(u32::from(layer.nodes[node_index].render_layer_offset())),
                 packet: fennel_default_draw_packet(true),
                 fixed_constants,
                 batches: vertex_build.batches,
@@ -1454,6 +1485,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
     source: ReferenceTarget,
     layer: &Layer,
     node_index: usize,
+    renderer_layer_key: u32,
     is_2d: bool,
     world: RuntimeWorldState,
     image_state: crate::image::RuntimeImageState,
@@ -1721,6 +1753,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
         node_index,
         font_name: font.name.clone(),
         is_2d: true,
+        renderer_layer_key,
         packet: fennel_default_draw_packet(true),
         fixed_constants,
         batches: vertex_build.batches,
@@ -1800,6 +1833,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
     source: ReferenceTarget,
     layer: &Layer,
     node_index: usize,
+    mut renderer_layer_key: u32,
     is_2d: bool,
     world: RuntimeWorldState,
     image_state: crate::image::RuntimeImageState,
@@ -1879,7 +1913,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
     packet.set_render_preset_id(preset);
     packet.set_srd_quad_is_2d(is_2d);
     apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
-    let mut renderer_counter = 0u8;
+    let mut renderer_counter = renderer_layer_key as u8;
     apply_srd_image_alpha_stencil_packet_fields(
         &mut packet,
         image_state.field_10,
@@ -1888,6 +1922,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
         0,
         &mut renderer_counter,
     );
+    renderer_layer_key = (renderer_layer_key & !0xff) | u32::from(renderer_counter);
     apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
 
     let shader_key = packet
@@ -1923,6 +1958,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
         layer_index: source.layer_index,
         node_index,
         is_2d,
+        renderer_layer_key,
         shader_key,
         quad,
         packet,
@@ -1968,6 +2004,9 @@ fn build_evidence_complete_image_draws(
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
+        let cast_layer_keys = layer
+            .compose_runtime_cast_layer_keys(host.renderer_layer_key)
+            .map_err(|error| SrdDrawError(error.to_string()))?;
         let runtime_layer = runtime_layers
             .map(|layers| {
                 layers.get(layer_index).ok_or_else(|| {
@@ -2083,11 +2122,13 @@ fn build_evidence_complete_image_draws(
                 continue;
             }
 
+            let mut renderer_layer_key = cast_layer_keys[node_index]
+                .wrapping_add(u32::from(layer.nodes[node_index].render_layer_offset()));
             let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
             packet.set_render_preset_id(preset);
             packet.set_srd_quad_is_2d(is_2d);
             apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
-            let mut renderer_counter = 0u8;
+            let mut renderer_counter = renderer_layer_key as u8;
             apply_srd_image_alpha_stencil_packet_fields(
                 &mut packet,
                 image_state.field_10,
@@ -2096,6 +2137,7 @@ fn build_evidence_complete_image_draws(
                 0,
                 &mut renderer_counter,
             );
+            renderer_layer_key = (renderer_layer_key & !0xff) | u32::from(renderer_counter);
             apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
 
             let shader_key = packet
@@ -2135,6 +2177,7 @@ fn build_evidence_complete_image_draws(
                 layer_index,
                 node_index,
                 is_2d,
+                renderer_layer_key,
                 shader_key,
                 quad,
                 packet,
@@ -2489,6 +2532,7 @@ mod tests {
             0,
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
                 identity_matrix4x4_game(),
                 [1920, 1080],
                 [1920, 1080],
@@ -2632,6 +2676,7 @@ mod tests {
             0,
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
                 identity_matrix4x4_game(),
                 [1920, 1080],
                 [1920, 1080],
@@ -2667,6 +2712,7 @@ mod tests {
             0,
             SrdHostDrawContext::new(
                 Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
                 identity_matrix4x4_game(),
                 [1920, 1080],
                 [1920, 1080],
@@ -2811,6 +2857,7 @@ mod tests {
         let packet = CeylonDrawPacketPresetState::srd_renderer_initial();
         let strip_key = EvidenceAdjacentMergeKey {
             packet,
+            renderer_layer_key: crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
             vertex_format: 14,
             primitive_type: 4,
             textures: [None; 3],
@@ -2818,6 +2865,7 @@ mod tests {
         };
         let list_key = EvidenceAdjacentMergeKey {
             packet,
+            renderer_layer_key: crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
             vertex_format: 13,
             primitive_type: 3,
             textures: [Some(EvidenceMergeTextureIdentity::Fennel(7)), None, None],
@@ -2862,5 +2910,39 @@ mod tests {
         assert_eq!(groups[0].sources.len(), 2);
         assert_eq!(groups[1].vertex_count, 18);
         assert_eq!(groups[1].sources.len(), 2);
+    }
+
+    #[test]
+    fn adjacent_merge_keeps_different_renderer_layer_keys_separate() {
+        let packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+        let base_key = EvidenceAdjacentMergeKey {
+            packet,
+            renderer_layer_key: 0x8580,
+            vertex_format: 14,
+            primitive_type: 4,
+            textures: [None; 3],
+            packet_matrix_prefix: None,
+        };
+        let mut different_key = base_key.clone();
+        different_key.renderer_layer_key = 0x8680;
+        let groups = merge_evidence_adjacent_commands(vec![
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::Image {
+                    runtime_draw_index: 0,
+                },
+                key: base_key,
+                vertex_count: 4,
+            },
+            EvidenceAdjacentMergeCommand {
+                source: EvidenceRuntimeTargetCommandSource::Image {
+                    runtime_draw_index: 1,
+                },
+                key: different_key,
+                vertex_count: 4,
+            },
+        ]);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].renderer_layer_key, 0x8580);
+        assert_eq!(groups[1].renderer_layer_key, 0x8680);
     }
 }

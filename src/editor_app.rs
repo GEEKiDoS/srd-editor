@@ -18,11 +18,14 @@ use crate::d3d9_fennel::{EvidenceCompleteFennelBatch, FennelDx9Renderer};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
 use crate::d3d9_texture::{RuhunaD3d9AtlasSet, SrdD3d9TextureSet, audit_dds_device_uploads};
 use crate::editor_workspace::{
-    EditorWorkspace, PreviewHostSettings, PreviewScissorSelection, PreviewTargetSelection,
-    apply_editor_style,
+    EditorWorkspace, PreviewHostSettings, PreviewPlayerSelection, PreviewScissorSelection,
+    PreviewTargetSelection, apply_editor_style,
 };
 use crate::fennel::FennelFontSlotRegistry;
-use crate::game_host::{CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_MAIN_SCENE};
+use crate::game_host::{
+    CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_COMMON_BACKGROUND_PLAYER,
+    CHUSAN_MAIN_SCENE,
+};
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::ruhuna::{RuhunaFont, RuhunaRuntimeFont};
 use crate::shader_bytecode::{
@@ -219,7 +222,7 @@ impl EditorWindow {
         let draw_result = if require_srd_draw {
             workspace.document().and_then(|document| {
                 let scene = document.project.scenes.first()?;
-                let host = if let Some(host) = advertise_logo_host {
+                let (host, target_filter) = if let Some(host) = advertise_logo_host {
                     let target = match host.target {
                         PreviewTargetSelection::MainScene => CHUSAN_MAIN_SCENE,
                         PreviewTargetSelection::BgScene => CHUSAN_BG_SCENE,
@@ -233,23 +236,29 @@ impl EditorWindow {
                         host.screen_width,
                         host.screen_height
                     );
-                    CHUSAN_ADVERTISE_LOGO_PLAYER
-                        .host_context_for_target(
-                            target,
-                            host.present_width,
-                            host.present_height,
-                            [host.screen_width, host.screen_height],
-                        )
-                        .expect("validated AdvertiseLogo host dimensions")
+                    (
+                        CHUSAN_ADVERTISE_LOGO_PLAYER
+                            .host_context_for_target(
+                                target,
+                                host.present_width,
+                                host.present_height,
+                                [host.screen_width, host.screen_height],
+                            )
+                            .expect("validated AdvertiseLogo host dimensions"),
+                        Some(CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(target)),
+                    )
                 } else {
                     eprintln!(
                         "SRD smoke host=diagnostic-project-camera first_calc=identity target_width={}",
                         scene.width.max(1.0)
                     );
-                    diagnostic_project_camera_smoke_host(
-                        &document.project,
-                        scene.width.max(1.0),
-                        [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
+                    (
+                        diagnostic_project_camera_smoke_host(
+                            &document.project,
+                            scene.width.max(1.0),
+                            [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
+                        ),
+                        None,
                     )
                 };
                 let draws = if srd_texture_smoke {
@@ -275,7 +284,13 @@ impl EditorWindow {
                             host,
                         )
                     })
-                };
+                }
+                .map(|mut draws| {
+                    if let Some(filter) = target_filter {
+                        draws.retain(|draw| filter.accepts(draw.packet));
+                    }
+                    draws
+                });
                 Some((
                     draws,
                     [scene.width.max(1.0) as u32, scene.height.max(1.0) as u32],
@@ -799,14 +814,30 @@ impl EditorWindow {
             .map_err(|_| "Target screen width must be positive".to_string())?;
         let screen_height = u32::try_from(settings.screen_height)
             .map_err(|_| "Target screen height must be positive".to_string())?;
-        let host = CHUSAN_ADVERTISE_LOGO_PLAYER
-            .host_context_for_target(
-                target,
-                present_width,
-                present_height,
-                [screen_width, screen_height],
-            )
-            .map_err(|error| error.to_string())?;
+        let (host, target_filter) = match settings.player {
+            PreviewPlayerSelection::AdvertiseLogo => (
+                CHUSAN_ADVERTISE_LOGO_PLAYER.host_context_for_target(
+                    target,
+                    present_width,
+                    present_height,
+                    [screen_width, screen_height],
+                ),
+                CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(target),
+            ),
+            PreviewPlayerSelection::CommonBackground => (
+                CHUSAN_COMMON_BACKGROUND_PLAYER.host_context_for_target(
+                    target,
+                    present_width,
+                    present_height,
+                    [screen_width, screen_height],
+                ),
+                CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
+            ),
+            PreviewPlayerSelection::Unselected => {
+                return Err("Select a Chusan SrPlayer host profile".to_string());
+            }
+        };
+        let host = host.map_err(|error| error.to_string())?;
 
         let document = self
             .workspace
@@ -827,7 +858,7 @@ impl EditorWindow {
                     settings.animation_set_index
                 )
             })?;
-        let draws = build_evidence_complete_animation_set_image_draws(
+        let mut draws = build_evidence_complete_animation_set_image_draws(
             &document.project,
             &document.textures,
             settings.scene_index,
@@ -836,8 +867,12 @@ impl EditorWindow {
             host,
         )
         .map_err(|error| error.to_string())?;
+        draws.retain(|draw| target_filter.accepts(draw.packet));
         if draws.is_empty() {
-            return Err("No evidence-complete GPU draw for this scene".to_string());
+            return Err(format!(
+                "No target-admitted evidence-complete GPU draw for {}",
+                target.name
+            ));
         }
         let required_texture_indices = draws
             .iter()
@@ -913,6 +948,7 @@ fn diagnostic_project_camera_smoke_host(
 ) -> SrdHostDrawContext {
     SrdHostDrawContext::new(
         Affine3x4::IDENTITY,
+        crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
         project
             .camera
             .runtime_matrices(target_width)

@@ -20,7 +20,7 @@ use srd_editor::fennel::{
     layout_fennel_static_flag20, layout_fennel_static_mode1, layout_fennel_static_mode56,
     tokenize_fennel_plain_text,
 };
-use srd_editor::game_host::CHUSAN_MAIN_SCENE;
+use srd_editor::game_host::{CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
@@ -40,9 +40,12 @@ use srd_editor::shader_bytecode::{
 use srd_editor::srd_draw::{
     FennelTextFontRole, SrdHostDrawContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
+    build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_complete_initial_reference_fennel_draws,
-    build_evidence_complete_initial_reference_image_draws, collect_fennel_font_resource_requests,
+    build_evidence_complete_initial_reference_image_draws,
+    build_evidence_filtered_merged_runtime_target_submission,
+    collect_fennel_font_resource_requests,
 };
 use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
@@ -58,6 +61,7 @@ enum CorpusProfile {
 fn identity_host_context() -> SrdHostDrawContext {
     SrdHostDrawContext::new(
         Affine3x4::IDENTITY,
+        srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
         identity_matrix4x4_game(),
         [1920, 1080],
         [1920, 1080],
@@ -369,7 +373,13 @@ fn reference_image_draws_are_a_forward_subsequence_of_structural_cast_order() {
         .count();
     let plan = document.project.build_reference_runtime_plan().unwrap();
     assert!(!plan.instances.is_empty());
-    let structural = plan.structural_cast_draw_order(&document.project, 0);
+    let structural = plan
+        .structural_cast_draw_order(
+            &document.project,
+            0,
+            srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+        )
+        .unwrap();
     let mut cursor = 0usize;
     for draw in &draws {
         let relative = structural[cursor..]
@@ -437,6 +447,61 @@ fn advertise_animation_sets_gate_mutually_exclusive_pages() {
 }
 
 #[test]
+fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document = EditorDocument::load(
+        root.join("surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd"),
+    )
+    .unwrap();
+    let host = CHUSAN_COMMON_BACKGROUND_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
+    let draws = build_evidence_complete_animation_set_runtime_cast_draws(
+        &document.project,
+        &document.textures,
+        0,
+        0,
+        0.0,
+        host,
+        &FennelFontSlotRegistry::default(),
+        &BTreeMap::new(),
+        false,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let mut key_counts = BTreeMap::new();
+    for draw in &draws {
+        *key_counts
+            .entry(draw.renderer_layer_key())
+            .or_insert(0usize) += 1;
+    }
+    let merged = build_evidence_filtered_merged_runtime_target_submission(
+        &draws,
+        &CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap(),
+        CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(CHUSAN_MAIN_SCENE),
+    )
+    .unwrap();
+    assert_eq!(draws.len(), 100);
+    assert_eq!(key_counts, BTreeMap::from([(0x8680, 100)]));
+    assert_eq!(merged.len(), 9);
+    assert_eq!(
+        merged
+            .iter()
+            .map(|group| group.sources.len())
+            .sum::<usize>(),
+        100
+    );
+    assert!(
+        merged
+            .iter()
+            .all(|group| group.renderer_layer_key == 0x8680)
+    );
+}
+
+#[test]
 fn builds_evidence_complete_single_texture_draws() {
     let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
         eprintln!("skipping: GAME_DATA_CORPUS is not set");
@@ -450,6 +515,7 @@ fn builds_evidence_complete_single_texture_draws() {
         0,
         SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
+            srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
             Matrix4x4 {
                 rows: [
                     [2.0, 0.0, 0.0, 0.0],

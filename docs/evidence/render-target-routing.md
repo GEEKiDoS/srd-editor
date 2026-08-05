@@ -1,6 +1,6 @@
 # SrPlayer target 路由、全局队列与宿主相机边界
 
-Chusan `AdvertiseLogoObject` 的具体 SrPlayer 成员、common-init 属性和 identity 根节点证据见 [`chusan-advertise-logo-player.md`](chusan-advertise-logo-player.md)。
+Chusan `AdvertiseLogoObject` 与 `CommonBackGroundObject` 的具体 SrPlayer 成员、初始化属性和 identity 根节点证据分别见 [`chusan-advertise-logo-player.md`](chusan-advertise-logo-player.md) 与 [`chusan-common-background-player.md`](chusan-common-background-player.md)。
 
 本页记录 `projView::SrPlayer` 生成的 Ceylon draw packet 如何进入命名 target 或全局队列，以及空 `TargetScene` 时为何不存在唯一的游戏相机。结论只来自当前游戏二进制。
 
@@ -107,7 +107,7 @@ ImageCast (`srd_render_image_cast`) 与 Fennel TextCast 的每个 texture batch 
 
 type-1/SRD command class 与首个 rule 匹配算法也已闭环；MainScene/BgScene 共用的 5 项默认 BasePass rule 和 32 个 EntryInfo 映射也已从 `air::Scene` 构造静态表及 `sub_64F970` 写入链闭环。普通 Image/Fennel packet 还已证明始终是 class 3 / attribute group 0，而默认第一项 Back2DPass 对完整 u16 order 域恒真，所以这部分不再需要伪造 depth/order。Rust 可把一个 Image 和每个 Fennel texture batch 展平为逻辑 command，先执行已证明的 type-1 filter，再生成 target-local 顺序。
 
-Chusan 的 MainScene/BgScene 构造完成状态也已闭环：两者 Scene Enable 均为 true、Attribute 均为 0，DrawIndex 分别为 0/16；Advertise DrawMask `0xFFFF` 因此接纳 MainScene、拒绝 BgScene。注册调用的第三个布尔量只控制 manager `+0x11C` current-target 指针，不是 Enable。普通 Image/Fennel 的相邻 enqueue merge 也已实现，包括 SRD triangle-strip 的两个退化连接顶点和 Fennel triangle-list 的直接 vertex-count 累加。尚缺的是后续帧可能发生的 Enable/manager-current 切换时序、其他 target/common 宿主配置、真正依赖 depth/order 的其他路径，以及 stencil/special-depth merge 状态。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation；merged planner 只对其声明的普通路径给出精确 record 数。
+Chusan 的 MainScene/BgScene 构造完成状态也已闭环：两者 Scene Enable 均为 true、Attribute 均为 0，DrawIndex 分别为 0/16；Advertise 与 Common 的 DrawMask 都是 `0xFFFF`，因此两者的初始普通 packet 均被 MainScene 接纳、被 BgScene 拒绝。注册调用的第三个布尔量只控制 manager `+0x11C` current-target 指针，不是 Enable。普通 Image/Fennel 的相邻 enqueue merge 也已实现，包括完整 renderer layer key、SRD triangle-strip 的两个退化连接顶点和 Fennel triangle-list 的直接 vertex-count 累加。尚缺的是后续帧可能发生的 Enable/manager-current 切换时序、其他 target 配置、真正依赖 depth/order 的其他路径，以及 stencil/special-depth merge 状态。因此 `EvidenceCompleteRuntimeCastDraw` 本身仍只表示 CAST render invocation；merged planner 只对其声明的普通路径给出精确 record 数。
 
 ## Advertise 的已证明结论
 
@@ -119,6 +119,10 @@ Advertise 的嵌入式 `projView::SrPlayer`：
 - 因而先进入全局队列，再由当帧已注册的 target 逐一过滤。
 
 对 Advertise 的具体 Chusan 构造完成时刻，Main/Bg 初始接纳结果已经确定。单独的 `.srd` 文件仍不包含“后续帧有哪些 target 注册/Enable、各自 Camera 和 viewport 是什么”这些宿主状态；编辑器若脱离具体宿主打开任意 SRD，仍无法从文件本身恢复唯一最终相机。
+
+## Common background 的已证明结论
+
+`CommonBackGroundObject` 也保持空 `TargetScene`、`DrawTargetSceneOnly=true`、`DrawMask=0xFFFF`，以全局名称注册/查找，嵌入式 SrPlayer 没有 GraphNode parent，根矩阵为 identity。其 property 6 为 `2DLayer=6`，所以根 renderer key 为 `0x8680`；这不会改变 SRD 内 LAYR/CAST 的 3D 判定。对象、启用生命周期、初始 Main/Bg 过滤和样本回归见 [`chusan-common-background-player.md`](chusan-common-background-player.md)。
 
 ## 编辑器边界
 

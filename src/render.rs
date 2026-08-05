@@ -585,6 +585,18 @@ pub struct CeylonDrawPacketPresetState {
     pub flags_64: u32,
 }
 
+/// Exact packet `+0x88` value constructed by `ceylon_construct_draw_packet`.
+/// The same dword is exposed as `SrRenderer+0x198`; its low word is consumed
+/// as the target-pass order value.
+pub const SRD_RENDERER_INITIAL_LAYER_KEY: u32 = 0x0000_8580;
+
+/// Reproduces `SrPlayer` property 6 (`2DLayer`) synchronization at
+/// `sub_AAD040`: only bits 8..14 are replaced, while kind bit 15 and the
+/// initial level byte remain those established by the draw-packet constructor.
+pub const fn srd_renderer_layer_key_for_2d_layer(layer_2d: u8) -> u32 {
+    (SRD_RENDERER_INITIAL_LAYER_KEY & !0x7f00) | (((layer_2d as u32) << 8) & 0x7f00)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CeylonSrdFixedShaderConstants {
     pub vertex_c0_c3_world: Matrix4x4,

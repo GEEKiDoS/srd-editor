@@ -106,6 +106,9 @@ pub struct RuntimeCastDrawOrderEntry {
     pub owner: ReferenceLayerParent,
     pub source: ReferenceTarget,
     pub node_index: usize,
+    /// Effective `SrRenderer+0x198` value at the CAST's draw call, after the
+    /// inherited ExtParamData key and NODE `+0x58` low-byte offset.
+    pub renderer_layer_key: u32,
 }
 
 impl ReferenceRuntimePlan {
@@ -113,10 +116,11 @@ impl ReferenceRuntimePlan {
         &self,
         project: &Project,
         scene_index: usize,
-    ) -> Vec<RuntimeCastDrawOrderEntry> {
+        root_layer_key: u32,
+    ) -> Result<Vec<RuntimeCastDrawOrderEntry>, SceneError> {
         let mut output = Vec::new();
         let Some(scene) = project.scenes.get(scene_index) else {
-            return output;
+            return Ok(output);
         };
         for layer_index in 0..scene.layers.len() {
             let target = ReferenceTarget {
@@ -127,10 +131,11 @@ impl ReferenceRuntimePlan {
                 project,
                 ReferenceLayerParent::ProjectLayer(target),
                 target,
+                root_layer_key,
                 &mut output,
-            );
+            )?;
         }
-        output
+        Ok(output)
     }
 
     fn append_structural_cast_draw_order(
@@ -138,10 +143,14 @@ impl ReferenceRuntimePlan {
         project: &Project,
         owner: ReferenceLayerParent,
         source: ReferenceTarget,
+        inherited_layer_key: u32,
         output: &mut Vec<RuntimeCastDrawOrderEntry>,
-    ) {
+    ) -> Result<(), SceneError> {
         let layer = &project.scenes[source.scene_index].layers[source.layer_index];
+        let cast_layer_keys = layer.compose_runtime_cast_layer_keys(inherited_layer_key)?;
         for node_index in 0..layer.nodes.len() {
+            let cast_layer_key = cast_layer_keys[node_index];
+            let node_offset = layer.nodes[node_index].render_layer_offset();
             if layer
                 .reference_by_node
                 .get(node_index)
@@ -157,8 +166,9 @@ impl ReferenceRuntimePlan {
                         project,
                         ReferenceLayerParent::ReferenceInstance(instance_index),
                         instance.target,
+                        replace_low_byte_with_wrapping_sum(cast_layer_key, node_offset),
                         output,
-                    );
+                    )?;
                 }
                 // A RefCast itself submits no primitive. An unresolved
                 // reference has a null copied-layer pointer and contributes
@@ -169,9 +179,18 @@ impl ReferenceRuntimePlan {
                 owner,
                 source,
                 node_index,
+                renderer_layer_key: cast_layer_key.wrapping_add(u32::from(node_offset)),
             });
         }
+        Ok(())
     }
+}
+
+/// `srd_update_cast_tree` passes a RefCast's key into its copied layer by
+/// replacing only the low byte with the wrapping sum. Unlike the later render
+/// wrapper, a carry from that byte is deliberately discarded here.
+const fn replace_low_byte_with_wrapping_sum(key: u32, offset: u8) -> u32 {
+    (key & !0xff) | ((key as u8).wrapping_add(offset) as u32)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1039,6 +1058,7 @@ fn append_layer_references(
 #[cfg(test)]
 mod tests {
     use crate::animation::{AnimationDefinition, Key8, KeyData, Motion, Track};
+    use crate::attribute::{CastAttribute, CastAttributeList, CastAttributeValue, ExtParamData};
     use crate::reference::ReferenceDefinition;
     use crate::scene::{Layer, NodeRecord, RawTransform, Scene};
     use crate::transform::SpatialTransform;
@@ -1173,10 +1193,15 @@ mod tests {
         ]);
         let plan = project.build_reference_runtime_plan().unwrap();
         assert_eq!(
-            plan.structural_cast_draw_order(&project, 0)
-                .into_iter()
-                .map(|entry| (entry.owner, entry.source.layer_index, entry.node_index))
-                .collect::<Vec<_>>(),
+            plan.structural_cast_draw_order(
+                &project,
+                0,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.owner, entry.source.layer_index, entry.node_index))
+            .collect::<Vec<_>>(),
             vec![
                 (
                     ReferenceLayerParent::ProjectLayer(ReferenceTarget {
@@ -1234,6 +1259,74 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn cast_layer_keys_inherit_ext_params_and_apply_node_offsets_at_render() {
+        let mut tested = layer(b"tested", true, vec![None, None]);
+        tested.nodes[0].first_child_index = 1;
+        tested.cast_attribute_lists = vec![
+            CastAttributeList {
+                node_index: Some(0),
+                declared_count: 1,
+                attributes: vec![CastAttribute {
+                    name: b"ExtParamData".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::ExtParam {
+                        source: Vec::new(),
+                        parsed: ExtParamData {
+                            layer: 6,
+                            flags: ExtParamData::LAYER_KIND | ExtParamData::ENABLE_LAYER,
+                            ..ExtParamData::default()
+                        },
+                    },
+                }],
+            },
+            CastAttributeList {
+                node_index: Some(1),
+                declared_count: 1,
+                attributes: vec![CastAttribute {
+                    name: b"ExtParamData".to_vec(),
+                    source_type_code: 2,
+                    value: CastAttributeValue::ExtParam {
+                        source: Vec::new(),
+                        parsed: ExtParamData {
+                            layer_level: 0xf0,
+                            flags: ExtParamData::LAYER_KIND | ExtParamData::ENABLE_LEVEL,
+                            ..ExtParamData::default()
+                        },
+                    },
+                }],
+            },
+        ];
+        tested.cast_attribute_list_by_node = vec![Some(0), Some(1)];
+        tested.nodes[0].field_a0 = Some(0x90);
+        tested.nodes[1].field_a0 = Some(0x20);
+        let project = project(vec![tested]);
+        let plan = project.build_reference_runtime_plan().unwrap();
+        let entries = plan
+            .structural_cast_draw_order(&project, 0, crate::render::SRD_RENDERER_INITIAL_LAYER_KEY)
+            .unwrap();
+        assert_eq!(entries[0].renderer_layer_key, 0x8710);
+        assert_eq!(entries[1].renderer_layer_key, 0x8710);
+    }
+
+    #[test]
+    fn reference_layer_seed_wraps_only_the_low_byte_before_recursion() {
+        let mut root = layer(b"root", true, vec![Some(reference(b"scene", b"child", 0))]);
+        root.nodes[0].field_a0 = Some(0x90);
+        let mut child = layer(b"child", true, vec![None]);
+        child.nodes[0].field_a0 = Some(0x20);
+        let project = project(vec![root, child]);
+        let plan = project.build_reference_runtime_plan().unwrap();
+        let entries = plan
+            .structural_cast_draw_order(&project, 0, crate::render::SRD_RENDERER_INITIAL_LAYER_KEY)
+            .unwrap();
+        let copied = entries
+            .iter()
+            .find(|entry| entry.owner == ReferenceLayerParent::ReferenceInstance(0))
+            .unwrap();
+        assert_eq!(copied.renderer_layer_key, 0x8530);
     }
 
     #[test]

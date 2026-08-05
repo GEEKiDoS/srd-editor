@@ -148,6 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let screen_size = draw_selection.screen_size();
         let host = SrdHostDrawContext::new(
             Affine3x4::IDENTITY,
+            srd_editor::render::SRD_RENDERER_INITIAL_LAYER_KEY,
             identity_matrix4x4_game(),
             screen_size,
             screen_size,
@@ -245,11 +246,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ))
             };
             println!(
-                "  DRAW[{draw_index}] layer={}:{} node={}:{} is_2d={} preset={} shader={} bbox=({min_x},{min_y})..({max_x},{max_y}) projected_bbox={projected_bbox:?} color0={:02X?} color1={:02X?} textures={textures:?}",
+                "  DRAW[{draw_index}] layer={}:{} node={}:{} renderer_key={:#010x} is_2d={} preset={} shader={} bbox=({min_x},{min_y})..({max_x},{max_y}) projected_bbox={projected_bbox:?} color0={:02X?} color1={:02X?} textures={textures:?}",
                 draw.layer_index,
                 display_srd_name(&layer.name),
                 draw.node_index,
                 display_srd_name(node.name.as_deref().unwrap_or_default()),
+                draw.renderer_layer_key,
                 draw.is_2d,
                 draw.packet.table_preset_id(),
                 String::from_utf8_lossy(&draw.shader_key),

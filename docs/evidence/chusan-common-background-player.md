@@ -1,0 +1,62 @@
+# Chusan `CommonBackGroundObject` 的 SrPlayer 宿主状态
+
+本文只记录 `chusanApp.exe` 中 `CommonBackGroundObject` 实际持有的 `projView::SrPlayer`。旧编辑器和文件名只用于定位样本，不作为行为证据。
+
+## 对象布局与初始化
+
+外层对象为 12 字节句柄，持有 496 字节 Impl；嵌入式 SrPlayer 位于 `Impl+0x68`。资源初始化回调 `sub_B5B450` 在 `0xB5B477..0xB5B496` 对该成员执行三项确定操作：
+
+1. `sub_414376 -> sub_BA6490` 执行所有同类 SrPlayer 共用的资源初始化；
+2. 对属性容器写 property 6 = 6；
+3. `sub_45B60E` 重置并关闭 player。
+
+`srd_construct_player` (`0xAA68B0`) 证明 property 6 名为 `2DLayer`，构造默认值为 5，合法域为 `0..127`。共用初始化还把 `DrawTargetSceneOnly` 写为 true；本类范围没有写 `TargetScene`、`FirstCalcMatrix` 或 `DrawMask`，所以初始化结束时它们分别保持空字符串、false 和 `0xFFFF`。
+
+`sub_BA7B00` 是后续模式切换使用的显式 Enable 入口：先把参数传给嵌入式控制器，再经 SrPlayer 虚表 `+0x30` 同步 Enable。这里把“资源初始化结束时关闭”和“模式切换后可开启”分开记录，编辑器不会把两者压成一个猜测的永久状态。
+
+## 根矩阵与对象归属
+
+SrPlayer 的 GraphNode 构造把 parent 清零，并把 local/composite 3x4 矩阵初始化为 identity。对 Common 类的构造、加载、状态、析构及 object-manager 生命周期范围审计，没有发现：
+
+- 调用 GraphNode 设父入口；
+- 直接写 SrPlayer parent；
+- 直接写 local/composite matrix；
+- 把它嵌入某个具体画面对象后再保存为父子节点。
+
+对象以精确名称 `CommonBackGroundObject` 注册到全局 object manager，其他画面按该名称查找；它不是被保存进每个引用该背景的 SRD 画面对象中的成员。因此当前已证明的 `FirstCalcMatrix` 输入是构造 identity，而不是编辑器为了扩大画面加入的补偿矩阵。
+
+## `2DLayer=6` 到 renderer key
+
+`sub_AAD040` (`0xAAD040`) 对 property 6 的同步直接读写 `SrPlayer::Impl+0x1A8` bits `8..14`。`srd_player_get_renderer` 返回 `Impl+0x10`，所以该地址同时就是嵌入式 `SrRenderer+0x198`，中间不存在复制层。
+
+`ceylon_construct_draw_packet` (`0x6B8B10`) 在 `0x6B8B31..0x6B8B53` 建立默认 key `0x00008580`。property 6 只替换 bits `8..14`，因此 Common 的根 key 精确为：
+
+```text
+kind bit 15 = 1
+2DLayer     = 6
+level       = 0x80
+root key    = 0x00008680
+```
+
+`srd_update_runtime_scene_layers` (`0xAC21A0`) 把 `SrRenderer+0x198` 地址直接作为顶层继承 key 传入 CAST 树；`srd_render_cast` (`0xAD45E0`) 再把 CAST key 写回该字段并应用 NODE `0xA0` 的低字节偏移。由此可见 `2DLayer` 控制 packet order/相邻合并键，不会把 Common 的 LAYR/CAST 从 3D 改成 2D。
+
+## target 路由
+
+Common 与 Advertise 一样满足：
+
+- `DrawTargetSceneOnly=true`；
+- `TargetScene` 为空；
+- `DrawMask=0xFFFF`。
+
+空名称查找返回空 target，packet 进入全局队列，再由每个已注册 target 过滤。Chusan MainScene/BgScene 构造完成状态的 Enable 都为 true，Attribute 都为 0，DrawIndex 分别为 0/16，所以 Common 的初始普通 packet 被 MainScene 接纳、被 BgScene 拒绝。后续模式可能改变 Scene Enable/current-target；这里不把构造完成状态外推到所有帧。
+
+## 实际样本回归
+
+对 `CHU_UI_Common_BK_00_v11.srd` 的 `yellow_loop` 第 0 帧，使用上述 Common/MainScene profile：
+
+- 产生 100 个证据完整普通 runtime draw；
+- 100 个 draw 的 renderer key 全部为 `0x8680`；
+- 按 `ceylon_enqueue_draw_packet` 的精确相邻比较与 triangle-strip 退化连接规则合并为 9 个 record；
+- 100 个逻辑 source 全部仍可从 9 个 record 反查，不发生丢失或跨 key 合并。
+
+该回归只闭合宿主 key、路由和普通 packet 合并，不解决 Width-as-Aspect 造成的窄投影。最终 target rotation/offscreen 合成或额外 GPU 常量仍列在 [`../TODO.md`](../TODO.md)。
