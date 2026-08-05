@@ -1694,6 +1694,22 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
         assert!(plan.unresolved.is_empty(), "{}", path.display());
         instance_count += plan.instances.len();
 
+        let runtime = ProjectRuntime::new(&project)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let worlds = runtime
+            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(worlds.references.len(), plan.instances.len());
+        for world in worlds
+            .project_layers
+            .iter()
+            .flatten()
+            .chain(&worlds.references)
+        {
+            let layer = &project.scenes[world.source.scene_index].layers[world.source.layer_index];
+            assert_eq!(world.casts.len(), layer.nodes.len(), "{}", path.display());
+        }
+
         let mut target_counts = std::collections::HashMap::new();
         for instance in &plan.instances {
             *target_counts.entry(instance.target).or_insert(0usize) += 1;

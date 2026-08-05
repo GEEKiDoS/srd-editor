@@ -4,7 +4,7 @@ use crate::animation::RuntimeAnimationState;
 use crate::csli::{add_color_saturating_game, multiply_color_game};
 use crate::image::{ImageDefinition, RuntimeImageState};
 use crate::reference::ReferenceAnimationRequest;
-use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget};
+use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget, SceneError};
 use crate::texture::TextureList;
 use crate::transform::{Affine3x4, SpatialTransform, build_local_matrix};
 
@@ -233,6 +233,35 @@ pub struct ProjectLayerRuntimeState {
 pub struct ProjectRuntime {
     pub project_layers: Vec<Vec<ProjectLayerRuntimeState>>,
     pub references: ReferenceRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeLayerWorldStates {
+    pub owner: ReferenceLayerParent,
+    pub source: ReferenceTarget,
+    pub is_2d: bool,
+    pub layer: RuntimeWorldState,
+    pub casts: Vec<RuntimeWorldState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectRuntimeWorldStates {
+    pub project_layers: Vec<Vec<RuntimeLayerWorldStates>>,
+    pub references: Vec<RuntimeLayerWorldStates>,
+}
+
+impl ProjectRuntimeWorldStates {
+    pub fn layer(&self, owner: ReferenceLayerParent) -> Option<&RuntimeLayerWorldStates> {
+        match owner {
+            ReferenceLayerParent::ProjectLayer(target) => self
+                .project_layers
+                .get(target.scene_index)?
+                .get(target.layer_index),
+            ReferenceLayerParent::ReferenceInstance(instance_index) => {
+                self.references.get(instance_index)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -649,6 +678,120 @@ impl ProjectRuntime {
         })
     }
 
+    /// Reproduces the runtime update chain before render traversal: original
+    /// layers use the host FirstCalcMatrix as their root, while every copied
+    /// layer composes its independent local state under the owning RefCast.
+    /// CAST colors and visibility follow `srd_compose_cast_world_state`; the
+    /// render gate remains separate from transform visibility.
+    pub fn compose_world_states(
+        &self,
+        project: &Project,
+        first_calc_matrix: Affine3x4,
+    ) -> Result<ProjectRuntimeWorldStates, SceneError> {
+        let mut project_worlds = Vec::with_capacity(project.scenes.len());
+        for (scene_index, scene) in project.scenes.iter().enumerate() {
+            let runtime_scene = self.project_layers.get(scene_index).ok_or_else(|| {
+                SceneError(format!(
+                    "SCN[{scene_index}] is missing from the project runtime"
+                ))
+            })?;
+            if runtime_scene.len() != scene.layers.len() {
+                return Err(SceneError(format!(
+                    "SCN[{scene_index}] has {} parsed layers but {} runtime layers",
+                    scene.layers.len(),
+                    runtime_scene.len()
+                )));
+            }
+            let mut scene_worlds = Vec::with_capacity(scene.layers.len());
+            for (layer_index, (layer, runtime_layer)) in
+                scene.layers.iter().zip(runtime_scene).enumerate()
+            {
+                let source = ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                };
+                let layer_world = RuntimeWorldState {
+                    matrix: first_calc_matrix,
+                    multiply_color: [255; 4],
+                    additive_color: [0; 4],
+                    visible: true,
+                    render_gate: runtime_layer.enabled,
+                };
+                let casts = compose_runtime_cast_world_states(
+                    layer,
+                    &runtime_layer.cast_transforms,
+                    layer_world,
+                    layer.is_2d(),
+                )?;
+                scene_worlds.push(RuntimeLayerWorldStates {
+                    owner: ReferenceLayerParent::ProjectLayer(source),
+                    source,
+                    is_2d: layer.is_2d(),
+                    layer: layer_world,
+                    casts,
+                });
+            }
+            project_worlds.push(scene_worlds);
+        }
+
+        let mut result = ProjectRuntimeWorldStates {
+            project_layers: project_worlds,
+            references: Vec::with_capacity(self.references.layers.len()),
+        };
+        for (instance_index, runtime_layer) in self.references.layers.iter().enumerate() {
+            let instance = self
+                .references
+                .plan
+                .instances
+                .get(instance_index)
+                .ok_or_else(|| {
+                    SceneError(format!(
+                        "reference runtime layer {instance_index} has no construction plan entry"
+                    ))
+                })?;
+            let parent_layer = result.layer(instance.parent).ok_or_else(|| {
+                SceneError(format!(
+                    "reference instance {instance_index} has an unavailable parent {:?}",
+                    instance.parent
+                ))
+            })?;
+            let parent_cast = *parent_layer
+                .casts
+                .get(instance.reference_node_index)
+                .ok_or_else(|| {
+                    SceneError(format!(
+                        "reference instance {instance_index} owning NODE {} is outside its parent CAST vector",
+                        instance.reference_node_index
+                    ))
+                })?;
+            let layer_world = instance.compose_world_state(parent_cast, runtime_layer.local);
+            let layer = project
+                .scenes
+                .get(instance.target.scene_index)
+                .and_then(|scene| scene.layers.get(instance.target.layer_index))
+                .ok_or_else(|| {
+                    SceneError(format!(
+                        "reference instance {instance_index} target SCN[{}]/LAYR[{}] is outside the project",
+                        instance.target.scene_index, instance.target.layer_index
+                    ))
+                })?;
+            let casts = compose_runtime_cast_world_states(
+                layer,
+                &runtime_layer.cast_transforms,
+                layer_world,
+                instance.is_2d,
+            )?;
+            result.references.push(RuntimeLayerWorldStates {
+                owner: ReferenceLayerParent::ReferenceInstance(instance_index),
+                source: instance.target,
+                is_2d: instance.is_2d,
+                layer: layer_world,
+                casts,
+            });
+        }
+        Ok(result)
+    }
+
     pub fn apply_layer_animation(
         &mut self,
         project: &Project,
@@ -771,6 +914,80 @@ impl ProjectRuntime {
             }
         }
         Ok(result)
+    }
+}
+
+fn compose_runtime_cast_world_states(
+    layer: &Layer,
+    transforms: &[SpatialTransform],
+    layer_world: RuntimeWorldState,
+    is_2d: bool,
+) -> Result<Vec<RuntimeWorldState>, SceneError> {
+    let matrices = layer.compose_world_matrices_with_runtime_mode_and_csli_layout(
+        transforms,
+        layer_world.matrix,
+        is_2d,
+        false,
+    )?;
+    let hierarchy = layer.build_hierarchy()?;
+    let mut result = vec![RuntimeWorldState::default(); layer.nodes.len()];
+    for &root in &hierarchy.roots {
+        compose_runtime_cast_world_state_node(
+            layer,
+            transforms,
+            &matrices,
+            &hierarchy.children,
+            root,
+            layer_world,
+            layer_world,
+            &mut result,
+        );
+    }
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_runtime_cast_world_state_node(
+    layer: &Layer,
+    transforms: &[SpatialTransform],
+    matrices: &[Affine3x4],
+    children: &[Vec<usize>],
+    index: usize,
+    layer_world: RuntimeWorldState,
+    parent: RuntimeWorldState,
+    output: &mut [RuntimeWorldState],
+) {
+    let flags = layer.nodes[index].type_flags.unwrap_or(0);
+    let local = transforms[index];
+    let visible =
+        local.is_visible() && layer_world.visible && (flags & 0x400 == 0 || parent.visible);
+    let world = RuntimeWorldState {
+        matrix: matrices[index],
+        multiply_color: if flags & 0x200 != 0 {
+            multiply_color_game(parent.multiply_color, local.multiply_color)
+        } else {
+            local.multiply_color
+        },
+        additive_color: if flags & 0x0008_0000 != 0 {
+            add_color_saturating_game(parent.additive_color, local.additive_color)
+        } else {
+            local.additive_color
+        },
+        visible,
+        render_gate: visible && layer_world.render_gate,
+    };
+    output[index] = world;
+    for &child in &children[index] {
+        compose_runtime_cast_world_state_node(
+            layer,
+            transforms,
+            matrices,
+            children,
+            child,
+            layer_world,
+            world,
+            output,
+        );
     }
 }
 
@@ -1109,6 +1326,104 @@ mod tests {
         let gated = instance.compose_world_state(gated_parent, local);
         assert!(gated.visible);
         assert!(!gated.render_gate);
+    }
+
+    #[test]
+    fn project_runtime_world_states_follow_refcast_parent_mode_color_and_gate() {
+        let mut root = layer(b"root", true, vec![Some(reference(b"scene", b"target", 0))]);
+        root.flags |= 0x100;
+        root.transforms[0] = RawTransform::Trs2(SpatialTransform {
+            translation: [10.0, 20.0, 0.0],
+            multiply_color: [200, 100, 50, 255],
+            additive_color: [10, 20, 30, 40],
+            ..SpatialTransform::default()
+        });
+
+        // The parsed target is 3D, but binding propagates the owning 2D
+        // RefCast mode to every CAST in this independent copy.
+        let mut target = layer(b"target", false, vec![None]);
+        target.flags |= 0x100;
+        target.nodes[0].type_flags = Some(3 | 0x200 | 0x0008_0000);
+        target.transforms[0] = RawTransform::Trs3(SpatialTransform {
+            translation: [4.0, 5.0, 0.0],
+            rotation: [0, 0, 0x4000],
+            multiply_color: [128, 255, 128, 200],
+            additive_color: [1, 2, 3, 4],
+            ..SpatialTransform::default()
+        });
+
+        let project = project(vec![root, target]);
+        let mut runtime = ProjectRuntime::new(&project).unwrap();
+        runtime.references.layers[0].local.transform.translation = [2.0, 3.0, 0.0];
+        runtime.references.layers[0].local.transform.multiply_color = [128, 255, 0, 128];
+        runtime.references.layers[0].local.transform.additive_color = [250, 240, 230, 220];
+
+        let worlds = runtime
+            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .unwrap();
+        let copied = &worlds.references[0];
+        assert!(copied.is_2d);
+        assert_eq!(copied.layer.matrix.rows[0][3], 12.0);
+        assert_eq!(copied.layer.matrix.rows[1][3], 23.0);
+        assert_eq!(copied.layer.multiply_color, [100, 100, 0, 128]);
+        assert_eq!(copied.layer.additive_color, [255, 255, 255, 255]);
+        assert!(copied.layer.visible);
+        assert!(copied.layer.render_gate);
+
+        let expected_local = build_local_matrix(
+            &runtime.references.layers[0].cast_transforms[0],
+            true,
+            false,
+            [0.0, 0.0],
+        );
+        assert_eq!(
+            copied.casts[0].matrix,
+            copied.layer.matrix.mul_game(expected_local)
+        );
+        assert_eq!(copied.casts[0].multiply_color, [50, 100, 0, 100]);
+        assert_eq!(copied.casts[0].additive_color, [255, 255, 255, 255]);
+        assert!(copied.casts[0].visible);
+        assert!(copied.casts[0].render_gate);
+
+        runtime.project_layers[0][0].enabled = false;
+        let gated = runtime
+            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .unwrap();
+        assert!(gated.references[0].layer.visible);
+        assert!(!gated.references[0].layer.render_gate);
+        assert!(gated.references[0].casts[0].visible);
+        assert!(!gated.references[0].casts[0].render_gate);
+    }
+
+    #[test]
+    fn copied_layer_flip_y_applies_once_at_the_layer_local_matrix() {
+        let mut root = layer(
+            b"root",
+            false,
+            vec![Some(reference(b"scene", b"target", 0))],
+        );
+        root.flags |= 0x100;
+        let mut target = layer(b"target", true, vec![None]);
+        target.flags |= 0x100;
+        target.transforms[0] = RawTransform::Trs2(SpatialTransform {
+            translation: [0.0, 5.0, 0.0],
+            ..SpatialTransform::default()
+        });
+        let project = project(vec![root, target]);
+        let mut runtime = ProjectRuntime::new(&project).unwrap();
+        assert!(runtime.references.plan.instances[0].flip_y);
+        assert!(!runtime.references.plan.instances[0].is_2d);
+        runtime.references.layers[0].local.transform.translation[1] = 3.0;
+
+        let copied = runtime
+            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .unwrap()
+            .references
+            .remove(0);
+        assert_eq!(copied.layer.matrix.rows[1][3], -3.0);
+        // CAST local Y is not flipped a second time; the propagated runtime
+        // mode is 3D and the copied-layer root already contains the flip.
+        assert_eq!(copied.casts[0].matrix.rows[1][3], 2.0);
     }
 
     #[test]

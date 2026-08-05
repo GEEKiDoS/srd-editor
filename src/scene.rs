@@ -582,6 +582,23 @@ impl Layer {
         flip_y: bool,
         offsets: &[[f32; 2]],
     ) -> Result<Vec<Affine3x4>, SceneError> {
+        self.compose_world_matrices_with_runtime_mode(
+            transforms,
+            root_matrix,
+            self.is_2d(),
+            flip_y,
+            offsets,
+        )
+    }
+
+    pub fn compose_world_matrices_with_runtime_mode(
+        &self,
+        transforms: &[SpatialTransform],
+        root_matrix: Affine3x4,
+        is_2d: bool,
+        flip_y: bool,
+        offsets: &[[f32; 2]],
+    ) -> Result<Vec<Affine3x4>, SceneError> {
         let count = self.nodes.len();
         if transforms.len() != count || offsets.len() != count {
             return Err(SceneError(format!(
@@ -597,7 +614,7 @@ impl Layer {
             compose_node(
                 root,
                 root_matrix,
-                self.is_2d(),
+                is_2d,
                 flip_y,
                 transforms,
                 offsets,
@@ -657,8 +674,29 @@ impl Layer {
         root_matrix: Affine3x4,
         flip_y: bool,
     ) -> Result<Vec<Affine3x4>, SceneError> {
+        self.compose_world_matrices_with_runtime_mode_and_csli_layout(
+            transforms,
+            root_matrix,
+            self.is_2d(),
+            flip_y,
+        )
+    }
+
+    pub fn compose_world_matrices_with_runtime_mode_and_csli_layout(
+        &self,
+        transforms: &[SpatialTransform],
+        root_matrix: Affine3x4,
+        is_2d: bool,
+        flip_y: bool,
+    ) -> Result<Vec<Affine3x4>, SceneError> {
         let offsets = self.compute_parent_csli_offsets()?;
-        self.compose_world_matrices(transforms, root_matrix, flip_y, &offsets)
+        self.compose_world_matrices_with_runtime_mode(
+            transforms,
+            root_matrix,
+            is_2d,
+            flip_y,
+            &offsets,
+        )
     }
 }
 

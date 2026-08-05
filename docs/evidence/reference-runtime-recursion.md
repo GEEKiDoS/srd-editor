@@ -66,6 +66,8 @@ Rust 的 `collect_fennel_font_resource_requests` 明确保留这一边界。语�
 - `+0x20C = saturating_add_color(RefCast +0xC0, layer +0x164)`；
 - 再遍历 layer 根 CAST，调用 `srd_update_cast_tree`。
 
+copied layer 的局部状态并非从目标 LAYR 的 CAST transform 猜出。`srd_build_runtime_layer -> srd_reset_runtime_layer_state` (`0xAC15A0`) 对每个新 runtime layer 明确调用 `srd_init_runtime_transform(this+0x13C)`；`srd_init_runtime_transform` (`0xAD6F70`) 写入零平移、零旋转、单位缩放、白色乘色、零加色和 enabled byte `1`。随后绑定器在 `0xAC18E9` 再把 copied layer 独立 enable `+0x168` 强制写成 `1`。因此 Rust 的 `ReferenceLayerLocalState::default()` 有直接构造证据，不是把缺失字段擅自当作 identity。
+
 `srd_update_runtime_scene_layers` (`0xAC21A0`) 对普通项目层把 runtime scene `+0x75` 写入 layer `+0x1A4`。对 copied layer，`srd_update_cast_tree` 则把 owning RefCast 的完整 `srd_cast_passes_render_gate` 结果写入 `+0x1A4`。`srd_runtime_layer_passes_render_gate` 对 copied layer 要求 `+0x168`、`+0x1A4` 和 owning RefCast gate 三者都成立。因此 Rust 世界状态分别保存 transform visibility 与 render gate，不把二者合并成一个字节。
 
 ## 绘制递归
@@ -89,6 +91,7 @@ Rust 已实现：
 - owning RefCast 2D 模式向所有嵌套复制层传播；
 - 2D 目标嵌入 3D RefCast 时的 Y 翻转；
 - copied layer 的父矩阵、乘色、加色、transform visibility 和 render gate 组合；
+- `ProjectRuntime::compose_world_states` 已把上述组合应用到每个顶层 project layer 和每个独立 copied layer 的完整 CAST hierarchy：顶层从宿主 `FirstCalcMatrix` 起算，copied layer 从 owning RefCast 世界状态起算；CAST 的 `0x200/0x400/0x80000` 继承位、独立 runtime 2D/3D 模式和只发生一次的 copied-layer Y 翻转均进入结果，transform visibility 与 render gate 分栏保存；
 - 每个顶层项目层及 copied layer 独立的 CAST transform、内嵌 SrImage 与 ANIM frame/duration/flags；
 - 公共动画 pass 后的完整 SrImage 专用 pass：`11/12`、`13..16`、`17/20`；
 - 通道 `23` 从顶层项目层或 copied layer 定位正确子实例，首次匹配具名动画、保存 raw frame，并递归执行公共与专用 pass；
@@ -96,8 +99,8 @@ Rust 已实现：
 - copied TextCast 不追加 FontResource 请求，并复用原始目标层已请求的共享字体资源；
 - `ReferenceRuntimePlan::structural_cast_draw_order` 按顶层 runtime layer 向量和每层 CAST 向量的前向顺序生成计划；遇到已解析 RefCast 时在该 NODE 位置递归展开对应独立实例，未解析 RefCast 不生成伪 draw，父层余下 CAST 在递归返回后继续。
 
-53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；按文件统计共有 186 个目标 SCN/LAYR 被两个或更多实例引用。全部文件均收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
+53 个本地 SRD 的 1090 个静态 CRFD 按上述过程展开为 2087 个独立 runtime reference layer；完整 `D:\sdhd\assets\data` 的 91 个 SRD 则由 1299 个 CRFD 展开为 2365 个独立层。两组分别有 186 和 227 个目标 SCN/LAYR 被多个实例引用。全部实例均成功建立与源 NODE 数量严格相同的 CAST 世界状态，全部文件收敛且没有未解析目标。这组结果也排除了“按目标层共享一个运行时对象”作为语料兼容实现。
 
 2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
 
-后续仍需把该结构顺序与 runtime layer/CAST gate、每个 copied layer 的独立 Image/Text draw 数据及 target queue 提交合并，并实现源目标层对根 CAST 的附加抑制条件。本页不把已完成的动画、世界状态和顺序计划表述为已经完成 reference 像素渲染。
+后续仍需把已经闭合的结构顺序和世界/gate 结果接到每个 copied layer 的独立 Image/Text draw 数据及 target queue 统一提交，并实现源目标层对根 CAST 的附加抑制条件。本页不把已完成的动画、世界状态和顺序计划表述为已经完成 reference 像素渲染。
