@@ -414,6 +414,74 @@ pub fn fennel_apply_srd_mode6_control(
     }
 }
 
+/// Exact single-precision constant at `0x190E308`, multiplied after the
+/// host-frame value and the SrTextCast update argument by `sub_AD8D00`.
+pub const FENNEL_SRD_CLOCK_SCALE: f32 = f32::from_bits(0x3C88_8889);
+
+/// SrTextCast runtime fields used by `sub_AD8D00` and `sub_AC5740`. Offset
+/// names are retained because `$D`/`$L` control parsing has not yet been
+/// generalized beyond the no-control SRD initialization path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelSrdScrollState {
+    /// Text state `+0xF4` (`SrTextCast+0x2E8`).
+    pub field_f4: f32,
+    /// Text state `+0xF8` (`SrTextCast+0x2EC`).
+    pub field_f8: i32,
+    /// Text state `+0xFC` (`SrTextCast+0x2F0`).
+    pub field_fc: i32,
+    pub field_130: i32,
+    pub field_134: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FennelSrdScrollOutputs {
+    /// TextBoxObject `+0x2C0`, or `-1` when state `+0xF8 <= 0`.
+    pub maximum_glyphs: i32,
+    pub field_2c4: f32,
+    pub field_2c8: f32,
+    pub field_2cc: f32,
+}
+
+impl FennelSrdScrollState {
+    /// Reproduces the `sub_AD8D50` result when the runtime text contains
+    /// neither `$D` nor `$L`: elapsed state is reset, `+0xF8` is `-1`, and
+    /// `+0xFC` receives FontParam `scrollSpeed` from state `+0x12C`.
+    pub const fn initial_without_controls(font_param: FontParamData) -> Self {
+        Self {
+            field_f4: 0.0,
+            field_f8: -1,
+            field_fc: font_param.scroll_speed,
+            field_130: font_param.scroll_wait,
+            field_134: font_param.field_34,
+        }
+    }
+
+    /// Reproduces `sub_AD8D00`. A disabled SrTextCast leaves the clock
+    /// unchanged; the enabled chain preserves the binary multiplication order.
+    pub fn advance(&mut self, enabled: bool, host_frame_value: f32, argument: f32) {
+        if enabled {
+            self.field_f4 = (host_frame_value * argument) * FENNEL_SRD_CLOCK_SCALE + self.field_f4;
+        }
+    }
+
+    /// Reproduces the four state-derived writes at
+    /// `0xAC5CDC..0xAC5D5E` before `sub_7C04F0` computes its draw offset.
+    pub fn outputs(self) -> FennelSrdScrollOutputs {
+        let speed = self.field_fc as f32;
+        let wait = self.field_130 as f32;
+        FennelSrdScrollOutputs {
+            maximum_glyphs: if self.field_f8 > 0 {
+                fennel_cvttss2si((self.field_f8 as f32) * self.field_f4)
+            } else {
+                -1
+            },
+            field_2c4: fennel_sse_max((self.field_f4 - wait) * speed, 0.0),
+            field_2c8: fennel_sse_max(wait * speed, 0.0),
+            field_2cc: fennel_sse_max((self.field_134 as f32) * speed, 0.0),
+        }
+    }
+}
+
 /// The 45 UTF-16 values copied from `word_1940AB8` into the FontManager
 /// implementation's `+0xE0` lookup by `sub_F33C30`.
 pub const FENNEL_FONT_MANAGER_SET_E0: [u16; 45] = [
@@ -1357,6 +1425,9 @@ pub struct FennelNormalDrawInput {
     pub secondary_color: u32,
     pub textbox_flags: u32,
     pub clip_size: [f32; 2],
+    /// The two floats passed by `sub_7C04F0` as `sub_7C7F90` argument 7.
+    /// `sub_7C7F90` subtracts them from the normal and effect glyph origins.
+    pub draw_offset: [f32; 2],
     /// TextBoxObject `+0x80..+0x8C`. `sub_F2D730` replaces the effect record's
     /// RGB with these values and multiplies the two alpha bytes.
     pub effect_colors: [u32; 4],
@@ -1453,6 +1524,7 @@ where
             // and 7, select the same non-clipping branch.
             textbox_flags: 3,
             clip_size: [0.0; 2],
+            draw_offset: [0.0; 2],
             effect_colors: FENNEL_DEFAULT_EFFECT_COLORS,
             effect_offset: FENNEL_DEFAULT_EFFECT_OFFSET,
         },
@@ -1518,8 +1590,10 @@ where
                 .wrapping_sub(glyph.line_height as i32)
                 .wrapping_add(3);
             let origin = [
-                record.x + (glyph.bearing_x.wrapping_sub(enabled) as f32) * effective_scale[0],
-                record.y + (correction_y.wrapping_sub(enabled) as f32) * effective_scale[1],
+                record.x - input.draw_offset[0]
+                    + (glyph.bearing_x.wrapping_sub(enabled) as f32) * effective_scale[0],
+                record.y - input.draw_offset[1]
+                    + (correction_y.wrapping_sub(enabled) as f32) * effective_scale[1],
             ];
             let glyph_vertices = if input.textbox_flags & FENNEL_TEXTBOX_CLIP_FLAG != 0 {
                 build_fennel_clipped_vertices(
@@ -3232,6 +3306,51 @@ mod tests {
     }
 
     #[test]
+    fn srd_scroll_clock_and_no_control_outputs_match_ad8d00_ac5740() {
+        let mut state = FennelSrdScrollState::initial_without_controls(FontParamData::default());
+        assert_eq!(
+            state,
+            FennelSrdScrollState {
+                field_f4: 0.0,
+                field_f8: -1,
+                field_fc: 40,
+                field_130: 2,
+                field_134: 2,
+            }
+        );
+        assert_eq!(
+            state.outputs(),
+            FennelSrdScrollOutputs {
+                maximum_glyphs: -1,
+                field_2c4: 0.0,
+                field_2c8: 80.0,
+                field_2cc: 80.0,
+            }
+        );
+
+        state.advance(false, 2.0, 3.0);
+        assert_eq!(state.field_f4, 0.0);
+        state.advance(true, 2.0, 3.0);
+        assert_eq!(
+            state.field_f4.to_bits(),
+            ((2.0f32 * 3.0) * FENNEL_SRD_CLOCK_SCALE).to_bits()
+        );
+
+        let revealed = FennelSrdScrollState {
+            field_f4: 0.25,
+            field_f8: 10,
+            field_fc: -40,
+            field_130: 2,
+            field_134: 2,
+        }
+        .outputs();
+        assert_eq!(revealed.maximum_glyphs, 2);
+        assert_eq!(revealed.field_2c4, 70.0);
+        assert_eq!(revealed.field_2c8, 0.0);
+        assert_eq!(revealed.field_2cc, 0.0);
+    }
+
+    #[test]
     fn fitting_layout_applies_center_alignment_and_binary_metric_order() {
         let mut stream = one_line_stream(&[1, 2]);
         let result = layout_fennel_static_fitting_lines(
@@ -4129,6 +4248,7 @@ mod tests {
                 secondary_color: 0,
                 textbox_flags: 3,
                 clip_size: [0.0; 2],
+                draw_offset: [3.0, 4.0],
                 effect_colors: [0x8040_3020; 4],
                 effect_offset: [2.0, 3.0],
             },
@@ -4141,8 +4261,8 @@ mod tests {
         );
         let vertices = &build.unwrap().batches[0].vertices;
         assert_eq!(vertices.len(), 12);
-        assert_eq!(vertices[0].position, [3.0, 3.0, 0.0]);
-        assert_eq!(vertices[6].position, [1.0, 0.0, 0.0]);
+        assert_eq!(vertices[0].position, [0.0, -1.0, 0.0]);
+        assert_eq!(vertices[6].position, [-2.0, -4.0, 0.0]);
         assert_eq!(vertices[0].primary_color_bgra, [0x40, 0x30, 0x20, 0x20]);
         assert_eq!(vertices[6].primary_color_bgra, [0xFF, 0xFF, 0xFF, 0x40]);
     }
@@ -4179,6 +4299,7 @@ mod tests {
                 secondary_color: 0,
                 textbox_flags: FENNEL_TEXTBOX_CLIP_FLAG | FENNEL_TEXTBOX_CLIP_Y_ZERO_BASE_FLAG,
                 clip_size: [2.0, 2.0],
+                draw_offset: [0.0; 2],
                 effect_colors: FENNEL_DEFAULT_EFFECT_COLORS,
                 effect_offset: FENNEL_DEFAULT_EFFECT_OFFSET,
             },

@@ -35,8 +35,8 @@ D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.sr
 尚未闭合：
 
 - FontResource 的 32 槽 lowest-free 分配、同资源缓存复用、最后引用释放后的精确槽回收、满表返回未注册 slot `0x20`，以及当前玩家 `SCN -> LAYR -> NODE` 中主字体后接 `rubyFont/rfzOutlineFont/rfzOutlineRubyFont` 的 CATR 请求顺序已经闭合并实现；copied reference layer 已证明不会追加请求，而是使用原始目标层已请求的共享资源。`$F[n]`/裸 `$F` 的全局 slot 解析与跨字体 atlas token 路由也已连接。仍待宿主提供的是加载当前 SRD 前仍存活的进程级 FontManager/renderer 资源状态；不得把“空 registry”或编辑器自行分配的 opaque texture handle 声称为任意原版进程的绝对映射；
-- FontParam 初始 RFZ style 链已闭合：`pointX/pointY` 经 signed `max(value,1)` 和高字节清零成为 u8，但 `FontDriverRFO` 查找只读取字符码并只复制 style flags；outline/italic/bold 的 flags/value 也已复现，`faceId` 不被 `sub_AC6F50` 读取。完整语料 14 个非默认 point text 全部由 mode 2/4 的 `0x20` 分支绕过唯一的 pointY 半高检查，outline/italic/bold/faceId 全为 0。仍未闭合的是 `vertical=True` correction、scroll 状态的实际消费，以及 mode 6 非虚方法 `0xADA300..0xADA348` 的真实调用点；后者仍只有无调用引用的 jump-island thunk `0x45335F`，不得假定 SRD 首帧或动画会自动触发它；
+- FontParam 初始 RFZ style 链已闭合：`pointX/pointY` 经 signed `max(value,1)` 和高字节清零成为 u8，但 `FontDriverRFO` 查找只读取字符码并只复制 style flags；outline/italic/bold 的 flags/value 也已复现，`faceId` 不被 `sub_AC6F50` 读取。完整语料 14 个非默认 point text 全部由 mode 2/4 的 `0x20` 分支绕过唯一的 pointY 半高检查，outline/italic/bold/faceId 全为 0。scroll 的无 `$D/$L` 初始状态、`sub_AD8D00` 时钟与 `sub_AC5740` 四个派生量也已实现；完整 1,292 个文本均无这两个控制串，首帧 maximum=-1 且 mode 2/4 draw offset 为零。仍未闭合的是 `$D/$L` 的动态解析/完整 `sub_7C04F0` 循环位移、`vertical=True` correction，以及 mode 6 非虚方法 `0xADA300..0xADA348` 的真实调用点；后者仍只有无调用引用的 jump-island thunk `0x45335F`，不得假定 SRD 首帧或动画会自动触发它；
 - `sub_7C90A0` 的布局分派已闭合为 `0x20 -> sub_7C4070`、否则 `0x40 -> sub_7C5A20`、否则默认。fresh mode `1` 的 `0x000F` 默认排版、mode `2..4` 的 `0x0CA3/0x1CA3/0x2CA3` Flag20 排版、fresh mode `5/6` 的 `0x6C03/0x7C03` 默认排版，以及三个布局器共用的 flags `0x200` 固定 cell 分支均已实现。Flag20 包括相同的断行/截止/元数据状态机和 `+0x358` 严格最小 advance 下标。完整指令流已证明 `sub_7C5A20` 与 Flag20 的有效差异只有后者的 `+0x358` 初始化/两次更新，但组件内直接字段与 setter 审计仍找不到任何生成 `0x40` 的入口；因此 Flag40 的真实 flags 来源仍待闭合；
 - `sub_7C8BE0` 的 hash rehash；当前完整字体最多 7 页、真实文本最多 6 个 batch，不会触发该分支。
 
-在这些输入闭环前，不得自行补 vertical/scroll、mode-6 自动调用、`Flag40` 或 rehash 行为。
+在这些输入闭环前，不得自行补 vertical、`$D/$L` 动态滚动、mode-6 自动调用、`Flag40` 或 rehash 行为。

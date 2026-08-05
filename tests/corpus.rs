@@ -1119,6 +1119,8 @@ fn parses_cast_attribute_lists_and_ext_params() {
     let mut initial_text_style_flags = std::collections::BTreeMap::new();
     let mut initial_text_nonzero_style_counts = [0usize; 4];
     let mut initial_text_nondefault_point_y_guard_count = 0usize;
+    let mut initial_text_scroll_fields = std::collections::BTreeMap::new();
+    let mut initial_text_scroll_control_counts = [0usize; 2];
     let mut monospaced_font_param_count = 0usize;
     let mut render_preset_overrides = std::collections::BTreeMap::new();
     let mut image_override_counts = std::collections::BTreeMap::new();
@@ -1193,6 +1195,22 @@ fn parses_cast_attribute_lists_and_ext_params() {
                             && textbox_flags & 0x800 != 0
                             && textbox_flags & 0x20 == 0,
                     );
+                    *initial_text_scroll_fields
+                        .entry((
+                            font_param.scroll_speed,
+                            font_param.scroll_wait,
+                            font_param.field_34,
+                        ))
+                        .or_insert(0usize) += 1;
+                    let text_units = decode_fennel_game_text(&text.text).unwrap();
+                    initial_text_scroll_control_counts[0] += text_units
+                        .windows(2)
+                        .filter(|pair| pair == &[b'$' as u16, b'D' as u16])
+                        .count();
+                    initial_text_scroll_control_counts[1] += text_units
+                        .windows(2)
+                        .filter(|pair| pair == &[b'$' as u16, b'L' as u16])
+                        .count();
                     *initial_text_point_sizes
                         .entry((font_param.point_x, font_param.point_y))
                         .or_insert(0usize) += 1;
@@ -1366,8 +1384,33 @@ fn parses_cast_attribute_lists_and_ext_params() {
     assert_eq!(initial_text_point_sizes, expected_initial_point_sizes);
     assert_eq!(initial_text_nonzero_style_counts, [0; 4]);
     assert_eq!(initial_text_nondefault_point_y_guard_count, 0);
+    assert_eq!(
+        initial_text_scroll_fields,
+        match profile {
+            CorpusProfile::Legacy53 => [
+                ((40, 1, 2), 2),
+                ((40, 2, 2), 1_208),
+                ((40, 3, 2), 1),
+                ((50, 2, 2), 5),
+                ((60, 1, 2), 21),
+            ]
+            .into_iter()
+            .collect(),
+            CorpusProfile::Complete91 => [
+                ((20, 2, 2), 1),
+                ((40, 1, 2), 2),
+                ((40, 2, 2), 1_258),
+                ((40, 3, 2), 4),
+                ((50, 2, 2), 5),
+                ((60, 1, 2), 22),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    );
+    assert_eq!(initial_text_scroll_control_counts, [0; 2]);
     eprintln!(
-        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, FontParamData={font_param_count}, FontParam modes={font_param_modes:?}, initial text modes={initial_text_modes:?}, initial TextBox flags={initial_textbox_flags:?}, initial record style flags={initial_text_style_flags:?}, monospaced FontParamData={monospaced_font_param_count}, initial text monospaced={initial_text_monospaced_count}, shadow={initial_text_shadow_count}, vertical={initial_text_vertical_count}, prohibition={initial_text_prohibition_count}, word-wrap={initial_text_word_wrap_count}, nonzero outline/italic/bold/faceId={initial_text_nonzero_style_counts:?}, point sizes={initial_text_point_sizes:?}, nondefault pointY in 7C04F0 point-margin branch={initial_text_nondefault_point_y_guard_count}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
+        "CATR profile={profile:?}, lists={list_count}, attached nodes={attached_node_count}, attributes={attribute_count}, ExtParamData={ext_param_count}, FontParamData={font_param_count}, FontParam modes={font_param_modes:?}, initial text modes={initial_text_modes:?}, initial TextBox flags={initial_textbox_flags:?}, initial record style flags={initial_text_style_flags:?}, monospaced FontParamData={monospaced_font_param_count}, initial text monospaced={initial_text_monospaced_count}, shadow={initial_text_shadow_count}, vertical={initial_text_vertical_count}, prohibition={initial_text_prohibition_count}, word-wrap={initial_text_word_wrap_count}, nonzero outline/italic/bold/faceId={initial_text_nonzero_style_counts:?}, point sizes={initial_text_point_sizes:?}, nondefault pointY in 7C04F0 point-margin branch={initial_text_nondefault_point_y_guard_count}, scroll fields={initial_text_scroll_fields:?}, $D/$L controls={initial_text_scroll_control_counts:?}, overrides={render_preset_overrides:?}, image overrides={image_override_counts:?}, effective image presets={effective_image_presets:?}"
     );
 }
 

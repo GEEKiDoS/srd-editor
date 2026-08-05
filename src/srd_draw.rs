@@ -4,9 +4,9 @@ use std::fmt;
 use crate::attribute::CastAttributeValue;
 use crate::fennel::{
     FennelFontSlotRegistry, FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch,
-    FennelResolvedGlyph, FennelStaticTextProperties, build_fennel_normal_vertex_batches,
-    build_fennel_plain_record_stream_with_font_slots, fennel_font_param_effect_color,
-    fennel_srd_font_style, layout_fennel_static_srd_font_param,
+    FennelResolvedGlyph, FennelSrdScrollState, FennelStaticTextProperties,
+    build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
+    fennel_font_param_effect_color, fennel_srd_font_style, layout_fennel_static_srd_font_param,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -463,9 +463,10 @@ pub fn build_evidence_complete_initial_fennel_draws(
             )
             .map_err(|error| SrdDrawError(error.to_string()))?;
             let effect_color = fennel_font_param_effect_color(font_param.shadow_color);
+            let scroll = FennelSrdScrollState::initial_without_controls(font_param).outputs();
             let vertex_build = build_fennel_normal_vertex_batches(
                 &stream,
-                -1,
+                scroll.maximum_glyphs,
                 FennelNormalDrawInput {
                     is_2d: true,
                     textbox_position: [
@@ -479,6 +480,10 @@ pub fn build_evidence_complete_initial_fennel_draws(
                     secondary_color,
                     textbox_flags: layout.textbox_flags,
                     clip_size: [properties.layout.box_width, properties.layout.box_height],
+                    // `sub_AD8D50` starts state +0xF4 at zero. For the proven
+                    // no-$D/$L initial SRD path, both mode-2 and mode-4
+                    // `sub_7C04F0` branches therefore produce (0, 0).
+                    draw_offset: [0.0; 2],
                     effect_colors: [effect_color; 4],
                     effect_offset: [font_param.shadow_x as f32, font_param.shadow_y as f32],
                 },

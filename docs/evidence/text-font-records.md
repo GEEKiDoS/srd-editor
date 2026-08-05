@@ -1,6 +1,6 @@
 # TEXT、FONT/CHAR 与外部 RFZ 字体资源
 
-状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。CATR `FontParamData` 到实际 mode、低位 flags、monospaced、裁剪、FontObject style/RFZ record flags 和 shadow effect 的初始运行时链也已闭合并接入。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链同样已实现。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源，以及 FontParam vertical/scroll 与 mode 6 调用点。
+状态：SRD 内 TEXT、FONT、CHAR 的记录布局，TEXT 到项目 FONT 下标解析，SrTextCast 建立/初始化，外部 RFZ/YABX/Ruhuna/AVTS/DDS 字体资源，Ruhuna Database/Glyph 到游戏 128 字节 runtime glyph 的转换，RFZ `TextBox` 路径与旧式 FONT/TEX/CROP 路径的运行时分流，实际游戏使用的 UTF-8 输入模式和当前完整语料所需的 Fennel token 子集，以及 format 13 字形 batch 的顶点声明、shader、DrawPacket、atlas sampler 和 D3D9 提交参数均已闭环。静态 mode-zero `sub_7C1F90` 的 auto-fit、自动断行、固定字符表、空格候选、对齐、垂直 `-254` 截止与 `+0x12C/+0x34C` 行元数据，fresh mode 1 的 `0x08` X/Y 联动 auto-fit，fresh mode 5/6 的 `0x4000` 垂直截止关闭，通用 flags `0x200` 固定 cell 度量/尾部居中修正，以及已知 Flag20 states 的 `sub_7C4070` 排版与 `+0x358` 状态均已实现。CATR `FontParamData` 到实际 mode、低位 flags、monospaced、裁剪、FontObject style/RFZ record flags、无 `$D/$L` scroll 初态和 shadow effect 的运行时链也已闭合并接入。`sub_7C0D40` 的记录过滤、atlas 分组与初始 hash 前向链顺序，以及 `sub_7C7F90` normal/effect glyph 的 origin/effective-scale/2D CPU matrix、效果色、位移、buffer 顺序与裁剪链同样已实现。SrTextCast 初始 world/color、零颜色门控、ShapeEnv material cull 和真实 D3D9Ex Composition 像素回归现已闭环。当前剩余主线是 Flag40 的真实 flags 来源，以及 FontParam vertical、`$D/$L` 动态滚动与 mode 6 调用点。
 
 ## TEXT 记录
 
@@ -419,6 +419,17 @@ FontParam style 的初始 RFZ 下游现也已闭合。`sub_AC6F50` 从 FontObjec
 
 完整 1,292 个 TextCast 的 record style flags 为 `1:1182, 0x40001:110`；outline/italic/bold/faceId 非零数都是 0。14 个非默认 point 为 `28x28:12, 21x21:2`；pointY 的另一处读取位于 `sub_7C04F0`，仅在 flags 含 `0x800` 且不含 `0x20` 时减去 `pointY/2` 作边界比较，而这 14 个真实输入全部来自 mode 2/4 并含 `0x20`，因此初始路径不会进入该 margin 分支。
 
+scroll 初始状态也已闭合。`sub_AD8D50` 搜索运行时文本中的 `$D` 与 `$L`；两者都不存在时，text state `+0xF4/+0xF8/+0xFC` 分别成为 `0.0/-1/scrollSpeed(+0x12C)`。`sub_AD8D00` 在 Cast enable byte `+0x88` 非零时按 `(host+0x94 * argument) * 0x3C888889` 的 f32 顺序累加 `+0xF4`。`sub_AC5740` 再生成：
+
+```text
+TextBox +0x2C0 = F8 > 0 ? cvttss2si(float(F8) * F4) : -1
+TextBox +0x2C4 = max((F4 - float(+0x130)) * float(FC), 0)
+TextBox +0x2C8 = max(float(+0x130) * float(FC), 0)
+TextBox +0x2CC = max(float(+0x134) * float(FC), 0)
+```
+
+`sub_7C04F0` 把最终二维 draw offset 作为参数 7 交给 `sub_7C7F90`，后者在 `0x7C84F5/0x7C84F9` 从 normal/effect glyph origin 两轴减去它。Rust 的 `FennelNormalDrawInput` 现已显式携带该值。完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 分支输入 `+0x2C4=0`，两轴 draw offset 精确为零。动态 `$D/$L` 解析及非零时钟下的完整循环位移仍保留为下一证据边界。
+
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 
 - `sub_7BF0C0` 先把同一份 116 字节 record 完整复制两次，normal 与 effect 各持一份；
@@ -515,4 +526,4 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 - `sub_7C5A20` Flag40 排版器及 flags bit `0x40` 的真实写入来源；
 - 游戏宿主在当前玩家之前仍存活的 FontManager/renderer 资源状态、其余控制 token（EmbeddedSprite 等）及 `fennel_npc` 缺字 fallback；
-- FontParam `vertical` correction、scroll 状态的实际消费，以及 mode 6 显式 API 的真实调用点；
+- FontParam `vertical` correction、`$D/$L` 动态解析及非零时钟下的完整循环位移，以及 mode 6 显式 API 的真实调用点；
