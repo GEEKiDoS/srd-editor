@@ -26,6 +26,7 @@ pub mod scene;
 pub mod shader;
 pub mod shader_bytecode;
 pub mod srd_draw;
+pub mod surf_file_table;
 pub mod target_pass;
 pub mod text;
 pub mod texture;

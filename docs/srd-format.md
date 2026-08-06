@@ -38,6 +38,7 @@
 - 编辑器原生 D3D9Ex device、Dear ImGui renderer、HiDPI/ResetEx 生命周期与 AE 风格工作区：[`evidence/editor-d3d9-backend.md`](evidence/editor-d3d9-backend.md)
 - 首个 stage-0 贴图 draw、完整 Composition 回读及宿主 `FirstCalcMatrix` 边界：[`evidence/render-first-textured-draw.md`](evidence/render-first-textured-draw.md)
 - Chusan `AdvertiseLogoObject` 的实际 SrPlayer common-init 与 identity 根节点：[`evidence/chusan-advertise-logo-player.md`](evidence/chusan-advertise-logo-player.md)
+- Chusan `PlayLinkedVerseGateObject` 的资源 id 84、`2DLayer=70` 与 null-target 宿主：[`evidence/chusan-linked-verse-gate-player.md`](evidence/chusan-linked-verse-gate-player.md)
 - SrImage 原始 alpha/stencil packet、深度 flags、枚举映射与最终 D3D9 状态：[`evidence/render-alpha-depth-stencil.md`](evidence/render-alpha-depth-stencil.md)
 - Draw/material scissor 来源选择、RenderState 传递与 D3D9 `SetScissorRect`：[`evidence/render-scissor-state.md`](evidence/render-scissor-state.md)
 - 首个 fixture 的证据完整 CPU draw list 与明确排除边界：[`evidence/render-first-draw.md`](evidence/render-first-draw.md)
@@ -106,6 +107,8 @@ sub_A9FD60              Animation
 ```
 
 具体分派、时间折叠、端点、线性、保持和三次曲线公式已经由运行时求值器证明，详见证据文档。公共空间/visibility/颜色通道与 CAST 专属 `11..17/20/23` 均已证明并接入顶层及独立引用层运行时；未知目标仍不得猜测。
+
+完整语料审计固定了 shipped 数据边界：91 个 SRD 的 150327 条 `TRK` 只使用 `0x13/0x23/0x43/0x51/0x113/0x123/0x143/0x151`，全部解析为已证明的 `Key20F32/Key20I32/Key8Bytes4`，没有真实 `Unsupported` KEY 布局；同一语料的 68511 条 CATR value 全部为已实现的 type code `2`，没有真实未知 CATR value 类型。Rust 保留拒绝未知输入的分支，但不会把 shipped 数据中不存在的格式伪造成新语义。
 
 ## 场景变换
 

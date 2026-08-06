@@ -51,15 +51,15 @@ LAYR[0] / NODE[149] TXT_rule
 
 `fennel_textbox_transform` 复现上述乘法顺序和 Y 列翻转；`build_fennel_normal_vertex_batches` 的既有 3D 分支只对 CPU 顶点应用局部平移；runtime/initial Fennel builders 现在都保留有效 `is_2d`，选择相应 packet、shader、可见性与固定常量。
 
-`CHU_UI_LinkedVERSE_Gate_00.srd` 的 `ANMS[10] frame 1 / LAYR[0]/NODE[149]` 回归得到 498 个 format-13 顶点，并固定完整 `c0..c3` f32 bit matrix：
+`CHU_UI_LinkedVERSE_Gate_00.srd` 的 `ANMS[10] frame 1 / LAYR[0]/NODE[149]` 回归得到 498 个 format-13 顶点。先前的命名 identity-target 诊断 host 会把 SRD ProjectionView 乘入 TextBox；实际 `PlayLinkedVerseGateObject` 保持空 `TargetScene`，所以 camera bridge 是 identity，完整 `c0..c3` f32 bit matrix 修正为：
 
 ```text
-38AE9A75 80000000 00000000 3AE52AC0
-00000000 BE23B0CD 00000000 C2641E2F
-00000000 80000000 BF800347 44778657
-00000000 80000000 BF800000 447A0000
+3D87965E 80000000 00000000 3FB1F560
+00000000 BD87965E 00000000 C1BCF414
+00000000 80000000 3F800000 00000000
+00000000 80000000 00000000 3F800000
 ```
 
 这条 fixture 同时证明该 3D TextCast 在真实 ANMS 中可达，不能因为完整语料构造初态仍只有 557 个可见 2D Fennel draw 而继续排除 3D 分支。
 
-当前没有把 Advertise/Common 的已证明宿主 profile 强套到 LinkedVERSE 来制造像素结论。2D Fennel 的 D3D9Ex/ResetEx 回归保持通过，3D format-13 shader、常量上传和 draw 路径与其共用同一 backend；但 LinkedVERSE 3D TextCast 的最终像素基线仍等待其实际 SrPlayer target、present/screen 参数由游戏二进制闭环后再固定。
+`PlayLinkedVerseGateObject` 的静态 SrPlayer 宿主现已由二进制和 `SurfFileTableRecord.bin` 闭环，详见 [`chusan-linked-verse-gate-player.md`](chusan-linked-verse-gate-player.md)。剩余不是 SrPlayer 文件/层级参数，而是接收其全局 packet 的 MainScene 运行时 Camera：构造时 Camera 会把该文本投到 1920x1080 下方，不能作为最终像素基线。2D Fennel 的 D3D9Ex/ResetEx 回归保持通过；3D 最终基线等待 Camera 后续写入链闭环。

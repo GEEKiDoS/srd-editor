@@ -26,7 +26,7 @@ use crate::editor_workspace::{
 use crate::fennel::FennelFontSlotRegistry;
 use crate::game_host::{
     CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_COMMON_BACKGROUND_PLAYER,
-    CHUSAN_MAIN_SCENE, ChusanAirSceneTargetProfile,
+    CHUSAN_LINKED_VERSE_GATE_PLAYER, CHUSAN_MAIN_SCENE, ChusanAirSceneTargetProfile,
 };
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::reference_runtime::ReferenceLayerParent;
@@ -117,7 +117,7 @@ struct EditorApplication {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ChusanPlayerHostArgument {
-    common_background: bool,
+    player: PreviewPlayerSelection,
     target: PreviewTargetSelection,
     present_width: u32,
     present_height: u32,
@@ -178,6 +178,7 @@ struct EditorWindow {
     verify_textured_pixels: bool,
     verify_fennel_pixels: bool,
     verify_runtime_pixels: bool,
+    runtime_smoke_player: Option<PreviewPlayerSelection>,
     verify_hidpi: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
@@ -265,19 +266,13 @@ impl EditorWindow {
             EditorWorkspace::new(build_default_layout, workspace_path, common_background_path);
         if let Some(runtime) = srd_runtime_smoke {
             let host = chusan_player_host.ok_or_else(|| {
-                "--srd-runtime-smoke requires --advertise-logo-host or --common-background-host"
-                    .to_string()
+                "--srd-runtime-smoke requires a Chusan SrPlayer host option".to_string()
             })?;
-            let player = if host.common_background {
-                PreviewPlayerSelection::CommonBackground
-            } else {
-                PreviewPlayerSelection::AdvertiseLogo
-            };
             workspace.configure_preview_for_runtime_smoke(
                 runtime.scene_index,
                 runtime.animation_set_index,
                 runtime.frame,
-                player,
+                host.player,
                 host.target,
                 [
                     i32::try_from(host.present_width)
@@ -303,19 +298,8 @@ impl EditorWindow {
                         PreviewTargetSelection::BgScene => CHUSAN_BG_SCENE,
                         PreviewTargetSelection::Unselected => unreachable!(),
                     };
-                    let (player_name, context, filter) = if host.common_background {
-                        (
-                            "CommonBackGround",
-                            CHUSAN_COMMON_BACKGROUND_PLAYER.host_context_for_target(
-                                target,
-                                host.present_width,
-                                host.present_height,
-                                [host.screen_width, host.screen_height],
-                            ),
-                            CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
-                        )
-                    } else {
-                        (
+                    let (player_name, context, filter) = match host.player {
+                        PreviewPlayerSelection::AdvertiseLogo => (
                             "AdvertiseLogo",
                             CHUSAN_ADVERTISE_LOGO_PLAYER.host_context_for_target(
                                 target,
@@ -324,7 +308,28 @@ impl EditorWindow {
                                 [host.screen_width, host.screen_height],
                             ),
                             CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(target),
-                        )
+                        ),
+                        PreviewPlayerSelection::CommonBackground => (
+                            "CommonBackGround",
+                            CHUSAN_COMMON_BACKGROUND_PLAYER.host_context_for_target(
+                                target,
+                                host.present_width,
+                                host.present_height,
+                                [host.screen_width, host.screen_height],
+                            ),
+                            CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
+                        ),
+                        PreviewPlayerSelection::LinkedVerseGate => (
+                            "PlayLinkedVerseGate",
+                            CHUSAN_LINKED_VERSE_GATE_PLAYER.host_context_for_target(
+                                target,
+                                host.present_width,
+                                host.present_height,
+                                [host.screen_width, host.screen_height],
+                            ),
+                            CHUSAN_LINKED_VERSE_GATE_PLAYER.initial_srd_target_filter(target),
+                        ),
+                        PreviewPlayerSelection::Unselected => unreachable!(),
                     };
                     eprintln!(
                         "SRD smoke host={player_name}/{} first_calc=identity present={}x{} screen={}x{}",
@@ -580,6 +585,8 @@ impl EditorWindow {
             verify_textured_pixels: srd_texture_smoke,
             verify_fennel_pixels: srd_fennel_smoke,
             verify_runtime_pixels: srd_runtime_smoke.is_some(),
+            runtime_smoke_player: srd_runtime_smoke
+                .and_then(|_| chusan_player_host.map(|host| host.player)),
             verify_hidpi: smoke_test,
             workspace,
             dpi_factor,
@@ -1029,7 +1036,9 @@ impl EditorWindow {
                     &comparison.bgra,
                     [0x26, 0x22, 0x20],
                 )?;
-                if diagnostic.changed_pixels == 0 {
+                if diagnostic.changed_pixels == 0
+                    && self.runtime_smoke_player == Some(PreviewPlayerSelection::AdvertiseLogo)
+                {
                     return Err(
                         "runtime smoke dual-texture draws changed no Composition RGB pixels"
                             .to_string(),
@@ -1395,6 +1404,15 @@ impl EditorWindow {
                     [screen_width, screen_height],
                 ),
                 CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
+            ),
+            PreviewPlayerSelection::LinkedVerseGate => (
+                CHUSAN_LINKED_VERSE_GATE_PLAYER.host_context_for_target(
+                    target,
+                    present_width,
+                    present_height,
+                    [screen_width, screen_height],
+                ),
+                CHUSAN_LINKED_VERSE_GATE_PLAYER.initial_srd_target_filter(target),
             ),
             PreviewPlayerSelection::Unselected => {
                 return Err("Select a Chusan SrPlayer host profile".to_string());
@@ -1829,16 +1847,36 @@ fn parse_chusan_player_host_argument(
     let common = arguments
         .iter()
         .find_map(|argument| argument.strip_prefix("--common-background-host="));
-    let (common_background, option_name, value) = match (advertise, common) {
-        (None, None) => return Ok(None),
-        (Some(_), Some(_)) => {
-            return Err(
-                "choose only one of --advertise-logo-host or --common-background-host".to_string(),
-            );
-        }
-        (Some(value), None) => (false, "--advertise-logo-host", value),
-        (None, Some(value)) => (true, "--common-background-host", value),
-    };
+    let linked_verse_gate = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--linked-verse-gate-host="));
+    let selected = [
+        (
+            PreviewPlayerSelection::AdvertiseLogo,
+            "--advertise-logo-host",
+            advertise,
+        ),
+        (
+            PreviewPlayerSelection::CommonBackground,
+            "--common-background-host",
+            common,
+        ),
+        (
+            PreviewPlayerSelection::LinkedVerseGate,
+            "--linked-verse-gate-host",
+            linked_verse_gate,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(player, name, value)| value.map(|value| (player, name, value)))
+    .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    if selected.len() != 1 {
+        return Err("choose only one Chusan SrPlayer host option".to_string());
+    }
+    let (player, option_name, value) = selected[0];
     let mut fields = value.split('@');
     let target = fields.next().unwrap_or_default();
     let present_size = fields.next().ok_or_else(|| {
@@ -1886,7 +1924,7 @@ fn parse_chusan_player_host_argument(
         return Err("Chusan host screen dimensions must be non-zero".to_string());
     }
     Ok(Some(ChusanPlayerHostArgument {
-        common_background,
+        player,
         target,
         present_width,
         present_height,
@@ -2628,7 +2666,7 @@ mod tests {
         assert_eq!(
             parse_chusan_player_host_argument(&arguments).unwrap(),
             Some(ChusanPlayerHostArgument {
-                common_background: false,
+                player: PreviewPlayerSelection::AdvertiseLogo,
                 target: PreviewTargetSelection::MainScene,
                 present_width: 1080,
                 present_height: 1920,
@@ -2641,8 +2679,16 @@ mod tests {
             parse_chusan_player_host_argument(&common)
                 .unwrap()
                 .unwrap()
-                .common_background,
-            true
+                .player,
+            PreviewPlayerSelection::CommonBackground
+        );
+        let linked = vec!["--linked-verse-gate-host=MainScene@1080x1920@1920x1080".to_string()];
+        assert_eq!(
+            parse_chusan_player_host_argument(&linked)
+                .unwrap()
+                .unwrap()
+                .player,
+            PreviewPlayerSelection::LinkedVerseGate
         );
         assert!(
             parse_chusan_player_host_argument(&["--advertise-logo-host=MainScene".to_string()])
@@ -2663,6 +2709,13 @@ mod tests {
         assert!(
             parse_chusan_player_host_argument(&[
                 "--advertise-logo-host=BgScene@1080x1920@0x1080".to_string()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_chusan_player_host_argument(&[
+                "--advertise-logo-host=MainScene@1080x1920@1920x1080".to_string(),
+                "--linked-verse-gate-host=MainScene@1080x1920@1920x1080".to_string(),
             ])
             .is_err()
         );

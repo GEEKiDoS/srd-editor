@@ -129,6 +129,34 @@ pub const CHUSAN_COMMON_BACKGROUND_PLAYER: ChusanCommonBackgroundPlayerProfile =
         mode_transition_enables: true,
     };
 
+/// Concrete `PlayLinkedVerseGateObject::Impl` embedded SrPlayer state. The
+/// resource id/path pairing comes from the game's load function and shipped
+/// `SurfFileTableRecord.bin`, while the remaining values come from the common
+/// SrPlayer initialization and the class-specific property write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChusanLinkedVerseGatePlayerProfile {
+    pub surf_file_id: u32,
+    pub surf_file_name: &'static str,
+    pub surf_file_path: &'static str,
+    pub draw_target_scene_only: bool,
+    pub target_scene: &'static str,
+    pub first_calc_matrix_enabled: bool,
+    pub draw_mask: u32,
+    pub layer_2d: u8,
+}
+
+pub const CHUSAN_LINKED_VERSE_GATE_PLAYER: ChusanLinkedVerseGatePlayerProfile =
+    ChusanLinkedVerseGatePlayerProfile {
+        surf_file_id: 84,
+        surf_file_name: "LinkedVerseGate",
+        surf_file_path: "play/linkedVerse/CHU_UI_LinkedVERSE_Gate_00.srd",
+        draw_target_scene_only: true,
+        target_scene: "",
+        first_calc_matrix_enabled: false,
+        draw_mask: 0xFFFF,
+        layer_2d: 70,
+    };
+
 impl ChusanAirSceneTargetProfile {
     /// MainScene and BgScene both retain the five `PassBasic` objects installed
     /// by the common `air::Scene` constructor.
@@ -232,6 +260,47 @@ impl ChusanCommonBackgroundPlayerProfile {
     /// GraphNode parent. The root FirstCalc matrix therefore remains identity.
     /// The empty `TargetScene` lookup is proven to return null; `target` is
     /// the Scene that later receives the globally queued packet.
+    pub fn host_context_for_target(
+        self,
+        target: ChusanAirSceneTargetProfile,
+        present_width: u32,
+        present_height: u32,
+        target_screen_size: [u32; 2],
+    ) -> Result<SrdHostDrawContext, GameHostProfileError> {
+        if target_screen_size.contains(&0) {
+            return Err(GameHostProfileError(format!(
+                "{} target screen size must be non-zero, got {}x{}",
+                target.name, target_screen_size[0], target_screen_size[1]
+            )));
+        }
+        let target_projection_view =
+            target.projection_view_for_present_size(present_width, present_height)?;
+        Ok(SrdHostDrawContext::new(
+            Affine3x4::IDENTITY,
+            srd_renderer_layer_key_for_2d_layer(self.layer_2d),
+            None,
+            target_projection_view,
+            target_screen_size,
+        ))
+    }
+}
+
+impl ChusanLinkedVerseGatePlayerProfile {
+    pub const fn initial_srd_target_filter(
+        self,
+        target: ChusanAirSceneTargetProfile,
+    ) -> EvidenceSrdType1TargetFilter {
+        EvidenceSrdType1TargetFilter {
+            target_dispatch_mask: target.initial_dispatch_mask(),
+            target_attribute: target.attribute,
+            command_draw_mask: self.draw_mask,
+        }
+    }
+
+    /// `PlayLinkedVerseGateObject::Impl` constructs the SrPlayer at `+0x68`.
+    /// The complete class range has no GraphNode parent setter or direct parent
+    /// write, so the constructor identity remains the FirstCalc input. Its
+    /// empty TargetScene takes the already proven null/global-queue branch.
     pub fn host_context_for_target(
         self,
         target: ChusanAirSceneTargetProfile,
@@ -397,6 +466,39 @@ mod tests {
         );
         assert!(
             !CHUSAN_COMMON_BACKGROUND_PLAYER
+                .initial_srd_target_filter(CHUSAN_BG_SCENE)
+                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+        );
+    }
+
+    #[test]
+    fn linked_verse_gate_profile_matches_the_concrete_player_and_resource_table() {
+        assert_eq!(
+            CHUSAN_LINKED_VERSE_GATE_PLAYER,
+            ChusanLinkedVerseGatePlayerProfile {
+                surf_file_id: 84,
+                surf_file_name: "LinkedVerseGate",
+                surf_file_path: "play/linkedVerse/CHU_UI_LinkedVERSE_Gate_00.srd",
+                draw_target_scene_only: true,
+                target_scene: "",
+                first_calc_matrix_enabled: false,
+                draw_mask: 0xFFFF,
+                layer_2d: 70,
+            }
+        );
+        let context = CHUSAN_LINKED_VERSE_GATE_PLAYER
+            .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+            .unwrap();
+        assert_eq!(context.first_calc_matrix, Affine3x4::IDENTITY);
+        assert_eq!(context.renderer_layer_key, 0xC680);
+        assert_eq!(context.renderer_project_target, None);
+        assert!(
+            CHUSAN_LINKED_VERSE_GATE_PLAYER
+                .initial_srd_target_filter(CHUSAN_MAIN_SCENE)
+                .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
+        );
+        assert!(
+            !CHUSAN_LINKED_VERSE_GATE_PLAYER
                 .initial_srd_target_filter(CHUSAN_BG_SCENE)
                 .accepts(crate::render::CeylonDrawPacketPresetState::srd_renderer_initial())
         );

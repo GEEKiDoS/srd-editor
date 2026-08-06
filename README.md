@@ -24,7 +24,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - `SCN -> ANMS -> SANM` 场景动画集：逐 LAYR enable gate、命名 ANIM、初始 frame 与 runtime duration；正常 Composition 只提交显式选择的动画集，不再同时绘制互斥页面。
 - CIMG/TEXT 与 PROJ FONT/CHAR 记录解析、TEXT 到同一项目 FONT 下标解析，以及 SrTextCast 的实际构造/字符串初始化。完整语料的字体来自 `A000/font/*.rfz`；BinaryLZW `YS` v2、YABX schema/CRC/对象 ID、`RHFONTDB` Database/Glyph/TextureResource 和 AVTS 目录均已按游戏读取逻辑实现。六套字体的全部 glyph 引用与内嵌 DDS 页已闭环；不会用系统字体伪装游戏字形。
 - 字体 AVTS 不重写贴图解码：目录中的 `.svo` 是 Stevia YABX 元数据，其余条目是完整 DDS。当前六套字体共 15 个 A4R4G4B4 atlas 页，尺寸、末页高度、mip、数据长度与 Ruhuna Database 全部交叉验证，并直接复用现有 DDS 解析/库解码/D3D9 上传路径。
-- RFZ/Fennel 已实现游戏 UTF-8、当前完整语料所需控制 token，以及二进制已闭合的 `$s/$S` effect toggle 和 `$C/$c` 四角颜色状态、128 字节 runtime glyph 到 116 字节 layout record、默认静态 `sub_7C1F90` 的 auto-fit/自动断行/固定字符表/空格候选/对齐/垂直 `-254` 截止、`sub_7C0D40` 的记录过滤与 17 桶 atlas batch 前向链顺序、`sub_7C7F90` normal/effect glyph 的 bearing origin/effective scale、2D CPU matrix/3D packet matrix、effect RGB 替换与 alpha 相乘/effect-first buffer 分段，以及 `sub_7C10B0` 的无裁剪和局部矩形裁剪/UV 重映射两套 28 字节 format 13 glyph 顶点。CATR `FontParamData` 已按原记录顺序解析，实际首帧 mode `0/2/4`、post-mode 低位、monospaced `0x200`、clip size、24 字节 FontObject style 到 RFZ record flags、`$[0]..$[7]`/`$D/$L` 文本预处理、scroll 状态、`sub_7BFAB0` mode-0 几何测量、`sub_7C04F0` 循环位移/fit guard 和 shadow effect 均已闭合；draw-list 已按最终原串/循环串/二次排版对象状态接线，并提供显式 per-node runtime API 接收 8 个替换槽、default D、repeat-space count 和当前 `F4`。右侧 Properties 已能按 TextCast 保存这些手动输入，并明确保持 `F4` 与 timeline frame 独立。project layer/Cast vector/RefCast 已按引用 NODE 位置立即递归，copied layer 的独立 Image/Text draw、runtime gate、混合 CAST 调用序列和 target planner 均已接线；手动文本输入以独立 runtime owner/node 为键。point/style 对 RFZ glyph lookup 的实际非消费链也已闭合。mode-6 显式 setter 按 `0xADA300..0xADA348` 固化，但尚无游戏内部调用点。原始 shader/DrawPacket/sampler 与 D3D9 triangle-list renderer、SrTextCast 初始 world/color、零颜色跳过门控和 ShapeEnv material 的 `D3DCULL_CW` 基础状态也已接入 Composition。特殊 CAST matrix 已进入同一 runtime world composition；完整语料构造初态产生 557 个可见 2D Fennel draw、35466 个顶点，而 `LinkedVERSE_Gate` 的 `ANMS[10] frame 1` 已通过真实可达 3D TextCast fixture，产生 498 个字体顶点。Advertise 样本没有触发新增状态，强制 `ResetEx` 前后仍为 40920 个 changed pixels、bbox `(651,396)..(1271,683)`、`white_pixels=0` 且哈希一致；没有用系统字体、通用 Unicode 断行或启发式布局替代。
+- RFZ/Fennel 已实现游戏 UTF-8、当前完整语料所需控制 token，以及二进制已闭合的 `$s/$S` effect toggle 和 `$C/$c` 四角颜色状态、128 字节 runtime glyph 到 116 字节 layout record、默认静态 `sub_7C1F90` 的 auto-fit/自动断行/固定字符表/空格候选/对齐/垂直 `-254` 截止、`sub_7C0D40` 的记录过滤与 17 桶 atlas batch 前向链顺序、`sub_7C7F90` normal/effect glyph 的 bearing origin/effective scale、2D CPU matrix/3D packet matrix、effect RGB 替换与 alpha 相乘/effect-first buffer 分段，以及 `sub_7C10B0` 的无裁剪和局部矩形裁剪/UV 重映射两套 28 字节 format 13 glyph 顶点。CATR `FontParamData` 已按原记录顺序解析，实际首帧 mode `0/2/4`、post-mode 低位、monospaced `0x200`、clip size、24 字节 FontObject style 到 RFZ record flags、`$[0]..$[7]`/`$D/$L` 文本预处理、scroll 状态、`sub_7BFAB0` mode-0 几何测量、`sub_7C04F0` 循环位移/fit guard 和 shadow effect 均已闭合；draw-list 已按最终原串/循环串/二次排版对象状态接线，并提供显式 per-node runtime API 接收 8 个替换槽、default D、repeat-space count 和当前 `F4`。右侧 Properties 已能按 TextCast 保存这些手动输入，并明确保持 `F4` 与 timeline frame 独立。project layer/Cast vector/RefCast 已按引用 NODE 位置立即递归，copied layer 的独立 Image/Text draw、runtime gate、混合 CAST 调用序列和 target planner 均已接线；手动文本输入以独立 runtime owner/node 为键。point/style 对 RFZ glyph lookup 的实际非消费链也已闭合。mode-6 显式 setter 按 `0xADA300..0xADA348` 固化，但尚无游戏内部调用点。原始 shader/DrawPacket/sampler 与 D3D9 triangle-list renderer、SrTextCast 初始 world/color、零颜色跳过门控和 ShapeEnv material 的 `D3DCULL_CW` 基础状态也已接入 Composition。特殊 CAST matrix 已进入同一 runtime world composition；完整语料构造初态产生 557 个可见 2D Fennel draw、35466 个顶点，而 `LinkedVERSE_Gate` 的 `ANMS[10] frame 1` 已通过真实可达 3D TextCast fixture，产生 498 个字体顶点。其实际宿主已闭环为 SurfFile id 84、空 TargetScene、identity FirstCalc、`2DLayer=70`/root key `0xC680`；最终像素仍等待 MainScene 运行时 Camera 写入链。Advertise 样本没有触发新增状态，强制 `ResetEx` 前后仍为 40920 个 changed pixels、bbox `(651,396)..(1271,683)`、`white_pixels=0` 且哈希一致；没有用系统字体、通用 Unicode 断行或启发式布局替代。
 - 游戏标量轨道的时间区间、端点、线性、保持和三次曲线求值。
 - LAYR、NODE、TRS2/TRS3 记录读取、2D/3D flags 分派和首子/同级层级构建。
 - `SRFF -> SRCK -> PROJ -> SCN  -> LAYR` 项目场景表，以及 CRFD 在同文件 SCN/LAYR 表中的首次完整名称解析。
@@ -100,6 +100,14 @@ cargo run --release -- --srd-texture-smoke --advertise-logo-host=MainScene@1080x
 ```powershell
 cargo run --release -- --srd-draw-smoke --common-background-host=MainScene@1080x1920@1920x1080 "D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.srd"
 ```
+
+LinkedVerseGate 的静态宿主参数可显式选择：
+
+```powershell
+cargo run --release -- "D:\sdhd\assets\data\surfboard\play\linkedVerse\CHU_UI_LinkedVERSE_Gate_00.srd" --srd-runtime-smoke=0,10,1 --linked-verse-gate-host=MainScene@1080x1920@1920x1080
+```
+
+该命令当前会准确暴露 MainScene 构造相机导致的离屏结果，不把它冒充游戏运行时像素基线。
 
 显式把 Common background SRD 放在 Advertise 前景下方，并对双层 Composition 与 ResetEx 做回读：
 

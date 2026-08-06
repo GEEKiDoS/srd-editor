@@ -10,7 +10,17 @@ Advertise/Common 的空 property 2 已闭环为 null lookup：Scene 管理器构
 
 ## Chusan target 的后续生命周期
 
-仍未闭合的是游戏模式切换之后 MainScene/BgScene Enable、manager current-target、其他专用 target 的注册/移除和当帧组合时序。当前 profile 只描述已证明的构造完成状态，不外推到所有运行阶段。`LinkedVERSE_Gate` 的 3D TextCast CPU/packet 路径已有真实 ANMS fixture，但最终 D3D9Ex 像素基线仍需先闭环承载它的实际 SrPlayer target、present/screen 参数；不得借用 Advertise/Common profile 冒充。
+仍未闭合的是游戏模式切换之后 MainScene/BgScene Enable、manager current-target、Camera/ProjectionView 后续写入、其他专用 target 的注册/移除和当帧组合时序。当前 profile 只描述已证明的构造完成状态，不外推到所有运行阶段。`PlayLinkedVerseGateObject` 的资源 id 84、空 TargetScene、identity FirstCalc、DrawMask 与 `2DLayer=70` 已闭环；其 3D TextCast CPU/packet 路径也有真实 ANMS fixture。但 MainScene 构造相机会把该文字投到 1920x1080 画面下方，并会把 Common background 的中央内容放大裁切；用户提供的实机画面对照明确否定了把构造相机当作运行时默认值。最终像素基线必须等待 Camera 后续写入链闭环。
+
+## 编辑器交互与性能（按用户要求后置）
+
+当前先完成 SRD 核心解析/渲染行为，以下编辑器问题暂不打断主线：
+
+- 普通预览在 Debug 构建中一帧耗时异常，需用阶段计时确认是否重复 rebuild、字体 atlas/贴图上传、提交构造或 GPU 同步；
+- `Play` 按钮当前不会按真实时间推进 timeline frame；
+- Common background 的最终运行时 Camera/viewport 修正完成后，再恢复其实机整幅构图回归。
+
+这些问题不得通过降低解析精度、跳过 draw 或伪造固定相机来“优化”。
 
 ## Fennel 行元数据与剩余 effect/crop 输入
 

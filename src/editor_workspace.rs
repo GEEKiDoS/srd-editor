@@ -37,6 +37,7 @@ pub enum PreviewPlayerSelection {
     Unselected,
     AdvertiseLogo,
     CommonBackground,
+    LinkedVerseGate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,9 +277,9 @@ impl EditorWorkspace {
             return Err("Select the external material scissor state".to_string());
         }
         if settings.common_background_enabled {
-            if settings.player != PreviewPlayerSelection::AdvertiseLogo {
+            if settings.player == PreviewPlayerSelection::CommonBackground {
                 return Err(
-                    "The Common background lower layer requires an AdvertiseLogo foreground host"
+                    "The Common background lower layer requires a non-background foreground host"
                         .to_string(),
                 );
             }
@@ -541,6 +542,7 @@ impl EditorWorkspace {
             PreviewPlayerSelection::Unselected => 0,
             PreviewPlayerSelection::AdvertiseLogo => 1,
             PreviewPlayerSelection::CommonBackground => 2,
+            PreviewPlayerSelection::LinkedVerseGate => 3,
         };
         if ui.combo_simple_string(
             "SrPlayer host",
@@ -549,11 +551,13 @@ impl EditorWorkspace {
                 "Not selected",
                 "AdvertiseLogoObject",
                 "CommonBackGroundObject",
+                "PlayLinkedVerseGateObject",
             ],
         ) {
             self.preview_player = match player_index {
                 1 => PreviewPlayerSelection::AdvertiseLogo,
                 2 => PreviewPlayerSelection::CommonBackground,
+                3 => PreviewPlayerSelection::LinkedVerseGate,
                 _ => PreviewPlayerSelection::Unselected,
             };
         }
@@ -608,6 +612,14 @@ impl EditorWorkspace {
                 );
                 ui.text_wrapped(
                     "The shipped game data resolves this empty TargetScene to null, so the packet is globally queued. The selected receiving scene supplies the final Camera. The original binary leaves the null-target visibility rectangle uninitialized; this preview deterministically skips that cull.",
+                );
+            }
+            PreviewPlayerSelection::LinkedVerseGate => {
+                ui.text_wrapped(
+                    "PlayLinkedVerseGate: SurfFile id 84, FirstCalc identity, 2DLayer 70, root key 0xC680 (game binary + shipped resource-table evidence)",
+                );
+                ui.text_wrapped(
+                    "TargetScene remains empty, so packets use the proven null/global-queue route. The explicitly selected receiving scene supplies the final Camera.",
                 );
             }
             PreviewPlayerSelection::Unselected => {
@@ -706,7 +718,7 @@ impl EditorWorkspace {
                 }
             }
             ui.text_wrapped(
-                "Game-binary object-list order places CommonBackGroundObject before AdvertiseLogoObject. The editor submits this explicitly selected Common SRD first and does not auto-guess a background file.",
+                "The editor submits this explicitly selected Common SRD as the lower layer and does not auto-guess a background file. The proven Common/Advertise object-list order is not generalized to other foreground objects.",
             );
         }
         match self.validate_preview_host_settings() {
@@ -792,8 +804,8 @@ impl EditorWorkspace {
                     }
                 }
                 ui.text_colored(
-                    [0.92, 0.68, 0.25, 1.0],
-                    "Stored only: mixed ImageCast/TextCast Composition ordering is not yet evidence-complete.",
+                    [0.45, 0.82, 0.52, 1.0],
+                    "Applied per owner/node through the proven mixed ImageCast/TextCast runtime order.",
                 );
             } else {
                 ui.text_disabled(

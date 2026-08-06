@@ -21,11 +21,15 @@ use srd_editor::fennel::{
     tokenize_fennel_plain_text,
 };
 use srd_editor::game_host::{
-    CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE,
+    CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_LINKED_VERSE_GATE_PLAYER,
+    CHUSAN_MAIN_SCENE,
 };
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
-use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
+use srd_editor::projection::{
+    Matrix4x4, identity_matrix4x4_game, mul_matrix4x4_game, project_point_to_screen_game,
+    viewport_matrix_game,
+};
 use srd_editor::reference_runtime::{
     ProjectRuntime, ReferenceLayerParent, ReferenceLayerRuntimeState,
 };
@@ -57,6 +61,7 @@ use srd_editor::srd_draw::{
     build_evidence_merged_runtime_fennel_list, build_evidence_merged_runtime_srd_strip,
     collect_fennel_font_resource_requests,
 };
+use srd_editor::surf_file_table::parse_surf_file_table;
 use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
 use srd_editor::transform::Affine3x4;
@@ -113,6 +118,35 @@ fn collect_srd_files(path: &Path, output: &mut Vec<PathBuf>) {
             output.push(path);
         }
     }
+}
+
+#[test]
+fn shipped_surf_file_table_maps_resource_84_to_linked_verse_gate() {
+    let Some(data_root) = corpus_root().parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let path = data_root.join("db/SurfFileTableRecord.bin");
+    if !path.exists() {
+        eprintln!(
+            "skipping: SurfFileTable sample not found at {}",
+            path.display()
+        );
+        return;
+    }
+    let records = parse_surf_file_table(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(records.len(), 91);
+    let record = records
+        .get(CHUSAN_LINKED_VERSE_GATE_PLAYER.surf_file_id as usize)
+        .expect("resource id 84 must exist");
+    assert_eq!(record.id, CHUSAN_LINKED_VERSE_GATE_PLAYER.surf_file_id);
+    assert_eq!(
+        record.name,
+        CHUSAN_LINKED_VERSE_GATE_PLAYER.surf_file_name.as_bytes()
+    );
+    assert_eq!(
+        record.path,
+        CHUSAN_LINKED_VERSE_GATE_PLAYER.surf_file_path.as_bytes()
+    );
 }
 
 fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
@@ -1510,7 +1544,9 @@ fn linkedverse_reachable_3d_text_uses_the_binary_textbox_matrix_branch() {
         &mut font_registry,
         collect_fennel_font_resource_requests(&document.project).unwrap(),
     );
-    let host = identity_host_context();
+    let host = CHUSAN_LINKED_VERSE_GATE_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
     let draws = build_evidence_complete_animation_set_runtime_cast_draws(
         &document.project,
         &document.textures,
@@ -1536,6 +1572,7 @@ fn linkedverse_reachable_3d_text_uses_the_binary_textbox_matrix_branch() {
         })
         .expect("ANMS[10] frame 1 must reach the shipped 3D TXT_rule cast");
     assert!(!draw.batches.is_empty());
+    assert_eq!(draw.renderer_layer_key, 0xC680);
     assert_eq!(
         draw.packet,
         srd_editor::fennel::fennel_default_draw_packet(false)
@@ -1551,13 +1588,61 @@ fn linkedverse_reachable_3d_text_uses_the_binary_textbox_matrix_branch() {
         .iter()
         .map(|batch| batch.vertices.len())
         .sum::<usize>();
+    let projection_world = mul_matrix4x4_game(
+        &draw.fixed_constants.vertex_c10_c13_projection_view,
+        &draw.fixed_constants.vertex_c0_c3_world,
+    );
+    let screen_matrix = mul_matrix4x4_game(&viewport_matrix_game(1920, 1080), &projection_world);
+    let mut projected_bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    let mut clip_w_bounds = [f32::INFINITY, f32::NEG_INFINITY];
+    let mut clip_z_bounds = [f32::INFINITY, f32::NEG_INFINITY];
+    let mut primary_alpha_bounds = [u8::MAX, u8::MIN];
+    for vertex in draw.batches.iter().flat_map(|batch| &batch.vertices) {
+        let projected = project_point_to_screen_game(vertex.position, &screen_matrix);
+        projected_bounds[0] = projected_bounds[0].min(projected[0]);
+        projected_bounds[1] = projected_bounds[1].min(projected[1]);
+        projected_bounds[2] = projected_bounds[2].max(projected[0]);
+        projected_bounds[3] = projected_bounds[3].max(projected[1]);
+        let position = [
+            vertex.position[0],
+            vertex.position[1],
+            vertex.position[2],
+            1.0,
+        ];
+        let clip_z = projection_world.rows[2]
+            .iter()
+            .zip(position)
+            .map(|(matrix, value)| matrix * value)
+            .sum::<f32>();
+        let clip_w = projection_world.rows[3]
+            .iter()
+            .zip(position)
+            .map(|(matrix, value)| matrix * value)
+            .sum::<f32>();
+        clip_z_bounds[0] = clip_z_bounds[0].min(clip_z);
+        clip_z_bounds[1] = clip_z_bounds[1].max(clip_z);
+        clip_w_bounds[0] = clip_w_bounds[0].min(clip_w);
+        clip_w_bounds[1] = clip_w_bounds[1].max(clip_w);
+        let alpha = vertex.primary_color_bgra[3];
+        primary_alpha_bounds[0] = primary_alpha_bounds[0].min(alpha);
+        primary_alpha_bounds[1] = primary_alpha_bounds[1].max(alpha);
+    }
+    eprintln!(
+        "LinkedVerse 3D text matrix_bits={matrix_bits:08X?} projected={projected_bounds:?} clip_z={clip_z_bounds:?} clip_w={clip_w_bounds:?} primary_alpha={primary_alpha_bounds:?} first_vertex={:?}",
+        draw.batches[0].vertices[0]
+    );
     assert_eq!(
         matrix_bits,
         [
-            [0x38ae_9a75, 0x8000_0000, 0, 0x3ae5_2ac0],
-            [0, 0xbe23_b0cd, 0, 0xc264_1e2f],
-            [0, 0x8000_0000, 0xbf80_0347, 0x4477_8657],
-            [0, 0x8000_0000, 0xbf80_0000, 0x447a_0000],
+            [0x3d87_965e, 0x8000_0000, 0, 0x3fb1_f560],
+            [0, 0xbd87_965e, 0, 0xc1bc_f414],
+            [0, 0x8000_0000, 0x3f80_0000, 0],
+            [0, 0x8000_0000, 0, 0x3f80_0000],
         ]
     );
     assert_eq!(vertex_count, 498);
@@ -2166,6 +2251,153 @@ fn parses_local_corpus_with_binary_proven_boundaries() {
         let bytes = fs::read(&path).unwrap();
         SrdFile::parse(bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     }
+}
+
+#[test]
+fn audits_unsupported_animation_and_catr_layouts_in_the_real_corpus() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+
+    let mut track_count = 0usize;
+    let mut track_formats = BTreeMap::new();
+    let mut key_layouts = BTreeMap::new();
+    let mut unsupported_tracks = BTreeMap::new();
+    let mut unsupported_track_examples = Vec::new();
+    let mut attribute_type_codes = BTreeMap::new();
+    let mut unsupported_attributes = BTreeMap::new();
+    let mut unsupported_attribute_examples = Vec::new();
+
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        for block in file.blocks_depth_first() {
+            if block.is_tag(b"TRK ") {
+                let track = Track::from_block(&file, block).unwrap_or_else(|error| {
+                    panic!("{} TRK at {:#x}: {error}", path.display(), block.offset)
+                });
+                track_count += 1;
+                *track_formats.entry(track.format).or_insert(0usize) += 1;
+                let layout = match &track.keys {
+                    KeyData::Key8F32(_) => "Key8F32",
+                    KeyData::Key8I32(_) => "Key8I32",
+                    KeyData::Key8Bytes4(_) => "Key8Bytes4",
+                    KeyData::Key20F32(_) => "Key20F32",
+                    KeyData::Key20I32(_) => "Key20I32",
+                    KeyData::Unsupported => "Unsupported",
+                };
+                *key_layouts.entry(layout).or_insert(0usize) += 1;
+                if matches!(track.keys, KeyData::Unsupported) {
+                    let has_key_block = block.children.iter().any(|child| child.is_tag(b"KEY "));
+                    *unsupported_tracks
+                        .entry((track.target, track.format, track.key_count, has_key_block))
+                        .or_insert(0usize) += 1;
+                    if unsupported_track_examples.len() < 32 {
+                        unsupported_track_examples.push(format!(
+                            "{}@{:#x}: target={} format={:#x} count={} KEY={has_key_block}",
+                            path.display(),
+                            block.offset,
+                            track.target,
+                            track.format,
+                            track.key_count
+                        ));
+                    }
+                }
+            }
+        }
+
+        let project = Project::from_file(&file).unwrap();
+        for attribute in project
+            .scenes
+            .iter()
+            .flat_map(|scene| &scene.layers)
+            .flat_map(|layer| &layer.cast_attribute_lists)
+            .flat_map(|list| &list.attributes)
+        {
+            *attribute_type_codes
+                .entry(attribute.source_type_code)
+                .or_insert(0usize) += 1;
+            if let CastAttributeValue::Unsupported { type_code, bytes } = &attribute.value {
+                *unsupported_attributes.entry(*type_code).or_insert(0usize) += 1;
+                if unsupported_attribute_examples.len() < 32 {
+                    unsupported_attribute_examples.push(format!(
+                        "{}: name={:?} type={type_code:#x} bytes={bytes:02X?}",
+                        path.display(),
+                        String::from_utf8_lossy(&attribute.name)
+                    ));
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "unsupported audit profile={profile:?}, tracks={track_count}, formats={track_formats:?}, layouts={key_layouts:?}, unsupported tracks={unsupported_tracks:?}, unsupported track examples={unsupported_track_examples:#?}, CATR types={attribute_type_codes:?}, unsupported CATR={unsupported_attributes:?}, unsupported CATR examples={unsupported_attribute_examples:#?}"
+    );
+    let (expected_track_count, expected_track_formats, expected_key_layouts, expected_catr_count) =
+        match profile {
+            CorpusProfile::Legacy53 => (
+                116_566,
+                [
+                    (0x13, 51_334),
+                    (0x23, 29_764),
+                    (0x43, 8_371),
+                    (0x51, 10_142),
+                    (0x113, 10_271),
+                    (0x123, 3_795),
+                    (0x143, 1_535),
+                    (0x151, 1_354),
+                ]
+                .into_iter()
+                .collect(),
+                [
+                    ("Key20F32", 61_605),
+                    ("Key20I32", 43_465),
+                    ("Key8Bytes4", 11_496),
+                ]
+                .into_iter()
+                .collect(),
+                53_179,
+            ),
+            CorpusProfile::Complete91 => (
+                150_327,
+                [
+                    (0x13, 67_140),
+                    (0x23, 38_547),
+                    (0x43, 10_983),
+                    (0x51, 13_246),
+                    (0x113, 12_308),
+                    (0x123, 4_668),
+                    (0x143, 1_805),
+                    (0x151, 1_630),
+                ]
+                .into_iter()
+                .collect(),
+                [
+                    ("Key20F32", 79_448),
+                    ("Key20I32", 56_003),
+                    ("Key8Bytes4", 14_876),
+                ]
+                .into_iter()
+                .collect(),
+                68_511,
+            ),
+        };
+    assert_eq!(track_count, expected_track_count);
+    assert_eq!(track_formats, expected_track_formats);
+    assert_eq!(key_layouts, expected_key_layouts);
+    assert!(unsupported_tracks.is_empty());
+    assert!(unsupported_track_examples.is_empty());
+    assert_eq!(
+        attribute_type_codes,
+        BTreeMap::from([(2, expected_catr_count)])
+    );
+    assert!(unsupported_attributes.is_empty());
+    assert!(unsupported_attribute_examples.is_empty());
 }
 
 #[test]
