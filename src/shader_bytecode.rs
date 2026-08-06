@@ -37,6 +37,12 @@ pub const SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_
 /// being folded into a nearby packaged variant.
 pub const SLICE_2D_VARIANT_CB_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
     *b"EAEBABBAAACBAAAAAA";
+/// Exact normal 3D dual-texture ImageCast key used by Advertise title draws.
+pub const DUAL_TEXTURE_3D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAEBABBAADIAAAAAAA";
+/// Exact 3D dual-texture key whose MultiTex0 selector value is 9.
+pub const DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAEBABBAADIIEAAAAA";
 
 pub const FIRST_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61";
@@ -166,6 +172,17 @@ mod tests {
         assert_ne!(slice_variant_cb.pixel_shader, pair.pixel_shader);
         assert_ne!(slice_variant_cb.pixel_shader, slice.pixel_shader);
         assert_eq!(slice_variant_cb.pixel_shader.last(), Some(&0x0000FFFF));
+
+        for key in [
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY,
+        ] {
+            let dual = embedded_simple_shader_pair(&key).unwrap();
+            assert_eq!(dual.vertex_shader.first(), Some(&0xFFFE0300));
+            assert_eq!(dual.pixel_shader.first(), Some(&0xFFFF0300));
+            assert_eq!(dual.vertex_shader.last(), Some(&0x0000FFFF));
+            assert_eq!(dual.pixel_shader.last(), Some(&0x0000FFFF));
+        }
 
         let mut unsupported = FIRST_FIXTURE_SIMPLE_KEY;
         unsupported[0] = b'B';

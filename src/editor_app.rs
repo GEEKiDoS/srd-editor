@@ -737,7 +737,7 @@ impl EditorWindow {
                         composition_external,
                         true,
                         true,
-                        RuntimeAlphaTestFilter::All,
+                        RuntimeSrdSourceFilter::All,
                     )
                 })
                 .map_err(|error| format!("Runtime target composition draw failed: {error}"))?;
@@ -788,6 +788,17 @@ impl EditorWindow {
                                 &background.submission,
                             )
                         });
+            let dual_texture_sources =
+                count_runtime_dual_texture_sources(&self.runtime_draws, &self.runtime_submission)
+                    + self
+                        .common_background_layer
+                        .as_ref()
+                        .map_or(0, |background| {
+                            count_runtime_dual_texture_sources(
+                                &background.draws,
+                                &background.submission,
+                            )
+                        });
             self.d3d9.end_scene().map_err(|error| error.to_string())?;
             let complete = self
                 .srd_renderer
@@ -834,7 +845,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 true,
-                                RuntimeAlphaTestFilter::All,
+                                RuntimeSrdSourceFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -885,7 +896,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 true,
-                                RuntimeAlphaTestFilter::All,
+                                RuntimeSrdSourceFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -937,7 +948,7 @@ impl EditorWindow {
                                 composition_external,
                                 false,
                                 true,
-                                RuntimeAlphaTestFilter::Only,
+                                RuntimeSrdSourceFilter::AlphaTestOnly,
                             )
                         })
                         .map_err(|error| {
@@ -963,6 +974,69 @@ impl EditorWindow {
                 )?;
                 eprintln!(
                     "runtime target alpha-test sources={alpha_test_sources} changed_pixels={}",
+                    diagnostic.changed_pixels
+                );
+            }
+            if dual_texture_sources != 0 {
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let runtime_draws = &self.runtime_draws;
+                    let runtime_submission = &self.runtime_submission;
+                    let srd_textures = self.srd_textures.as_ref();
+                    let fennel_renderer = self.fennel_renderer.as_mut();
+                    let fennel_atlases = &self.fennel_atlases;
+                    let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let common_background_layer = self.common_background_layer.as_ref();
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during dual-texture comparison"
+                            .to_string()
+                    })?;
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_preview_runtime_layers(
+                                renderer,
+                                fennel_renderer,
+                                common_background_layer,
+                                runtime_draws,
+                                runtime_submission,
+                                srd_textures,
+                                fennel_atlases,
+                                fennel_atlas_routes,
+                                composition_external,
+                                false,
+                                true,
+                                RuntimeSrdSourceFilter::DualTextureOnly,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke dual-texture-only draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let comparison = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "runtime smoke lost its dual-texture comparison target".to_string()
+                    })?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!("runtime smoke dual-texture comparison readback failed: {error}")
+                    })?;
+                let diagnostic = analyze_composition_readback(
+                    comparison.width,
+                    comparison.height,
+                    &comparison.bgra,
+                    [0x26, 0x22, 0x20],
+                )?;
+                if diagnostic.changed_pixels == 0 {
+                    return Err(
+                        "runtime smoke dual-texture draws changed no Composition RGB pixels"
+                            .to_string(),
+                    );
+                }
+                eprintln!(
+                    "runtime target dual-texture sources={dual_texture_sources} changed_pixels={}",
                     diagnostic.changed_pixels
                 );
             }
@@ -994,7 +1068,7 @@ impl EditorWindow {
                                 composition_external,
                                 false,
                                 true,
-                                RuntimeAlphaTestFilter::All,
+                                RuntimeSrdSourceFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -1049,7 +1123,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 false,
-                                RuntimeAlphaTestFilter::All,
+                                RuntimeSrdSourceFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -1949,17 +2023,70 @@ fn count_runtime_alpha_test_sources(
         .count()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeAlphaTestFilter {
-    All,
-    Only,
+fn runtime_source_texture_mask(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    source: EvidenceRuntimeTargetCommandSource,
+) -> u8 {
+    let state = match source {
+        EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {
+            let EvidenceCompleteRuntimeCastDraw::Image(draw) = &draws[runtime_draw_index] else {
+                return 0;
+            };
+            draw
+        }
+        EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index } => {
+            let EvidenceCompleteRuntimeCastDraw::SliceCell(cell) = &draws[runtime_draw_index]
+            else {
+                return 0;
+            };
+            &cell.draw
+        }
+        EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index } => {
+            let EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) = &draws[runtime_draw_index]
+            else {
+                return 0;
+            };
+            &glyph.draw
+        }
+        EvidenceRuntimeTargetCommandSource::FennelBatch { .. } => return 0,
+    };
+    state
+        .texture_bindings
+        .iter()
+        .enumerate()
+        .fold(0u8, |mask, (slot, binding)| {
+            mask | (u8::from(binding.is_some()) << slot)
+        })
 }
 
-impl RuntimeAlphaTestFilter {
-    const fn includes(self, alpha_test_enabled: bool) -> bool {
+fn count_runtime_dual_texture_sources(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    submission: &[EvidenceMergedRuntimeTargetCommand],
+) -> usize {
+    submission
+        .iter()
+        .flat_map(|command| command.sources.iter().copied())
+        .filter(|source| runtime_source_texture_mask(draws, *source) == 0b011)
+        .count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeSrdSourceFilter {
+    All,
+    AlphaTestOnly,
+    DualTextureOnly,
+}
+
+impl RuntimeSrdSourceFilter {
+    fn includes(
+        self,
+        draws: &[EvidenceCompleteRuntimeCastDraw],
+        source: EvidenceRuntimeTargetCommandSource,
+    ) -> bool {
         match self {
             Self::All => true,
-            Self::Only => alpha_test_enabled,
+            Self::AlphaTestOnly => runtime_source_is_alpha_test(draws, source),
+            Self::DualTextureOnly => runtime_source_texture_mask(draws, source) == 0b011,
         }
     }
 }
@@ -1977,7 +2104,7 @@ fn render_preview_runtime_layers(
     external: SrdDx9ExternalContext,
     render_fennel: bool,
     render_number: bool,
-    alpha_test_filter: RuntimeAlphaTestFilter,
+    source_filter: RuntimeSrdSourceFilter,
 ) -> windows::core::Result<()> {
     if let Some(background) = common_background {
         render_runtime_target_submission(
@@ -1991,7 +2118,7 @@ fn render_preview_runtime_layers(
             external,
             render_fennel,
             render_number,
-            alpha_test_filter,
+            source_filter,
         )?;
     }
     render_runtime_target_submission(
@@ -2005,7 +2132,7 @@ fn render_preview_runtime_layers(
         external,
         render_fennel,
         render_number,
-        alpha_test_filter,
+        source_filter,
     )
 }
 
@@ -2021,7 +2148,7 @@ fn render_runtime_target_submission(
     external: SrdDx9ExternalContext,
     render_fennel: bool,
     render_number: bool,
-    alpha_test_filter: RuntimeAlphaTestFilter,
+    source_filter: RuntimeSrdSourceFilter,
 ) -> windows::core::Result<()> {
     for command in submission {
         if command.vertex_format == 14 && command.primitive_type == 4 {
@@ -2031,7 +2158,7 @@ fn render_runtime_target_submission(
                         source,
                         EvidenceRuntimeTargetCommandSource::NumberGlyph { .. }
                     ))
-                    && alpha_test_filter.includes(runtime_source_is_alpha_test(draws, source))
+                    && source_filter.includes(draws, source)
             })
             .map_err(|error| {
                 windows::core::Error::new(
@@ -2093,7 +2220,7 @@ fn render_runtime_target_submission(
             continue;
         }
         for source in &command.sources {
-            if !alpha_test_filter.includes(runtime_source_is_alpha_test(draws, *source)) {
+            if !source_filter.includes(draws, *source) {
                 continue;
             }
             match *source {
@@ -2493,14 +2620,6 @@ mod tests {
         let left = [1, 2, 3, 0, 4, 5, 6, 7];
         let right = [1, 2, 3, 255, 4, 5, 7, 7];
         assert_eq!(runtime_rgb_difference(&left, &right), 1);
-    }
-
-    #[test]
-    fn runtime_alpha_test_filter_separates_exact_packet_classes() {
-        assert!(RuntimeAlphaTestFilter::All.includes(false));
-        assert!(RuntimeAlphaTestFilter::All.includes(true));
-        assert!(!RuntimeAlphaTestFilter::Only.includes(false));
-        assert!(RuntimeAlphaTestFilter::Only.includes(true));
     }
 
     #[test]

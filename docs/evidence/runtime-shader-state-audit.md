@@ -58,11 +58,13 @@ Two concrete hosts have complete integer-cycle results:
 AdvertiseLogo / CHU_UI_Advertise_00_v10.srd
   ANMS=19, covered frames=2303, draws=82158
   distinct keys=7, unpackaged=0, outside collection=0
+  texture masks: none=898, slot0=62640, slot0+slot1=18620
   stencil=0, alpha-test=0
 
 CommonBackGround / CHU_UI_Common_BK_00_v11.srd
   ANMS=10, covered frames=19580, draws=2644127
   distinct keys=6, unpackaged=0, outside collection=0
+  texture masks: none=51599, slot0=2454566, slot0+slot1=137962
   stencil=0
   alpha-test draws=8248, exact key AAEBABBAABCBAAAAAA
 ```
@@ -75,6 +77,15 @@ The alpha-test-only readback changes zero RGB pixels at that frame, which is
 recorded rather than treated as a failure: successful packet/shader submission
 and final visibility are separate facts, and later/failed-alpha pixels must not
 be invented to make a diagnostic nonzero.
+
+Advertise `ANMS[10] AS_title_in`, frame `0`, contains ten dual-texture Image
+draws at `LAYR[3]/NODE[41,44,47,52,54,55,56,57,60,62]`. Three select
+`AAEBABBAADIIEAAAAA` (MultiTex0 value 9), seven select
+`AAEBABBAADIAAAAAAA`; every draw binds both stage 0 and stage 1 from TEXL.
+At frame `30`, the D3D9Ex smoke submits only these ten sources and changes all
+2,073,600 Composition RGB pixels before and after ResetEx. This proves the
+shipped dual-texture packet, both TEXL bindings, verified collection shaders
+and merged format-14 submission reach the GPU without inventing an override.
 
 The unified runtime draw builder no longer drops Image, Slice, or Number draws
 merely because a shader key is not packaged or packet stencil is enabled. It

@@ -121,6 +121,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut draw_count = 0usize;
     let mut type_counts = [0usize; 3];
     let mut shader_key_counts = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], usize>::new();
+    let mut texture_mask_counts = BTreeMap::<u8, usize>::new();
+    let mut texture_mask_first = BTreeMap::<u8, FirstOccurrence>::new();
     let mut unpackaged = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], FirstOccurrence>::new();
     let mut outside_collection =
         BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], FirstOccurrence>::new();
@@ -178,6 +180,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                         draw_count += 1;
                         type_counts[type_index] += 1;
                         *shader_key_counts.entry(state.shader_key).or_insert(0) += 1;
+                        let texture_mask = state
+                            .texture_bindings
+                            .iter()
+                            .enumerate()
+                            .fold(0u8, |mask, (slot, binding)| {
+                                mask | (u8::from(binding.is_some()) << slot)
+                            });
+                        *texture_mask_counts.entry(texture_mask).or_insert(0) += 1;
                         let occurrence = || FirstOccurrence {
                             path: path.clone(),
                             scene_index,
@@ -187,6 +197,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             node_index: state.node_index,
                             kind,
                         };
+                        texture_mask_first
+                            .entry(texture_mask)
+                            .or_insert_with(occurrence);
                         if embedded_simple_shader_pair(&state.shader_key).is_none() {
                             unpackaged
                                 .entry(state.shader_key)
@@ -279,6 +292,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("sampled_integer_frames={sampled_frame_count}");
     println!("draws={draw_count} image/slice/number={type_counts:?}");
     println!("distinct_runtime_shader_keys={}", shader_key_counts.len());
+    println!("runtime_texture_masks={texture_mask_counts:?}");
+    for (mask, first) in &texture_mask_first {
+        println!("  texture_mask={mask:#05b} first={}", describe(first));
+    }
     println!("unpackaged_shader_keys={}", unpackaged.len());
     for (key, first) in &unpackaged {
         println!(

@@ -72,4 +72,4 @@ Chusan 的独立路径 provider `0x7D6360/0x7D61A0` 已证明专用根为 `surfb
 - 无需格式转换的二维 DDS staging/`UpdateSurface`、独立 BC1/BC3 fallback 解码和编辑器 DEFAULT-pool `ResetEx` 重建已接入；完整语料未出现的内部格式转换与 cube request 仍待闭环。
 - CIMG/CRE1 与 CNUM 每个 mode-0 glyph 的 CREF/CRE1 已闭环到 TEXL/CROP 和统一 D3D9Ex runtime submission；剩余的是 TEXT 旧式字体路径、未出现在 shipped corpus 的 CNUM history mode `1..8`，以及双 UV shader 公式的独立命名。
 - CIMG/CNUM 动画通道 `17/20` 的显式矩形也已闭环到相同 TEXL/CROP 表。
-- 单贴图 TEXCOORD0 的 shader 消费已实际提交；双纹理 TEXCOORD1 与其余尚未闭环的 draw state 仍待独立 fixture。
+- 单贴图 TEXCOORD0 与 Advertise 双纹理 TEXCOORD1 的 shader 消费均已实际提交；其余边界是显式 texture override 与未覆盖的外部 draw context。

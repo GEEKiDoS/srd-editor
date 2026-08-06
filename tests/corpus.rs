@@ -37,11 +37,11 @@ use srd_editor::ruhuna::RuhunaFont;
 use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
 use srd_editor::shader_bytecode::{
-    FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
-    FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, SLICE_2D_VARIANT_CB_SIMPLE_KEY,
-    SLICE_TEXTURED_2D_SIMPLE_KEY, SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
-    SLICE_TEXTURED_3D_SIMPLE_KEY, SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
-    embedded_simple_shader_pair,
+    DUAL_TEXTURE_3D_SIMPLE_KEY, DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY, FIRST_2D_FIXTURE_SIMPLE_KEY,
+    FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
+    SLICE_2D_VARIANT_CB_SIMPLE_KEY, SLICE_TEXTURED_2D_SIMPLE_KEY,
+    SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY, SLICE_TEXTURED_3D_SIMPLE_KEY,
+    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use srd_editor::srd_draw::{
     EvidenceCompleteRuntimeCastDraw, EvidenceRuntimeTargetCommandSource, FennelTextFontRole,
@@ -739,6 +739,115 @@ fn common_background_runtime_keeps_the_shipped_alpha_test_image_path() {
         alpha_test
             .iter()
             .all(|draw| draw.shader_key == SLICE_TEXTURED_3D_SIMPLE_KEY)
+    );
+}
+
+#[test]
+fn advertise_runtime_keeps_the_shipped_dual_texture_image_path() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
+    let host = CHUSAN_ADVERTISE_LOGO_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
+    let draws = build_evidence_complete_animation_set_runtime_srd_draws(
+        &document.project,
+        &document.textures,
+        0,
+        10,
+        0.0,
+        host,
+    )
+    .unwrap();
+    let dual_texture = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(draw)
+                if draw.texture_bindings[0].is_some() && draw.texture_bindings[1].is_some() =>
+            {
+                Some(draw)
+            }
+            EvidenceCompleteRuntimeCastDraw::SliceCell(cell)
+                if cell.draw.texture_bindings[0].is_some()
+                    && cell.draw.texture_bindings[1].is_some() =>
+            {
+                Some(&cell.draw)
+            }
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph)
+                if glyph.draw.texture_bindings[0].is_some()
+                    && glyph.draw.texture_bindings[1].is_some() =>
+            {
+                Some(&glyph.draw)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "Advertise ANMS[10] frame 0 dual-texture draws={} nodes={:?} keys={:?} bindings={:?}",
+        dual_texture.len(),
+        dual_texture
+            .iter()
+            .map(|draw| (draw.layer_index, draw.node_index))
+            .collect::<Vec<_>>(),
+        dual_texture
+            .iter()
+            .map(|draw| String::from_utf8_lossy(&draw.shader_key))
+            .collect::<Vec<_>>(),
+        dual_texture
+            .iter()
+            .map(|draw| draw
+                .texture_bindings
+                .map(|binding| binding.map(|value| value.texture_index)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(dual_texture.len(), 10);
+    assert_eq!(
+        dual_texture
+            .iter()
+            .map(|draw| (draw.layer_index, draw.node_index))
+            .collect::<Vec<_>>(),
+        [41, 44, 47, 52, 54, 55, 56, 57, 60, 62].map(|node_index| (3, node_index))
+    );
+    assert_eq!(
+        dual_texture
+            .iter()
+            .map(|draw| draw.shader_key)
+            .collect::<Vec<_>>(),
+        [
+            DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_VARIANT_9_3D_SIMPLE_KEY,
+            DUAL_TEXTURE_3D_SIMPLE_KEY,
+        ]
+    );
+    assert_eq!(
+        dual_texture
+            .iter()
+            .map(|draw| {
+                [0usize, 1].map(|slot| draw.texture_bindings[slot].unwrap().texture_index)
+            })
+            .collect::<Vec<_>>(),
+        [
+            [1, 0],
+            [1, 0],
+            [0, 0],
+            [1, 0],
+            [0, 0],
+            [0, 0],
+            [0, 0],
+            [0, 0],
+            [1, 0],
+            [0, 0],
+        ]
     );
 }
 
