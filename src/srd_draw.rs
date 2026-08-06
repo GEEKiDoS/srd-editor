@@ -576,8 +576,8 @@ pub struct SrdHostDrawContext {
     pub renderer_layer_key: u32,
     /// Target resolved from the player's `TargetScene` property during
     /// renderer preparation. This is independent from the scene that later
-    /// receives a globally queued packet. `None` explicitly models the null
-    /// lookup branch; an empty property string alone does not yet prove it.
+    /// receives a globally queued packet. `None` models the proven null lookup
+    /// used by the shipped Advertise/Common host profiles.
     pub renderer_project_target: Option<SrdRendererProjectTargetContext>,
     /// Projection*View of the scene that actually receives and submits the
     /// packet, including packets routed through the global queue.
@@ -1855,9 +1855,10 @@ fn runtime_image_passes_renderer_visibility(
     project_screen: Option<&(Matrix4x4, [i32; 2])>,
 ) -> Result<bool, SrdDrawError> {
     let Some((screen_matrix, [width, height])) = project_screen else {
-        // The binary reads SrRenderer+0x24C even on this path, but its
-        // initialization source for an unresolved/empty target is not yet
-        // proven. Do not invent a rectangle here.
+        // The binary reads SrRenderer+0x24C even on this proven null-target
+        // path, but those four rectangle floats were never initialized. Keep
+        // the editor deterministic and memory-safe instead of inventing a
+        // zero/present/receiving-target rectangle.
         return Ok(true);
     };
     cast_overlaps_render_target_game(

@@ -45,9 +45,9 @@ vertex builder 的该虚函数进入 `ceylon_submit_vertex_batch` (`0x6DF020`) �
 - target 非空：调用该 target 虚表 `+0x60`；
 - target 为空：调用全局管理器 `unk_1CA0BE8` 的 `sub_6314F0`。
 
-`TargetScene` 的查找是精确字符串 map lookup，没有 fallback；Advertise 没有设置该属性。这里仍不能从“字符串为空”推出“target 指针为空”，因为注册 map 没有拒绝空 key，而 AFB 驱动的 `star::SglScene` 名称尚未闭环。只有查找结果实际为 null 时，packet 才进入全局管理器；若命中空 key target，则走命名 target 分支。
+`TargetScene` 的查找是精确字符串 map lookup，没有 fallback；Advertise 没有设置该属性。Scene 管理器的名称 map 构造为空，唯一 target 插入入口的 18 个调用点已经审计；正常运行时名称均非空，且本地完整 293 个 AFB 不含 `star::SglScene` 类型键 `0x005B916A`。因此 Advertise/Common 的空字符串查找结果精确为 null，packet 进入全局管理器。完整证据与未初始化可见性矩形边界见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
-查找结果为 null 时，`srd_renderer_configure_project_camera` 跳过整个 target Width/Height/Camera 分支，保留 `SrRenderer+0x08/+0x48` 的构造 identity。最终接收全局 packet 的 Scene Camera 是 target-local shader environment 的另一路输入，不能反过来冒充 renderer preparation 的命名 target。null 分支矩阵见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)，空 key 与可见性矛盾见 [`render-visibility-culling.md`](render-visibility-culling.md)。
+查找结果为 null 时，`srd_renderer_configure_project_camera` 跳过整个 target Width/Height/Camera 分支，保留 `SrRenderer+0x08/+0x48` 的构造 identity。最终接收全局 packet 的 Scene Camera 是 target-local shader environment 的另一路输入，不能反过来冒充 renderer preparation 的命名 target。null 分支矩阵见 [`render-empty-target-matrices.md`](render-empty-target-matrices.md)，未初始化可见性矩形边界见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 ## 全局命令记录布局
 

@@ -2,9 +2,11 @@
 
 本页只记录已经有明确二进制边界、但证据尚未闭合的问题。这里的候选解释不得直接进入渲染实现。
 
-## 空 `TargetScene` 的空键 target 与可见性矩形
+## 空 `TargetScene` 的未初始化可见性矩形
 
-property 2 的空字符串会执行精确 map lookup，但“没有 fallback”不等于“结果必为 null”。`SrRenderer+0x24C..+0x258` 只在 target 非空时由 Width/Height 写入，构造器和 `_aligned_malloc` 分配链都不初始化它；`sub_AC6660` 却在每个 ImageCast 前无条件读取该矩形。当前已审计 18 个注册调用点，剩余关键来源是 AFB 描述符驱动的 `star::SglScene` (`0x12B68E0`) 名称。必须闭合 AFB loader/实际描述符值，确认是否注册空字符串 key；在此之前不得把 Advertise/Common 的空属性直接等同于 null target。已闭合的命名-target 四角投影与 AABB 见 [`evidence/render-visibility-culling.md`](evidence/render-visibility-culling.md)。
+Advertise/Common 的空 property 2 已闭环为 null lookup：Scene 管理器构造时 map 为空，唯一插入入口是已审计的注册链；18 个静态注册调用点已逐个审计，正常运行时名称均为非空，`Scene List` Create 来源属于调试路径；`star::SglScene` 的工厂类型键 `0x005B916A` 在本地完整 293 个 AFB 中零命中，而同一原始序列化路径的正向对照 `SglInstancingModel` 键 `0x005B9172` 有 35 次命中。详见 [`evidence/render-visibility-culling.md`](evidence/render-visibility-culling.md)。
+
+剩余未闭环的是原二进制自身的未初始化状态：`SrRenderer+0x24C..+0x258` 只在 target 非空时由 Width/Height 写入，构造器和 `_aligned_malloc` 分配链都不初始化它；`sub_AC6660` 却在每个 ImageCast 前无条件读取该矩形。Rust 的 null-target 路径目前确定性地跳过此剔除，不会伪造默认矩形；这项宿主策略不能冒充原二进制对任意堆历史的逐位复现。
 
 ## Chusan target 的后续生命周期
 

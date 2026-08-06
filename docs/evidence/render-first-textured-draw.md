@@ -65,4 +65,4 @@ diagnostic FNV = 09DF61BBE19B88A5
 
 `AdvertiseLogoObject` 的实际父节点已进一步证明为 null，所以该具体宿主的 `FirstCalcMatrix` 是 identity；但 target Camera present size 和 ShapeEnv2D filter source size 仍是宿主输入。smoke 分别显式传入 `1080x1920` 与 `1920x1080`，不会把二者静默等同。
 
-Advertise 的空 `TargetScene` 不会触发 fallback，但是否命中 AFB 注册的空 key target 尚未闭环。显式 null-lookup 诊断下 packet 进入全局队列且 renderer Camera bridge 保持 identity；详见 [`render-visibility-culling.md`](render-visibility-culling.md)。此前竖线的直接根因仍是 builder 漏写 CAST 二维标志，错误选择三维 `A...` VS 并向 `c10..c13` 上传 Camera matrix；修复链与 screenParam provider 见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
+Advertise 的空 `TargetScene` 精确 lookup 已证明返回 null：packet 进入全局队列且 renderer Camera bridge 保持 identity；原二进制随后读取未初始化可见性矩形，Rust 预览不会为其伪造默认值。详见 [`render-visibility-culling.md`](render-visibility-culling.md)。此前竖线的直接根因仍是 builder 漏写 CAST 二维标志，错误选择三维 `A...` VS 并向 `c10..c13` 上传 Camera matrix；修复链与 screenParam provider 见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。

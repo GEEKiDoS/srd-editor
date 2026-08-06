@@ -117,6 +117,71 @@ fn collect_dds_files(path: &Path, output: &mut Vec<PathBuf>) {
     }
 }
 
+fn collect_afb_files(path: &Path, output: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            collect_afb_files(&path, output);
+        } else if path.extension().is_some_and(|extension| extension == "afb") {
+            output.push(path);
+        }
+    }
+}
+
+fn count_afb_factory_type_keys(bytes: &[u8]) -> [usize; 3] {
+    const PATTERNS: [[u8; 4]; 3] = [
+        0x005B_916Au32.to_le_bytes(),
+        0x005B_916Au32.to_be_bytes(),
+        0x005B_9172u32.to_le_bytes(),
+    ];
+    let mut counts = [0; 3];
+    for window in bytes.windows(4) {
+        let index = match window[0] {
+            0x6A => 0,
+            0x00 => 1,
+            0x72 => 2,
+            _ => continue,
+        };
+        if window == PATTERNS[index] {
+            counts[index] += 1;
+        }
+    }
+    counts
+}
+
+#[test]
+fn shipped_afb_corpus_has_no_sgl_scene_factory_type_key() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut paths = Vec::new();
+    collect_afb_files(&root, &mut paths);
+    paths.sort();
+    assert_eq!(paths.len(), 293, "unexpected complete-game AFB count");
+
+    let mut scene_little_endian_hits = 0;
+    let mut scene_big_endian_hits = 0;
+    let mut positive_control_hits = 0;
+    let mut positive_control_files = BTreeSet::new();
+    for path in &paths {
+        let bytes = fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let [little_endian_hits, big_endian_hits, hits] = count_afb_factory_type_keys(&bytes);
+        scene_little_endian_hits += little_endian_hits;
+        scene_big_endian_hits += big_endian_hits;
+        positive_control_hits += hits;
+        if hits != 0 {
+            positive_control_files.insert(path.clone());
+        }
+    }
+
+    assert_eq!(scene_little_endian_hits, 0);
+    assert_eq!(scene_big_endian_hits, 0);
+    assert_eq!(positive_control_hits, 35);
+    assert_eq!(positive_control_files.len(), 15);
+}
+
 #[test]
 fn parses_complete_game_ruhuna_font_archives_and_embedded_dds_pages() {
     let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {

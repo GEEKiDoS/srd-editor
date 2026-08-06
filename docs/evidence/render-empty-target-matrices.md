@@ -1,10 +1,10 @@
 # 空 `TargetScene` 的 renderer 矩阵与全局 target Camera
 
-本文记录 property 2 查找结果为 null 时，renderer preparation、ImageCast 顶点、draw packet 矩阵和最终接收场景 Camera 之间的条件精确边界。property 字符串为空是否必然得到 null 尚未闭环，见 [`render-visibility-culling.md`](render-visibility-culling.md)。
+本文记录 property 2 查找结果为 null 时，renderer preparation、ImageCast 顶点、draw packet 矩阵和最终接收场景 Camera 之间的精确边界。Advertise/Common 的空字符串 lookup 已闭环为 null；其未初始化可见性矩形见 [`render-visibility-culling.md`](render-visibility-culling.md)。
 
 ## renderer preparation 的短路
 
-`srd_player_impl_prepare_renderer` (`0xAACA80`) 先按 property 2 的精确字符串查找 target，再把结果作为第一个普通栈参数传给 `srd_renderer_configure_project_camera` (`0xAC7400`)。查找没有 fallback，但 map 允许空 key；Advertise/Common 的空字符串是否命中 `star::SglScene` 注册的空名 target 仍待闭环。
+`srd_player_impl_prepare_renderer` (`0xAACA80`) 先按 property 2 的精确字符串查找 target，再把结果作为第一个普通栈参数传给 `srd_renderer_configure_project_camera` (`0xAC7400`)。名称 map 构造为空、唯一插入入口及其 18 个注册点均已审计，本地 293 个 AFB 也没有 `star::SglScene` 类型记录；因此 Advertise/Common 的空字符串得到 null。
 
 `srd_construct_renderer` (`0xAC4010`) 在 `0xAC40C7..0xAC40D9` 把 `SrRenderer+0x08` 与 `SrRenderer+0x48` 初始化为 identity。`0xAC7400` 在 `0xAC742D` 保存 target pointer 到 `+0x248`，但只有同时满足：
 
@@ -38,9 +38,9 @@ Rust `SrdHostDrawContext` 现在分别保存：
 - 最终接收 target 的 `Projection*View`；
 - 最终 target 的 ShapeEnv2D screen source size。
 
-`CommonBackGroundObject` 与 `AdvertiseLogoObject` 的 property 2 字符串都为空。当前 Chusan profile 的 `renderer_project_target=None` 仅用于显式执行 null-branch 诊断；在空 key `star::SglScene` 注册闭环前，不再把它声明为原游戏最终查找结果。该诊断下的语料回归断言 `CHU_UI_Common_BK_00_v11.srd` 三维 Image draw 上传 identity `c0..c3`。
+`CommonBackGroundObject` 与 `AdvertiseLogoObject` 的 property 2 字符串都为空，当前 Chusan profile 的 `renderer_project_target=None` 表示已证明的原游戏 null lookup。语料回归断言 `CHU_UI_Common_BK_00_v11.srd` 三维 Image draw 上传 identity `c0..c3`。null 分支的原二进制可见性矩形没有确定初值，Rust 预览显式跳过该项剔除。
 
-使用 `CommonBackGround/MainScene` 的显式 null-branch 诊断、present `1080x1920`、screen source `1920x1080` 执行 D3D9Ex smoke，两次回读（强制 `ResetEx` 前后）一致：
+使用 `CommonBackGround/MainScene` 的已证明 null lookup、present `1080x1920`、screen source `1920x1080` 执行 D3D9Ex smoke，两次回读（强制 `ResetEx` 前后）一致：
 
 ```text
 changed pixels = 2,073,600
