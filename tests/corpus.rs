@@ -52,7 +52,7 @@ use srd_editor::srd_draw::{
     build_evidence_complete_initial_reference_image_draws,
     build_evidence_complete_initial_runtime_cast_draws,
     build_evidence_filtered_merged_runtime_target_submission,
-    collect_fennel_font_resource_requests,
+    build_evidence_merged_runtime_srd_strip, collect_fennel_font_resource_requests,
 };
 use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
@@ -640,6 +640,19 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
     assert_eq!(
         merged
             .iter()
+            .map(|command| {
+                build_evidence_merged_runtime_srd_strip(&draws, command, |_| true)
+                    .unwrap()
+                    .unwrap()
+                    .vertices
+                    .len()
+            })
+            .collect::<Vec<_>>(),
+        [10, 4, 1072, 4, 22, 10, 34, 10, 214, 46]
+    );
+    assert_eq!(
+        merged
+            .iter()
             .map(|group| group.sources.len())
             .sum::<usize>(),
         241
@@ -810,6 +823,18 @@ fn time_animation_set_routes_number_glyphs_into_the_runtime_target_stream() {
             .iter()
             .all(|glyph| glyph.draw.shader_key == FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY)
     );
+    assert_eq!(
+        submission
+            .iter()
+            .filter(|command| command.vertex_format == 14 && command.primitive_type == 4)
+            .count(),
+        4
+    );
+    assert!(submission.iter().all(|command| {
+        build_evidence_merged_runtime_srd_strip(&draws, command, |_| true)
+            .unwrap()
+            .is_some()
+    }));
 }
 
 #[test]

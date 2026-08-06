@@ -72,6 +72,7 @@ pub struct SrdDx9Renderer {
     vertex_declaration: Option<IDirect3DVertexDeclaration9>,
     shaders: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], ShaderObjects>,
     vertex_buffer: Option<IDirect3DVertexBuffer9>,
+    vertex_capacity: usize,
     composition_size: Option<[u32; 2]>,
     composition_target: Option<CompositionTarget>,
 }
@@ -100,6 +101,7 @@ impl SrdDx9Renderer {
             vertex_declaration: None,
             shaders: BTreeMap::new(),
             vertex_buffer: None,
+            vertex_capacity: 0,
             composition_size: None,
             composition_target: None,
         };
@@ -110,6 +112,7 @@ impl SrdDx9Renderer {
     pub fn invalidate_device_objects(&mut self) {
         self.composition_target = None;
         self.vertex_buffer = None;
+        self.vertex_capacity = 0;
         self.shaders.clear();
         self.vertex_declaration = None;
     }
@@ -139,7 +142,8 @@ impl SrdDx9Renderer {
                 );
             }
         }
-        self.vertex_buffer = Some(create_vertex_buffer(&self.device)?);
+        self.vertex_buffer = Some(create_vertex_buffer(&self.device, 4)?);
+        self.vertex_capacity = 4;
         if let Some([width, height]) = self.composition_size {
             self.composition_target = Some(create_composition_target(&self.device, width, height)?);
         }
@@ -255,17 +259,36 @@ impl SrdDx9Renderer {
         }
         let state = StateBlockGuard::capture(&self.device)?;
         for draw in draws {
-            self.render_draw(draw, external, textures)?;
+            self.render_vertices(draw, &draw.quad.vertices, external, textures)?;
         }
         state.restore()
     }
 
-    fn render_draw(
+    pub fn render_triangle_strip(
         &mut self,
         draw: &EvidenceCompleteSrdDraw,
+        vertices: &[SrdRenderVertex],
         external: SrdDx9ExternalContext,
         textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
+        let state = StateBlockGuard::capture(&self.device)?;
+        self.render_vertices(draw, vertices, external, textures)?;
+        state.restore()
+    }
+
+    fn render_vertices(
+        &mut self,
+        draw: &EvidenceCompleteSrdDraw,
+        vertices: &[SrdRenderVertex],
+        external: SrdDx9ExternalContext,
+        textures: Option<&SrdD3d9TextureSet>,
+    ) -> Result<()> {
+        if vertices.len() < 3 {
+            return Err(Error::new(
+                E_INVALIDARG,
+                "SRD triangle strip has fewer than three vertices",
+            ));
+        }
         if draw.packet.flags_0c & 0x100 != 0 {
             return Err(Error::new(
                 E_INVALIDARG,
@@ -279,6 +302,7 @@ impl SrdDx9Renderer {
             )
         })?;
         self.require_loaded_pair(&pair)?;
+        self.ensure_vertex_capacity(vertices.len())?;
         let declaration = self
             .vertex_declaration
             .as_ref()
@@ -294,7 +318,7 @@ impl SrdDx9Renderer {
             .as_ref()
             .ok_or_else(|| Error::new(E_FAIL, "SRD D3D9 vertex buffer is not available"))?;
 
-        upload_vertices(vertex_buffer, &draw.quad.vertices)?;
+        upload_vertices(vertex_buffer, vertices)?;
         let constants = draw.fixed_constants;
         let cull = draw
             .raster
@@ -453,8 +477,27 @@ impl SrdDx9Renderer {
                 };
                 self.device.SetScissorRect(&rectangle)?;
             }
-            self.device.DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2)?;
+            self.device.DrawPrimitive(
+                D3DPT_TRIANGLESTRIP,
+                0,
+                u32::try_from(vertices.len() - 2).map_err(|_| {
+                    Error::new(
+                        E_INVALIDARG,
+                        "SRD triangle-strip primitive count overflows u32",
+                    )
+                })?,
+            )?;
         }
+        Ok(())
+    }
+
+    fn ensure_vertex_capacity(&mut self, required: usize) -> Result<()> {
+        if self.vertex_buffer.is_some() && self.vertex_capacity >= required {
+            return Ok(());
+        }
+        let capacity = required.max(4).next_power_of_two();
+        self.vertex_buffer = Some(create_vertex_buffer(&self.device, capacity)?);
+        self.vertex_capacity = capacity;
         Ok(())
     }
 
@@ -475,11 +518,18 @@ impl SrdDx9Renderer {
     }
 }
 
-fn create_vertex_buffer(device: &IDirect3DDevice9) -> Result<IDirect3DVertexBuffer9> {
+fn create_vertex_buffer(
+    device: &IDirect3DDevice9,
+    vertex_capacity: usize,
+) -> Result<IDirect3DVertexBuffer9> {
+    let byte_len = vertex_capacity
+        .checked_mul(SrdRenderVertex::STRIDE)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| Error::new(E_INVALIDARG, "SRD vertex buffer size overflows u32"))?;
     let mut buffer = None;
     unsafe {
         device.CreateVertexBuffer(
-            (4 * SrdRenderVertex::STRIDE) as u32,
+            byte_len,
             (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32,
             0,
             D3DPOOL_DEFAULT,
@@ -614,20 +664,20 @@ fn read_render_target_bgra(
     })
 }
 
-fn upload_vertices(buffer: &IDirect3DVertexBuffer9, vertices: &[SrdRenderVertex; 4]) -> Result<()> {
+fn upload_vertices(buffer: &IDirect3DVertexBuffer9, vertices: &[SrdRenderVertex]) -> Result<()> {
     debug_assert_eq!(mem::size_of::<SrdRenderVertex>(), SrdRenderVertex::STRIDE);
+    let byte_len = vertices
+        .len()
+        .checked_mul(SrdRenderVertex::STRIDE)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| Error::new(E_INVALIDARG, "SRD vertex upload size overflows u32"))?;
     let mut destination: *mut c_void = ptr::null_mut();
     unsafe {
-        buffer.Lock(
-            0,
-            (vertices.len() * SrdRenderVertex::STRIDE) as u32,
-            &mut destination,
-            D3DLOCK_DISCARD as u32,
-        )?;
+        buffer.Lock(0, byte_len, &mut destination, D3DLOCK_DISCARD as u32)?;
         ptr::copy_nonoverlapping(
             vertices.as_ptr().cast::<u8>(),
             destination.cast::<u8>(),
-            vertices.len() * SrdRenderVertex::STRIDE,
+            byte_len as usize,
         );
         buffer.Unlock()?;
     }

@@ -131,4 +131,4 @@ Rust 已实现这些精确组合器、世界 CAST 乘法色/加法色来源，�
 ## 仍未闭环
 
 - packet stencil sequence 与 special-depth 的完整 runtime 提交状态。
-- planner 已计算的相邻 strip 物理顶点拼接；当前 D3D9Ex 在正确 target/source 顺序内逐 cell 提交。
+- 非普通 packet 状态；普通相邻 SliceCell 已按 `last,last,first,first` 物理拼接并一次提交对应 target command。

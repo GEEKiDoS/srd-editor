@@ -42,7 +42,7 @@ use crate::srd_draw::{
     build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_filtered_merged_runtime_target_submission,
-    collect_fennel_font_resource_requests,
+    build_evidence_merged_runtime_srd_strip, collect_fennel_font_resource_requests,
 };
 use crate::transform::Affine3x4;
 
@@ -1501,6 +1501,29 @@ fn render_runtime_target_submission(
     render_number: bool,
 ) -> windows::core::Result<()> {
     for command in submission {
+        if command.vertex_format == 14 && command.primitive_type == 4 {
+            if let Some(strip) = build_evidence_merged_runtime_srd_strip(draws, command, |source| {
+                render_number
+                    || !matches!(
+                        source,
+                        EvidenceRuntimeTargetCommandSource::NumberGlyph { .. }
+                    )
+            })
+            .map_err(|error| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    error.to_string(),
+                )
+            })? {
+                srd_renderer.render_triangle_strip(
+                    strip.state,
+                    &strip.vertices,
+                    external,
+                    textures,
+                )?;
+            }
+            continue;
+        }
         for source in &command.sources {
             match *source {
                 EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {

@@ -30,7 +30,7 @@ use crate::reference_runtime::{
 };
 use crate::render::{
     CeylonDepthState, CeylonDrawPacketPresetState, CeylonRasterState,
-    CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw,
+    CeylonSrdFixedShaderConstants, SrdD3d9BlendPreset, SrdQuadDraw, SrdRenderVertex,
     apply_srd_image_alpha_stencil_packet_fields, apply_srd_image_field_0c_shader_bits,
     apply_srd_special_depth_packet_fields, ceylon_d3d9_blend_preset,
     select_srd_image_render_preset,
@@ -185,6 +185,110 @@ pub struct EvidenceMergedRuntimeTargetCommand {
     pub vertex_format: u32,
     pub primitive_type: u32,
     pub vertex_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceMergedRuntimeSrdStrip<'a> {
+    pub state: &'a EvidenceCompleteSrdDraw,
+    pub vertices: Vec<SrdRenderVertex>,
+}
+
+/// Materializes one merged format-14/type-4 command using the exact connector
+/// copies at `ceylon_enqueue_draw_packet` `0x670E19..0x670E3D`. At every
+/// boundary the previous last vertex and next first vertex are duplicated,
+/// producing `last,last,first,first` around the join.
+pub fn build_evidence_merged_runtime_srd_strip<'a>(
+    draws: &'a [EvidenceCompleteRuntimeCastDraw],
+    command: &EvidenceMergedRuntimeTargetCommand,
+    mut include: impl FnMut(EvidenceRuntimeTargetCommandSource) -> bool,
+) -> Result<Option<EvidenceMergedRuntimeSrdStrip<'a>>, SrdDrawError> {
+    if command.vertex_format != 14 || command.primitive_type != 4 {
+        return Err(SrdDrawError(format!(
+            "runtime target command is format {}/primitive {}, not an SRD quad strip",
+            command.vertex_format, command.primitive_type
+        )));
+    }
+
+    let mut state = None;
+    let mut vertices = Vec::new();
+    let mut included_source_count = 0usize;
+    for source in command
+        .sources
+        .iter()
+        .copied()
+        .filter(|source| include(*source))
+    {
+        let (runtime_draw_index, draw) = match source {
+            EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {
+                let Some(EvidenceCompleteRuntimeCastDraw::Image(draw)) =
+                    draws.get(runtime_draw_index)
+                else {
+                    return Err(SrdDrawError(format!(
+                        "runtime target Image source {runtime_draw_index} does not match its draw"
+                    )));
+                };
+                (runtime_draw_index, draw)
+            }
+            EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index } => {
+                let Some(EvidenceCompleteRuntimeCastDraw::SliceCell(cell)) =
+                    draws.get(runtime_draw_index)
+                else {
+                    return Err(SrdDrawError(format!(
+                        "runtime target SliceCell source {runtime_draw_index} does not match its draw"
+                    )));
+                };
+                (runtime_draw_index, &cell.draw)
+            }
+            EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index } => {
+                let Some(EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph)) =
+                    draws.get(runtime_draw_index)
+                else {
+                    return Err(SrdDrawError(format!(
+                        "runtime target NumberGlyph source {runtime_draw_index} does not match its draw"
+                    )));
+                };
+                (runtime_draw_index, &glyph.draw)
+            }
+            EvidenceRuntimeTargetCommandSource::FennelBatch { .. } => {
+                return Err(SrdDrawError(
+                    "format-14 SRD strip contains a Fennel batch source".to_string(),
+                ));
+            }
+        };
+        if draw.packet != command.packet || draw.renderer_layer_key != command.renderer_layer_key {
+            return Err(SrdDrawError(format!(
+                "runtime draw {runtime_draw_index} no longer matches its merged command state"
+            )));
+        }
+        if vertices.is_empty() {
+            state = Some(draw);
+        }
+        append_srd_quad_strip_vertices(&mut vertices, &draw.quad.vertices);
+        included_source_count += 1;
+    }
+
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    if included_source_count == command.sources.len() && vertices.len() != command.vertex_count {
+        return Err(SrdDrawError(format!(
+            "materialized SRD strip has {} vertices but planner recorded {}",
+            vertices.len(),
+            command.vertex_count
+        )));
+    }
+    Ok(Some(EvidenceMergedRuntimeSrdStrip { state, vertices }))
+}
+
+fn append_srd_quad_strip_vertices(
+    destination: &mut Vec<SrdRenderVertex>,
+    quad: &[SrdRenderVertex; 4],
+) {
+    if let Some(previous_last) = destination.last().copied() {
+        destination.push(previous_last);
+        destination.push(quad[0]);
+    }
+    destination.extend_from_slice(quad);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3748,6 +3852,28 @@ mod tests {
         assert_eq!(groups[0].sources.len(), 2);
         assert_eq!(groups[1].vertex_count, 18);
         assert_eq!(groups[1].sources.len(), 2);
+    }
+
+    #[test]
+    fn materialized_strip_duplicates_previous_last_then_next_first() {
+        let vertex = |x| SrdRenderVertex {
+            position: [x, 0.0, 0.0],
+            primary_color: [0; 4],
+            secondary_color: [0; 4],
+            texture_coordinates: [[0.0; 2]; 2],
+        };
+        let first = [vertex(0.0), vertex(1.0), vertex(2.0), vertex(3.0)];
+        let second = [vertex(4.0), vertex(5.0), vertex(6.0), vertex(7.0)];
+        let mut vertices = Vec::new();
+        append_srd_quad_strip_vertices(&mut vertices, &first);
+        append_srd_quad_strip_vertices(&mut vertices, &second);
+        assert_eq!(
+            vertices
+                .iter()
+                .map(|vertex| vertex.position[0])
+                .collect::<Vec<_>>(),
+            [0.0, 1.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 6.0, 7.0]
+        );
     }
 
     #[test]
