@@ -27,3 +27,17 @@ committed to this repository.
 
 Passing `D:/sdhd/assets/data/A000/shader/shadercollect.xml` in place of the
 single key compiles the complete Simple collection and writes `manifest.tsv`.
+
+After the complete probe has produced 82 successful VS/PS pairs, the editor's
+checked-in Rust table is regenerated mechanically with:
+
+```powershell
+rustc --edition 2024 tools/package_simple_shaders.rs -O -o target/package_simple_shaders.exe
+target/package_simple_shaders.exe `
+  D:/Downloads/sessions/WORK/shader_probe_d3d9_all `
+  src/shader_bytecode_generated.rs
+```
+
+The packager rejects missing/duplicate stages, non-`ok` manifest rows and
+non-DWORD-aligned bytecode. It deduplicates identical stage blobs without
+coalescing their selector keys.

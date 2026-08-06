@@ -217,4 +217,4 @@ Rust 已实现：
 - base environment `0..4` 与 low bit `3` 的 `ShapeEnv2D -> SSF_2DTransform` 映射，并拒绝未构造的 base `5..7`；
 - 完整 data 中 82 个 Simple key 的回归。
 
-`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式和完整 collection 的无 D3DX bytecode 已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions，以及 bytecode 的 runtime 选择/设备接入。shadow provider 现在可以显式组合，但不能在没有场景 graph 证据时默认附加到独立 SRD 预览。
+`SimpleShaderVS.cg/SimpleShaderPS.cg` 的原始 source、include 闭包、双 UV/顶点色公式、完整 collection 的无 D3DX bytecode及其 runtime key 表均已闭环，见 [`render-shader-source.md`](render-shader-source.md) 与 [`render-shader-bytecode.md`](render-shader-bytecode.md)。尚未闭环的是其余 shape/context feature 输入如何在 SRD 的每一种运行时状态下形成全部 positions。shadow provider 现在可以显式组合，但不能在没有场景 graph 证据时默认附加到独立 SRD 预览。

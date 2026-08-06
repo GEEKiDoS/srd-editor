@@ -96,6 +96,6 @@ cargo run -- "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_Advertise_00_v10.sr
 
 本页证明的是可运行编辑器窗口、D3D9Ex device、HiDPI ImGui draw、ResetEx 生命周期，以及首个无贴图 fixture 的实际 format 14 shader draw 和像素回读。它尚不证明完整 SRD 像素渲染完成。仍需在独立证据闭环后接入：
 
-- 其余精确 shader key 到已验证 bytecode 的 runtime 选择；
+- ShapeEnv 剩余 scene/pass context 到每次实际 compact key 的精确选择；完整 82-key collection 与两个 Fennel key 的已验证 bytecode 已全部进入 runtime 表；
 - sampler、带外部 base context 的 alpha/stencil/scissor 组合；
 - 已闭合的 project-layer/Cast-vector/RefCast 递归顺序、copied-layer 世界/gate 与独立 Image/Text CAST 调用序列，已继续推进到 Advertise/Common 宿主根 key、type-1 target filter、Image/Slice/Number/Fennel 完整 layer-key 相邻 record merge、MainScene/BgScene 默认 rule/EntryInfo、首个 rule 匹配、per-pass 稳定队列、32-entry flush planner、统一 D3D9Ex source 顺序提交，以及 format-14 strip/format-13 triangle-list 的物理合并；仍需闭合后续 Enable/current-target 时序、其他 target、真正依赖 depth/order 的输入和 stencil/special-depth merge 状态。

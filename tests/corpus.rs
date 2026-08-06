@@ -40,7 +40,7 @@ use srd_editor::shader_bytecode::{
     FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, SLICE_2D_VARIANT_CB_SIMPLE_KEY,
     SLICE_TEXTURED_2D_SIMPLE_KEY, SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
-    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
+    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use srd_editor::srd_draw::{
     EvidenceCompleteRuntimeCastDraw, EvidenceRuntimeTargetCommandSource, FennelTextFontRole,
@@ -336,6 +336,11 @@ fn validates_complete_game_simple_shader_key_collection() {
         let key: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] = encoded.try_into().unwrap();
         let bits = CeylonSimpleShaderBits::from_compact_key(key);
         assert_eq!(bits.compact_key(), key);
+        let pair = embedded_simple_shader_pair(&key).unwrap();
+        assert_eq!(pair.vertex_shader.first(), Some(&0xFFFE0300));
+        assert_eq!(pair.pixel_shader.first(), Some(&0xFFFF0300));
+        assert_eq!(pair.vertex_shader.last(), Some(&0x0000FFFF));
+        assert_eq!(pair.pixel_shader.last(), Some(&0x0000FFFF));
         keys.push(bits);
     }
 

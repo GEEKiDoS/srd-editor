@@ -40,7 +40,9 @@
 
 所有 VS bytecode 首 token 为 `0xFFFE0300` (`vs_3_0`)，所有 PS 首 token 为 `0xFFFF0300` (`ps_3_0`)，全部以 `0x0000FFFF` 结束。82 个键因部分 feature 只影响单一 stage，最终折叠为 14 个不同 VS bytecode hash 和 24 个不同 PS bytecode hash。
 
-三维无贴图 sibling `AAEBABBAAAGAAAAAAA` 已单独嵌入 Rust：VS 332 bytes、SHA-256 `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61`；PS 216 bytes、SHA-256 `B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F`。运行时只按精确 key 返回该 pair，不调用 Cg/D3DX，也不为其他 key 猜测替代品。
+完整 82-key collection 现已由 `tools/package_simple_shaders.rs` 从上述 `manifest.tsv` 和 `.bin` 机械生成 `src/shader_bytecode_generated.rs`。生成器要求 82 个 key 的 VS/PS 两行都存在、每行 HAL 结果均为 `ok`、每份 bytecode 均 DWORD 对齐；然后按字节去重为同样的 14 个 VS blob 和 24 个 PS blob，并保留全部 82 个精确 key 到 pair 的映射。Fennel format-13 的两个已证 3D/2D key 继续复用其逐字节相同的 collection shader pair，所以编辑器总共注册 84 个精确 key。运行时不调用 Cg、D3DCompiler 或 D3DX，也不为未注册 key 猜测替代品。
+
+三维无贴图 sibling `AAEBABBAAAGAAAAAAA` 的 VS 为 332 bytes、SHA-256 `86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61`；PS 为 216 bytes、SHA-256 `B7D50CF8DAC3A981DB13F2B5C3C7CAF8935FC4392B385B516620F7584EC2E53F`。
 
 三维单贴图 sibling `AAEBABBAABGAAAAAAA` 也已按精确值嵌入：VS 复用上述 332-byte bytecode；PS 为 248 bytes、SHA-256 `066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F`。
 
@@ -55,7 +57,7 @@
 | `AAEBABBAABIAAAAAAA` | 复用上述 3D VS | 复用同一单贴图 PS |
 | `EAEBABBAAACBAAAAAA` | 复用上述 2D VS | 252 bytes，SHA-256 `B674C9D61CBE8B051742BB59C2C42618E027EA03DFE9D1F90839793CBBDDE290` |
 
-Rust 只为这些精确 key 注册对应 bytecode；相同 bytecode 的 selector 仍分别保留，避免把 selector 语义折叠成猜测。编辑器 runtime 仍不加载 Cg 或 D3DX。
+Rust 为完整 collection 的全部精确 key 注册对应 bytecode；相同 bytecode 的 selector 仍分别保留，避免把 selector 语义折叠成猜测。编辑器 runtime 仍不加载 Cg 或 D3DX。
 
 collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
@@ -85,4 +87,4 @@ collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 已经证明：原版 Cg profile/参数、完整 collection 的 canonical assembly、无需 D3DX 的确定性 D3D9 bytecode 生成、bytecode profile/end token，以及全部 164 份 bytecode 的 D3D9 HAL shader 对象创建。
 
-仍需完成：把 runtime ShapeEnv context 精确映射到其余 compact key；决定发布包是嵌入经验证的完整 key->bytecode 表，还是在构建期生成同一表；逐项接入其余 shader、常量与多纹理 draw。不会把离线 x86 Cg 工具变成发布依赖。
+仍需完成：把 runtime ShapeEnv context 精确映射到每次实际 draw 的 compact key，并逐项接入尚未闭合的外部 scene/pass context、常量与多纹理 draw。发布包方案已经确定为嵌入经验证的完整 key->bytecode 表；离线 x86 Cg 工具不会成为发布依赖。

@@ -48,9 +48,9 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - ShaderSelector 注册顺序、SRD/ShapeEnv 对 Simple 槽位 9 的实际选择、Simple 的 18 字节键与 71 项表、Default 的 46 字节键机制、嵌入式 Cg source 的精确 dword 解码/include 闭包、format 14 的双 UV/双顶点色公式，以及 stage 0/1 到 pixel/vertex Shader resource 的映射。
 - 默认及逐 packet 的 VS `c0..c9`、PS `c0` 常量提交，以及选定无贴图 fixture 的 VS `c10..c13 = Projection*View` provider。
 - draw packet 到 D3D9 cull/fill/color-write 的精确覆盖：首个 fixture 为 `CULL_NONE`、`SOLID`、四通道写入，不依赖编辑器侧显示性兜底。
-- 首个证据完整的 CPU draw list：`CHU_UI_System_00_v10.srd` 的 scene 0/layer 0/node 1 `C_fill` 在显式 identity `FirstCalcMatrix` 和 1920 宽目标下生成唯一无贴图 ImageCast draw，包含精确四顶点、世界色、packet、Simple key、固定常量、blend/raster/depth。builder 现也接受 TEXL 来源且精确 key 已嵌入的单贴图 draw；TEXT、显式纹理 override、特殊 CAST 矩阵分支和未注册 bytecode 的 key 不会被伪装为已支持。
+- 首个证据完整的 CPU draw list：`CHU_UI_System_00_v10.srd` 的 scene 0/layer 0/node 1 `C_fill` 在显式 identity `FirstCalcMatrix` 和 1920 宽目标下生成唯一无贴图 ImageCast draw，包含精确四顶点、世界色、packet、Simple key、固定常量、blend/raster/depth。原游戏 XML 的完整 82-key Simple collection 与两个 Fennel 精确 key 均已嵌入；TEXT、显式纹理 override、特殊 CAST 矩阵分支和未注册 key 不会被伪装为已支持。
 - 首个真实 D3D9Ex SRD draw submission：创建 format 14 顶点声明与动态 DEFAULT-pool 顶点缓冲，上传已验证 VS/PS、VS `c0..c13`、PS `c0` 和精确 blend/raster/depth 状态，执行非索引 `D3DPT_TRIANGLESTRIP`；不可见 smoke 在 `EndScene` 后通过 `GetRenderTargetData` 回读 identity-host fixture 内部像素，并在强制 `ResetEx` 后重复验证。外部 material scissor 作为显式 context 输入，不从 SRD 猜测。
-- 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；编辑器发布物不依赖 Cg。
+- 隔离 x86 取证工具已对完整 XML 的 82 个 Simple key 生成原版 Cg assembly，经 `D3DCompiler_47!D3DAssemble` 得到 164 份无 D3DX D3D9 bytecode，并全部由 D3D9 HAL device 成功创建 shader 对象；生成器将其确定性打包为 14 个唯一 VS、24 个唯一 PS 和完整精确 key 映射，编辑器发布物不依赖 Cg。
 - 可运行的原生 D3D9Ex 编辑器外壳：按宿主机指令集构建，直接使用 `d3d9.dll` 的 `Direct3DCreate9Ex`/`IDirect3DDevice9Ex` 创建 HAL device，不链接或调用 D3DX/Cg；已在本机 ARM64 Windows 构建并完成真实 `PresentEx`/`ResetEx` 冒烟测试。
 - Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。Windows 优先使用 Per-Monitor V2；窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。smoke 会实际断言逻辑尺寸乘 framebuffer scale 等于物理 backbuffer。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、ANMS 页面选择、层、NODE、变换、纹理和动画帧会进入这些面板，时间轴 frame 会重新求值当前动画集。Properties 的宿主尺寸默认使用当前 Chusan 配置的 Present `1080x1920` 与 ShapeEnv2D screen source `1920x1080`，两组值仍保持独立可编辑。
@@ -61,7 +61,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - Chusan `CommonBackGroundObject` 的嵌入式 SrPlayer、identity 根节点、启用生命周期与 `2DLayer=6` 已闭环。命名 target 成功解析时，Rust 现已复现 `SrRenderer+0x24C..+0x258`、四角屏幕投影和 inclusive AABB Image/Fennel 剔除；null target 时原二进制无条件读取从未初始化的这四个 f32，Rust 为可重复预览显式跳过该项剔除。Common/MainScene 的全屏 D3D9Ex 回归哈希保持不变。
 - AdvertiseLogo 的实际六阶段 SrCtrl identity 表已解码到 SRD 的 ANMS 下标；`AS_warning_in`、`AS_movie_in` 等页面现在按 SANM gate 和命名动画生成 draw。原先全白输出已由 D3D9Ex 回读定位并修复：页面 smoke 的 2,073,600 个 changed pixels 中 `white_pixels=0`，ResetEx 前后哈希一致。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、动态 mode `2..5` 的写入源及 mode 6 的真实调用点、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、动态 mode `2..5` 的写入源及 mode 6 的真实调用点、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override，以及 ShapeEnv 剩余 scene/pass context 到每次实际 Simple 键的映射。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 

@@ -1312,6 +1312,7 @@ pub fn build_evidence_complete_initial_runtime_cast_draws(
         force_color_update,
         runtime_text_inputs,
         &runtime,
+        true,
     )
 }
 
@@ -1344,6 +1345,61 @@ pub fn build_evidence_complete_animation_set_runtime_cast_draws(
         force_color_update,
         runtime_text_inputs,
         &runtime,
+        true,
+    )
+}
+
+/// Builds the non-text SRD runtime stream without requiring RFZ/Fennel host
+/// resources. This is useful for corpus-wide render-state audits: ImageCast,
+/// SliceCast and NumberCast still follow the same recursive CAST order and
+/// runtime animation state as the complete stream, while SrTextCast is omitted
+/// explicitly instead of being confused with an unsupported image draw.
+pub fn build_evidence_complete_animation_set_runtime_srd_draws(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    animation_set_index: usize,
+    frame: f32,
+    host: SrdHostDrawContext,
+) -> Result<Vec<EvidenceCompleteRuntimeCastDraw>, SrdDrawError> {
+    validate_host_draw_context(host)?;
+    let mut runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    runtime
+        .apply_animation_set(project, textures, scene_index, animation_set_index, frame)
+        .map_err(|error| SrdDrawError(format!("failed to apply animation set: {error}")))?;
+    build_evidence_complete_runtime_srd_draws_from_runtime(
+        project,
+        textures,
+        scene_index,
+        host,
+        &runtime,
+    )
+}
+
+/// State-reuse variant of [`build_evidence_complete_animation_set_runtime_srd_draws`].
+/// The supplied runtime must already contain the desired animation-set frame.
+/// Keeping construction separate lets exhaustive corpus tools clone one proven
+/// reference plan per file instead of reparsing it for every integer frame.
+pub fn build_evidence_complete_runtime_srd_draws_from_runtime(
+    project: &Project,
+    textures: &TextureList,
+    scene_index: usize,
+    host: SrdHostDrawContext,
+    runtime: &ProjectRuntime,
+) -> Result<Vec<EvidenceCompleteRuntimeCastDraw>, SrdDrawError> {
+    validate_host_draw_context(host)?;
+    build_evidence_complete_runtime_cast_draws_from_runtime(
+        project,
+        textures,
+        scene_index,
+        host,
+        &FennelFontSlotRegistry::default(),
+        &BTreeMap::new(),
+        false,
+        &BTreeMap::new(),
+        runtime,
+        false,
     )
 }
 
@@ -1358,6 +1414,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
     force_color_update: bool,
     runtime_text_inputs: &BTreeMap<FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput>,
     runtime: &ProjectRuntime,
+    include_fennel: bool,
 ) -> Result<Vec<EvidenceCompleteRuntimeCastDraw>, SrdDrawError> {
     let worlds = runtime
         .compose_world_states(project, host.first_calc_matrix)
@@ -1461,6 +1518,9 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
                     .into_iter()
                     .map(EvidenceCompleteRuntimeCastDraw::NumberGlyph),
             );
+            continue;
+        }
+        if !include_fennel {
             continue;
         }
         let runtime_text_input = runtime_text_inputs.get(&FennelRuntimeTextCastKey {
@@ -2410,21 +2470,7 @@ fn build_evidence_complete_number_glyph_draws_for_runtime_cast(
             .srd_simple_shader_direct_contributions()
             .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
             .compact_key();
-        if embedded_simple_shader_pair(&shader_key).is_none() {
-            return Err(SrdDrawError(format!(
-                "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast glyph {glyph_index} selects an unpackaged Simple shader key {:?}",
-                source.scene_index,
-                source.layer_index,
-                String::from_utf8_lossy(&shader_key)
-            )));
-        }
         let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
-        if packet.flags_0c & 0x100 != 0 {
-            return Err(SrdDrawError(format!(
-                "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast glyph {glyph_index} requires the unported stencil sequence byte",
-                source.scene_index, source.layer_index
-            )));
-        }
         let mut raster = CeylonRasterState::default();
         raster.apply_draw_packet(packet);
         draws.push(EvidenceCompleteNumberGlyphDraw {
@@ -2582,21 +2628,7 @@ fn build_evidence_complete_slice_cell_draws_for_runtime_cast(
             .srd_simple_shader_direct_contributions()
             .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
             .compact_key();
-        if embedded_simple_shader_pair(&shader_key).is_none() {
-            return Err(SrdDrawError(format!(
-                "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast cell {cell_index} selects an unpackaged Simple shader key {:?}",
-                source.scene_index,
-                source.layer_index,
-                String::from_utf8_lossy(&shader_key)
-            )));
-        }
         let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
-        if packet.flags_0c & 0x100 != 0 {
-            return Err(SrdDrawError(format!(
-                "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast cell {cell_index} requires the unported stencil sequence byte",
-                source.scene_index, source.layer_index
-            )));
-        }
         let mut raster = CeylonRasterState::default();
         raster.apply_draw_packet(packet);
         draws.push(EvidenceCompleteSliceCellDraw {
@@ -2727,13 +2759,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
         .srd_simple_shader_direct_contributions()
         .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
         .compact_key();
-    if embedded_simple_shader_pair(&shader_key).is_none() {
-        return Ok(None);
-    }
     let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
-    if blend.alpha_test_enabled || packet.flags_0c & 0x100 != 0 {
-        return Ok(None);
-    }
 
     let local_positions = image
         .build_quad_with_geometry(image_state.geometry, is_2d)
