@@ -1331,7 +1331,7 @@ fn routes_explicit_fennel_font_slots_to_their_own_runtime_atlases() {
 }
 
 #[test]
-fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
+fn audits_initial_visible_fennel_draws_in_the_real_corpus() {
     let root = corpus_root();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
@@ -1457,7 +1457,7 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
         }
     }
     eprintln!(
-        "initial visible 2D Fennel draws={draw_count}, vertices={vertex_count}, reference draws={reference_draw_count}, copied reference draws={copied_reference_draw_count}, reference vertices={reference_vertex_count}, samples={samples:?}"
+        "initial visible Fennel draws={draw_count}, vertices={vertex_count}, reference draws={reference_draw_count}, copied reference draws={copied_reference_draw_count}, reference vertices={reference_vertex_count}, samples={samples:?}"
     );
     assert!(draw_count > 0);
     assert!(vertex_count > 0);
@@ -1471,6 +1471,100 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
         assert_eq!(copied_reference_draw_count, 671);
         assert_eq!(reference_vertex_count, 58_488);
     }
+}
+
+#[test]
+fn linkedverse_reachable_3d_text_uses_the_binary_textbox_matrix_branch() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document = EditorDocument::load(
+        root.join("surfboard/play/linkedVerse/CHU_UI_LinkedVERSE_Gate_00.srd"),
+    )
+    .unwrap();
+    let mut runtime_fonts = BTreeMap::new();
+    for font in &document.project.fonts {
+        if runtime_fonts.contains_key(font.name.as_slice())
+            || !font.name.to_ascii_lowercase().ends_with(b".rfz")
+        {
+            continue;
+        }
+        let parsed = RuhunaFont::from_rfz(
+            &fs::read(
+                root.join("A000/font")
+                    .join(std::str::from_utf8(&font.name).unwrap()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        runtime_fonts.insert(
+            font.name.clone(),
+            parsed
+                .build_runtime_font(1, |page| u32::from(page) + 1)
+                .unwrap(),
+        );
+    }
+    let mut font_registry = FennelFontSlotRegistry::default();
+    assign_fennel_font_resource_requests(
+        &mut font_registry,
+        collect_fennel_font_resource_requests(&document.project).unwrap(),
+    );
+    let host = identity_host_context();
+    let draws = build_evidence_complete_animation_set_runtime_cast_draws(
+        &document.project,
+        &document.textures,
+        0,
+        10,
+        1.0,
+        host,
+        &font_registry,
+        &runtime_fonts,
+        false,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let draw = draws
+        .iter()
+        .find_map(|draw| match draw {
+            EvidenceCompleteRuntimeCastDraw::Fennel(draw)
+                if !draw.is_2d && draw.layer_index == 0 && draw.node_index == 149 =>
+            {
+                Some(draw)
+            }
+            _ => None,
+        })
+        .expect("ANMS[10] frame 1 must reach the shipped 3D TXT_rule cast");
+    assert!(!draw.batches.is_empty());
+    assert_eq!(
+        draw.packet,
+        srd_editor::fennel::fennel_default_draw_packet(false)
+    );
+    assert_eq!(draw.fixed_constants.vertex_c4_c7, identity_matrix4x4_game());
+    let matrix_bits = draw
+        .fixed_constants
+        .vertex_c0_c3_world
+        .rows
+        .map(|row| row.map(f32::to_bits));
+    let vertex_count = draw
+        .batches
+        .iter()
+        .map(|batch| batch.vertices.len())
+        .sum::<usize>();
+    assert_eq!(
+        matrix_bits,
+        [
+            [0x38ae_9a75, 0x8000_0000, 0, 0x3ae5_2ac0],
+            [0, 0xbe23_b0cd, 0, 0xc264_1e2f],
+            [0, 0x8000_0000, 0xbf80_0347, 0x4477_8657],
+            [0, 0x8000_0000, 0xbf80_0000, 0x447a_0000],
+        ]
+    );
+    assert_eq!(vertex_count, 498);
+    assert_ne!(
+        draw.fixed_constants.vertex_c0_c3_world,
+        identity_matrix4x4_game()
+    );
 }
 
 #[test]

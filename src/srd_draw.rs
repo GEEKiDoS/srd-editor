@@ -1029,10 +1029,9 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
     Ok(draws)
 }
 
-/// Builds the initial, 2D RFZ TextCast subset whose normal-glyph layout,
-/// texture batching, vertex generation, world transform and color inputs are
-/// all closed. 3D TextCast, effect/crop records and legacy `.sbfont` stay out
-/// of this evidence-complete path.
+/// Builds the initial RFZ TextCast subset whose layout, texture batching,
+/// 2D/3D vertex and matrix paths, world transform and color inputs are all
+/// closed. Legacy `.sbfont` stays out of this evidence-complete path.
 ///
 /// `font_registry` is the process-global slot state after this player's
 /// requests have been applied. It may already contain earlier host resources;
@@ -1270,6 +1269,7 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
             cast_world,
             image_state,
             host,
+            camera_bridge,
             project_screen.as_ref(),
             font_registry,
             runtime_fonts,
@@ -1534,6 +1534,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             cast_world,
             image_state,
             host,
+            camera_bridge,
             project_screen.as_ref(),
             font_registry,
             runtime_fonts,
@@ -1605,9 +1606,10 @@ fn build_evidence_complete_fennel_draws_impl(
         let layer_enabled = runtime_layer
             .map(|runtime_layer| runtime_layer.enabled)
             .unwrap_or(layer.flags & 0x100 != 0);
-        if !layer_enabled || !layer.is_2d() {
+        if !layer_enabled {
             continue;
         }
+        let is_2d = layer.is_2d();
         let layer_worlds = composed_worlds
             .project_layers
             .get(scene_index)
@@ -1675,10 +1677,11 @@ fn build_evidence_complete_fennel_draws_impl(
                 |runtime_layer| runtime_layer.image_states[node_index],
             );
             let positions = image
-                .build_quad_with_geometry(image_state.geometry, true)
+                .build_quad_with_geometry(image_state.geometry, is_2d)
                 .positions
                 .map(|point| cast_world.matrix.transform_point_game(point));
-            if !runtime_cast_passes_renderer_visibility(positions, true, project_screen.as_ref())? {
+            if !runtime_cast_passes_renderer_visibility(positions, is_2d, project_screen.as_ref())?
+            {
                 continue;
             }
             let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
@@ -1851,7 +1854,7 @@ fn build_evidence_complete_fennel_draws_impl(
                 &stream,
                 scroll.maximum_glyphs,
                 FennelNormalDrawInput {
-                    is_2d: true,
+                    is_2d,
                     textbox_position: [
                         -image_state.geometry.origin[0],
                         -image_state.geometry.origin[1],
@@ -1859,7 +1862,11 @@ fn build_evidence_complete_fennel_draws_impl(
                     ],
                     textbox_scale: [properties.layout.scale_x, properties.layout.scale_y],
                     textbox_vertical_offset: layout.layout.textbox_vertical_offset,
-                    textbox_transform: affine_to_matrix4x4(cast_world.matrix),
+                    textbox_transform: fennel_textbox_transform(
+                        cast_world.matrix,
+                        is_2d,
+                        camera_bridge,
+                    ),
                     secondary_color,
                     // `sub_7C04F0` restores the original word after a fit
                     // guard relayout and draws with that original clip state.
@@ -1884,7 +1891,14 @@ fn build_evidence_complete_fennel_draws_impl(
                 host.target_projection_view,
                 host.target_screen_size,
             );
-            fixed_constants.vertex_c0_c3_world = identity;
+            fixed_constants.vertex_c0_c3_world = if is_2d {
+                identity
+            } else {
+                fennel_textbox_transform(cast_world.matrix, false, camera_bridge)
+            };
+            // A freshly constructed TextBox builder has identity as its
+            // previous packet matrix. The exact shipped 3D Fennel VS reads
+            // c0..c3 but has no c4..c7 source operands.
             fixed_constants.vertex_c4_c7 = identity;
             draws.push(EvidenceCompleteFennelDraw {
                 owner: ReferenceLayerParent::ProjectLayer(crate::scene::ReferenceTarget {
@@ -1895,10 +1909,10 @@ fn build_evidence_complete_fennel_draws_impl(
                 layer_index,
                 node_index,
                 font_name: font.name.clone(),
-                is_2d: true,
+                is_2d,
                 renderer_layer_key: cast_layer_keys[node_index]
                     .wrapping_add(u32::from(layer.nodes[node_index].render_layer_offset())),
-                packet: fennel_default_draw_packet(true),
+                packet: fennel_default_draw_packet(is_2d),
                 fixed_constants,
                 batches: vertex_build.batches,
             });
@@ -1919,13 +1933,14 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
     world: RuntimeWorldState,
     image_state: crate::image::RuntimeImageState,
     host: SrdHostDrawContext,
+    camera_bridge: Matrix4x4,
     project_screen: Option<&(Matrix4x4, [i32; 2])>,
     font_registry: &FennelFontSlotRegistry<Vec<u8>>,
     runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
     force_color_update: bool,
     runtime_text_input: Option<&FennelSrdRuntimeTextInput>,
 ) -> Result<Option<EvidenceCompleteFennelDraw>, SrdDrawError> {
-    if !is_2d || !world.visible || !world.render_gate {
+    if !world.visible || !world.render_gate {
         return Ok(None);
     }
     let Some(image) = layer.image_by_node[node_index]
@@ -2149,7 +2164,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
         &stream,
         scroll.maximum_glyphs,
         FennelNormalDrawInput {
-            is_2d: true,
+            is_2d,
             textbox_position: [
                 -image_state.geometry.origin[0],
                 -image_state.geometry.origin[1],
@@ -2157,7 +2172,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
             ],
             textbox_scale: [properties.layout.scale_x, properties.layout.scale_y],
             textbox_vertical_offset: layout.layout.textbox_vertical_offset,
-            textbox_transform: affine_to_matrix4x4(world.matrix),
+            textbox_transform: fennel_textbox_transform(world.matrix, is_2d, camera_bridge),
             secondary_color,
             textbox_flags: draw_textbox_flags,
             clip_size: [properties.layout.box_width, properties.layout.box_height],
@@ -2181,7 +2196,13 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
         host.target_projection_view,
         host.target_screen_size,
     );
-    fixed_constants.vertex_c0_c3_world = identity;
+    fixed_constants.vertex_c0_c3_world = if is_2d {
+        identity
+    } else {
+        fennel_textbox_transform(world.matrix, false, camera_bridge)
+    };
+    // See the constructor/VS boundary above: c4..c7 is the previous TextBox
+    // matrix, identity for this freshly built runtime, and is shader-dead.
     fixed_constants.vertex_c4_c7 = identity;
     Ok(Some(EvidenceCompleteFennelDraw {
         owner,
@@ -2189,9 +2210,9 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
         layer_index: source.layer_index,
         node_index,
         font_name: font.name.clone(),
-        is_2d: true,
+        is_2d,
         renderer_layer_key,
-        packet: fennel_default_draw_packet(true),
+        packet: fennel_default_draw_packet(is_2d),
         fixed_constants,
         batches: vertex_build.batches,
     }))
@@ -2214,6 +2235,21 @@ fn affine_to_matrix4x4(matrix: Affine3x4) -> Matrix4x4 {
             [0.0, 0.0, 0.0, 1.0],
         ],
     }
+}
+
+/// Reproduces the matrix written to TextBoxObject `+0x2EC` by `sub_AC5740`.
+/// The 2D path copies the CAST world matrix. The 3D path multiplies
+/// `SrRenderer+0x08 * CAST world` and then negates the complete Y column.
+fn fennel_textbox_transform(world: Affine3x4, is_2d: bool, camera_bridge: Matrix4x4) -> Matrix4x4 {
+    let world = affine_to_matrix4x4(world);
+    if is_2d {
+        return world;
+    }
+    let mut result = mul_matrix4x4_game(&camera_bridge, &world);
+    for row in &mut result.rows {
+        row[1] *= -1.0;
+    }
+    result
 }
 
 fn pack_fennel_record_color([red, green, blue, alpha]: [u8; 4]) -> u32 {
@@ -3986,5 +4022,42 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].renderer_layer_key, 0x8580);
         assert_eq!(groups[1].renderer_layer_key, 0x8680);
+    }
+
+    #[test]
+    fn three_dimensional_fennel_textbox_matrix_multiplies_then_negates_y_column() {
+        let world = Affine3x4 {
+            rows: [
+                [2.0, 0.0, 0.0, 1.0],
+                [0.0, 3.0, 0.0, 2.0],
+                [0.0, 0.0, 4.0, 3.0],
+            ],
+        };
+        let camera_bridge = Matrix4x4 {
+            rows: [
+                [1.0, 2.0, 3.0, 4.0],
+                [5.0, 6.0, 7.0, 8.0],
+                [9.0, 10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0, 16.0],
+            ],
+        };
+        assert_eq!(
+            fennel_textbox_transform(world, true, camera_bridge).rows,
+            [
+                [2.0, 0.0, 0.0, 1.0],
+                [0.0, 3.0, 0.0, 2.0],
+                [0.0, 0.0, 4.0, 3.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        );
+        assert_eq!(
+            fennel_textbox_transform(world, false, camera_bridge).rows,
+            [
+                [2.0, -6.0, 12.0, 18.0],
+                [10.0, -18.0, 28.0, 46.0],
+                [18.0, -30.0, 44.0, 74.0],
+                [26.0, -42.0, 60.0, 102.0],
+            ]
+        );
     }
 }

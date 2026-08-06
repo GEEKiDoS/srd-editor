@@ -4,14 +4,18 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use srd_editor::csli::multiply_color_game;
 use srd_editor::editor_document::EditorDocument;
 use srd_editor::game_host::{
     CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE,
 };
-use srd_editor::image::ImageDefinition;
+use srd_editor::image::{ImageDefinition, premultiply_additive_color_game};
 use srd_editor::number::NumberDefinition;
-use srd_editor::projection::identity_matrix4x4_game;
-use srd_editor::reference_runtime::ProjectRuntime;
+use srd_editor::projection::{
+    cast_overlaps_render_target_game, compose_screen_matrix_game, identity_matrix4x4_game,
+    inverse_matrix4x4_game, mul_matrix4x4_game,
+};
+use srd_editor::reference_runtime::{ProjectRuntime, ReferenceLayerParent};
 use srd_editor::render::{
     CeylonDrawPacketPresetState, SRD_RENDERER_INITIAL_LAYER_KEY,
     apply_srd_image_alpha_stencil_packet_fields, apply_srd_image_field_0c_shader_bits,
@@ -65,6 +69,36 @@ struct SpecialMatrixAuditSummary {
     first: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct TextCastAuditSummary {
+    definition_count: usize,
+    definition_mode_counts: BTreeMap<&'static str, usize>,
+    runtime_context_count: usize,
+    runtime_mode_counts: BTreeMap<&'static str, usize>,
+    copied_context_count: usize,
+    copied_mode_override_count: usize,
+    rfz_context_count: usize,
+    vertical_context_count: usize,
+    vertical_mode_counts: BTreeMap<&'static str, usize>,
+    runtime_substitution_context_count: usize,
+    three_d_definitions: Vec<String>,
+    first_3d: Option<String>,
+    first_vertical: Option<String>,
+    first_copied_mode_override: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct Runtime3dTextReachabilitySummary {
+    sampled_states: usize,
+    contexts: usize,
+    world_enabled: usize,
+    color_enabled: usize,
+    target_visible: usize,
+    first_world_enabled: Option<String>,
+    first_color_enabled: Option<String>,
+    first_target_visible: Option<String>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let root = arguments
@@ -72,12 +106,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: srd-runtime-state-audit <game-data-root>")?;
     let mut exhaustive_integer_frames = false;
+    let mut text_only = false;
     let mut file_filter = None;
     let mut host_profile = None;
     for argument in arguments {
         let argument = argument.to_string_lossy();
         if argument == "--integer-frames" {
             exhaustive_integer_frames = true;
+        } else if argument == "--text-only" {
+            text_only = true;
         } else if let Some(value) = argument.strip_prefix("--file=")
             && !value.is_empty()
         {
@@ -88,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             host_profile = Some(value.to_owned());
         } else {
             return Err(
-                "usage: srd-runtime-state-audit <game-data-root> [--integer-frames] [--file=<path-substring>] [--host=advertise-logo|common-background]"
+                "usage: srd-runtime-state-audit <game-data-root> [--integer-frames] [--text-only] [--file=<path-substring>] [--host=advertise-logo|common-background]"
                     .into(),
             );
         }
@@ -150,6 +187,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>::new();
     let mut static_summary = StaticAuditSummary::default();
     let mut special_matrix_summary = SpecialMatrixAuditSummary::default();
+    let mut text_cast_summary = TextCastAuditSummary::default();
+    let mut runtime_3d_text_summary = Runtime3dTextReachabilitySummary::default();
     let mut initial_runtime_draw_count = 0usize;
     let mut initial_runtime_special_layer_draw_count = 0usize;
     let mut initial_runtime_flagged_node_draw_count = 0usize;
@@ -158,37 +197,55 @@ fn main() -> Result<(), Box<dyn Error>> {
         let document = EditorDocument::load(path)?;
         audit_special_matrix_layers(path, &document, &mut special_matrix_summary);
         let base_runtime = ProjectRuntime::new(&document.project)?;
-        audit_potential_shader_keys(
-            path,
-            &document,
-            &base_runtime,
-            &collection,
-            &mut potential_key_counts,
-            &mut potential_unpacked,
-            &mut potential_outside_collection,
-            &mut static_summary,
-        )?;
+        audit_text_casts(path, &document, &base_runtime, &mut text_cast_summary);
         for scene_index in 0..document.project.scenes.len() {
-            let draws = build_evidence_complete_runtime_srd_draws_from_runtime(
-                &document.project,
-                &document.textures,
+            audit_runtime_3d_text_reachability(
+                path,
+                &document,
                 scene_index,
+                "initial",
                 host,
                 &base_runtime,
+                &mut runtime_3d_text_summary,
             )?;
-            for draw in &draws {
-                let (state, _, _) = srd_state(draw);
-                initial_runtime_draw_count += 1;
-                let layer = &document.project.scenes[state.scene_index].layers[state.layer_index];
-                if layer
-                    .nodes
-                    .iter()
-                    .any(|node| node.type_flags.unwrap_or(0) & 0x0007_0000 != 0)
-                {
-                    initial_runtime_special_layer_draw_count += 1;
-                }
-                if layer.nodes[state.node_index].type_flags.unwrap_or(0) & 0x0007_0000 != 0 {
-                    initial_runtime_flagged_node_draw_count += 1;
+        }
+        if text_only && !exhaustive_integer_frames {
+            continue;
+        }
+        if !text_only {
+            audit_potential_shader_keys(
+                path,
+                &document,
+                &base_runtime,
+                &collection,
+                &mut potential_key_counts,
+                &mut potential_unpacked,
+                &mut potential_outside_collection,
+                &mut static_summary,
+            )?;
+            for scene_index in 0..document.project.scenes.len() {
+                let draws = build_evidence_complete_runtime_srd_draws_from_runtime(
+                    &document.project,
+                    &document.textures,
+                    scene_index,
+                    host,
+                    &base_runtime,
+                )?;
+                for draw in &draws {
+                    let (state, _, _) = srd_state(draw);
+                    initial_runtime_draw_count += 1;
+                    let layer =
+                        &document.project.scenes[state.scene_index].layers[state.layer_index];
+                    if layer
+                        .nodes
+                        .iter()
+                        .any(|node| node.type_flags.unwrap_or(0) & 0x0007_0000 != 0)
+                    {
+                        initial_runtime_special_layer_draw_count += 1;
+                    }
+                    if layer.nodes[state.node_index].type_flags.unwrap_or(0) & 0x0007_0000 != 0 {
+                        initial_runtime_flagged_node_draw_count += 1;
+                    }
                 }
             }
         }
@@ -210,6 +267,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                         animation_set_index,
                         frame as f32,
                     )?;
+                    audit_runtime_3d_text_reachability(
+                        path,
+                        &document,
+                        scene_index,
+                        &format!("ANMS[{animation_set_index}] frame={frame}"),
+                        host,
+                        &runtime,
+                        &mut runtime_3d_text_summary,
+                    )?;
+                    if text_only {
+                        continue;
+                    }
                     let draws = build_evidence_complete_runtime_srd_draws_from_runtime(
                         &document.project,
                         &document.textures,
@@ -291,6 +360,54 @@ fn main() -> Result<(), Box<dyn Error>> {
         static_summary.node_context_count, static_summary.type_counts
     );
     println!(
+        "text_cast_definitions={} definition_modes={:?} runtime_contexts={} runtime_modes={:?} copied_contexts={} copied_mode_overrides={} rfz_contexts={} vertical_contexts={} vertical_modes={:?} runtime_substitution_contexts={}",
+        text_cast_summary.definition_count,
+        text_cast_summary.definition_mode_counts,
+        text_cast_summary.runtime_context_count,
+        text_cast_summary.runtime_mode_counts,
+        text_cast_summary.copied_context_count,
+        text_cast_summary.copied_mode_override_count,
+        text_cast_summary.rfz_context_count,
+        text_cast_summary.vertical_context_count,
+        text_cast_summary.vertical_mode_counts,
+        text_cast_summary.runtime_substitution_context_count,
+    );
+    println!(
+        "text_cast_first_3d={} first_vertical={} first_copied_mode_override={}",
+        text_cast_summary.first_3d.as_deref().unwrap_or("none"),
+        text_cast_summary
+            .first_vertical
+            .as_deref()
+            .unwrap_or("none"),
+        text_cast_summary
+            .first_copied_mode_override
+            .as_deref()
+            .unwrap_or("none"),
+    );
+    for location in &text_cast_summary.three_d_definitions {
+        println!("  text_cast_3d_definition={location}");
+    }
+    println!(
+        "runtime_3d_text_states={} contexts={} world_enabled={} color_enabled={} target_visible={} first_world_enabled={} first_color_enabled={} first_target_visible={}",
+        runtime_3d_text_summary.sampled_states,
+        runtime_3d_text_summary.contexts,
+        runtime_3d_text_summary.world_enabled,
+        runtime_3d_text_summary.color_enabled,
+        runtime_3d_text_summary.target_visible,
+        runtime_3d_text_summary
+            .first_world_enabled
+            .as_deref()
+            .unwrap_or("none"),
+        runtime_3d_text_summary
+            .first_color_enabled
+            .as_deref()
+            .unwrap_or("none"),
+        runtime_3d_text_summary
+            .first_target_visible
+            .as_deref()
+            .unwrap_or("none"),
+    );
+    println!(
         "initial_runtime_draws={} draws_in_special_layers={} draws_from_flagged_nodes={}",
         initial_runtime_draw_count,
         initial_runtime_special_layer_draw_count,
@@ -344,7 +461,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (key, first) in &potential_outside_collection {
         println!("  {} first={first}", String::from_utf8_lossy(key));
     }
-    if !exhaustive_integer_frames {
+    if !exhaustive_integer_frames || text_only {
         return Ok(());
     }
 
@@ -389,6 +506,275 @@ fn main() -> Result<(), Box<dyn Error>> {
         "alpha_test_first={}",
         alpha_test_first.as_ref().map_or("none".into(), describe)
     );
+    Ok(())
+}
+
+fn audit_text_casts(
+    path: &Path,
+    document: &EditorDocument,
+    runtime: &ProjectRuntime,
+    summary: &mut TextCastAuditSummary,
+) {
+    for (scene_index, scene) in document.project.scenes.iter().enumerate() {
+        for (layer_index, layer) in scene.layers.iter().enumerate() {
+            for (node_index, image) in layer.image_by_node.iter().enumerate() {
+                if image
+                    .as_ref()
+                    .is_some_and(ImageDefinition::creates_text_cast)
+                {
+                    summary.definition_count += 1;
+                    *summary
+                        .definition_mode_counts
+                        .entry(if layer.is_2d() { "2d" } else { "3d" })
+                        .or_insert(0) += 1;
+                    if !layer.is_2d() {
+                        summary.three_d_definitions.push(format!(
+                            "{} SCN[{}]/LAYR[{}]/NODE[{}]",
+                            path.display(),
+                            scene_index,
+                            layer_index,
+                            node_index,
+                        ));
+                    }
+                }
+            }
+
+            audit_text_cast_context(
+                path,
+                document,
+                ReferenceTarget {
+                    scene_index,
+                    layer_index,
+                },
+                layer.is_2d(),
+                false,
+                summary,
+            );
+        }
+    }
+
+    for instance in &runtime.references.plan.instances {
+        audit_text_cast_context(
+            path,
+            document,
+            instance.target,
+            instance.is_2d,
+            true,
+            summary,
+        );
+    }
+}
+
+fn audit_text_cast_context(
+    path: &Path,
+    document: &EditorDocument,
+    target: ReferenceTarget,
+    effective_is_2d: bool,
+    copied: bool,
+    summary: &mut TextCastAuditSummary,
+) {
+    let layer = &document.project.scenes[target.scene_index].layers[target.layer_index];
+    let mode = if effective_is_2d { "2d" } else { "3d" };
+    for (node_index, image) in layer.image_by_node.iter().enumerate() {
+        let Some(image) = image.as_ref().filter(|image| image.creates_text_cast()) else {
+            continue;
+        };
+        summary.runtime_context_count += 1;
+        *summary.runtime_mode_counts.entry(mode).or_insert(0) += 1;
+        if copied {
+            summary.copied_context_count += 1;
+        }
+        if copied && effective_is_2d != layer.is_2d() {
+            summary.copied_mode_override_count += 1;
+            summary.first_copied_mode_override.get_or_insert_with(|| {
+                format!(
+                    "{} SCN[{}]/LAYR[{}]/NODE[{}] source_mode={} effective_mode={}",
+                    path.display(),
+                    target.scene_index,
+                    target.layer_index,
+                    node_index,
+                    if layer.is_2d() { "2d" } else { "3d" },
+                    mode,
+                )
+            });
+        }
+        if !effective_is_2d {
+            summary.first_3d.get_or_insert_with(|| {
+                format!(
+                    "{} SCN[{}]/LAYR[{}]/NODE[{}] copied={}",
+                    path.display(),
+                    target.scene_index,
+                    target.layer_index,
+                    node_index,
+                    copied,
+                )
+            });
+        }
+        let Some(text) = image.text.as_ref() else {
+            continue;
+        };
+        if document
+            .project
+            .resolve_text_font(text)
+            .is_some_and(|font| font.name.to_ascii_lowercase().ends_with(b".rfz"))
+        {
+            summary.rfz_context_count += 1;
+        }
+        let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
+        if font_param.vertical {
+            summary.vertical_context_count += 1;
+            *summary.vertical_mode_counts.entry(mode).or_insert(0) += 1;
+            summary.first_vertical.get_or_insert_with(|| {
+                format!(
+                    "{} SCN[{}]/LAYR[{}]/NODE[{}] copied={} effective_mode={}",
+                    path.display(),
+                    target.scene_index,
+                    target.layer_index,
+                    node_index,
+                    copied,
+                    mode,
+                )
+            });
+        }
+        if (0..8u8).any(|substitution_index| {
+            let token = [b'$', b'[', b'0' + substitution_index, b']'];
+            text.text
+                .windows(token.len())
+                .any(|candidate| candidate == token)
+        }) {
+            summary.runtime_substitution_context_count += 1;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_runtime_3d_text_reachability(
+    path: &Path,
+    document: &EditorDocument,
+    scene_index: usize,
+    state_name: &str,
+    host: SrdHostDrawContext,
+    runtime: &ProjectRuntime,
+    summary: &mut Runtime3dTextReachabilitySummary,
+) -> Result<(), Box<dyn Error>> {
+    summary.sampled_states += 1;
+    let renderer_inverse_camera_view = if let Some(target) = host.renderer_project_target {
+        let view = document
+            .project
+            .camera
+            .runtime_matrices(target.render_size[0] as f32)
+            .view;
+        Affine3x4 {
+            rows: [view.rows[0], view.rows[1], view.rows[2]],
+        }
+        .inverse_game()
+    } else {
+        Affine3x4::IDENTITY
+    };
+    let worlds = runtime.compose_world_states(
+        &document.project,
+        host.first_calc_matrix,
+        renderer_inverse_camera_view,
+    )?;
+    let project_screen = host
+        .renderer_project_target
+        .map(|target| -> Result<_, Box<dyn Error>> {
+            let external_inverse = inverse_matrix4x4_game(&target.projection_view);
+            let srd_projection_view = document
+                .project
+                .camera
+                .runtime_matrices(target.render_size[0] as f32)
+                .projection_view;
+            let camera_bridge = mul_matrix4x4_game(&external_inverse, &srd_projection_view);
+            let width = i32::try_from(target.render_size[0])?;
+            let height = i32::try_from(target.render_size[1])?;
+            Ok((
+                compose_screen_matrix_game(width, height, &target.projection_view, &camera_bridge),
+                [width, height],
+            ))
+        })
+        .transpose()?;
+
+    for entry in runtime.references.plan.structural_cast_draw_order(
+        &document.project,
+        scene_index,
+        host.renderer_layer_key,
+    )? {
+        let layer =
+            &document.project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
+        let layer_worlds = worlds
+            .layer(entry.owner)
+            .ok_or_else(|| format!("runtime owner {:?} has no world state", entry.owner))?;
+        if layer_worlds.is_2d {
+            continue;
+        }
+        let Some(image) = layer.image_by_node[entry.node_index]
+            .as_ref()
+            .filter(|image| image.creates_text_cast())
+        else {
+            continue;
+        };
+        summary.contexts += 1;
+        let world = layer_worlds.casts[entry.node_index];
+        let location = || {
+            format!(
+                "{} {} owner={:?} SCN[{}]/LAYR[{}]/NODE[{}]",
+                path.display(),
+                state_name,
+                entry.owner,
+                entry.source.scene_index,
+                entry.source.layer_index,
+                entry.node_index,
+            )
+        };
+        if !world.visible || !world.render_gate {
+            continue;
+        }
+        summary.world_enabled += 1;
+        summary.first_world_enabled.get_or_insert_with(location);
+
+        let image_states = match entry.owner {
+            ReferenceLayerParent::ProjectLayer(target) => {
+                &runtime.project_layers[target.scene_index][target.layer_index].image_states
+            }
+            ReferenceLayerParent::ReferenceInstance(instance_index) => {
+                &runtime.references.layers[instance_index].image_states
+            }
+        };
+        let image_state = image_states[entry.node_index];
+        let source_colors = image_state
+            .coordinate_state(srd_editor::image::ImageReferenceChannel::Cref)
+            .vertex_colors;
+        let primary_rgba = [0usize, 2, 1, 3].map(|source_index| {
+            multiply_color_game(source_colors[source_index], world.multiply_color)
+        });
+        let secondary_rgba = premultiply_additive_color_game(world.additive_color);
+        if !secondary_rgba[..3].iter().any(|component| *component != 0)
+            && !primary_rgba.iter().any(|color| color[3] != 0)
+        {
+            continue;
+        }
+        summary.color_enabled += 1;
+        summary.first_color_enabled.get_or_insert_with(location);
+
+        let positions = image
+            .build_quad_with_geometry(image_state.geometry, false)
+            .positions
+            .map(|point| world.matrix.transform_point_game(point));
+        if let Some((screen_matrix, [width, height])) = &project_screen
+            && !cast_overlaps_render_target_game(
+                &positions,
+                false,
+                Some(screen_matrix),
+                *width,
+                *height,
+            )?
+        {
+            continue;
+        }
+        summary.target_visible += 1;
+        summary.first_target_visible.get_or_insert_with(location);
+    }
     Ok(())
 }
 
