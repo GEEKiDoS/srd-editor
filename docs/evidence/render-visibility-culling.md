@@ -22,7 +22,9 @@ abs(cx1-cx2) <= halfW1+halfW2
 abs(cy1-cy2) <= halfH1+halfH2
 ```
 
-`sub_AC6660` 对相交返回 0、对不相交返回 1；各 CAST renderer 因此在非零时跳过 draw。Rust 已在命名 target 明确解析成功的 ImageCast 路径复现四角投影、SSE 边界、NaN/有符号零比较和 inclusive AABB 剔除。
+`sub_AC6660` 对相交返回 0、对不相交返回 1；各 CAST renderer 因此在非零时跳过 draw。`sub_AD9160 -> sub_AC5740` 在 `0xAC57B3..0xAC57C8` 用 TextCast 的 SrImage geometry 和二维标志调用同一 quad builder，随后以 CAST 世界矩阵变换四角，并在 `0xAC5AA8` 调用同一裁剪 thunk；非零时直接跳过整个文字 draw。Rust 已在命名 target 明确解析成功的 ImageCast 与当前 2D Fennel 路径复现四角投影、SSE 边界、NaN/有符号零比较和 inclusive AABB 剔除。
+
+完整 91 文件语料在 `1920x1080` 命名 target 下保留 551 个 project-layer Fennel draw/34326 个顶点；reference 展开后保留 1155 个 draw/54504 个顶点，其中 604 个来自 copied TextCast。与未接该调用时相比，43 个 target 外复制实例被排除。Slice/Number 的二进制调用点 `0xADA980/0xADE9FA` 已确认，但其 GPU renderer 尚未进入 Rust 的统一 runtime draw 枚举，因此仍不声明已接线。
 
 ## 空名称 lookup 已闭环为 null
 

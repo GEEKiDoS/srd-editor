@@ -57,7 +57,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - Composition 已接入与 SCN 尺寸一致的 D3D9 DEFAULT-pool render-target texture，并通过 ImGui texture ID 在面板中按宽高比居中缩放显示。纹理保持场景像素尺寸，面板布局使用逻辑单位，最终 ImGui 顶点/scissor 再按 framebuffer scale 转到 HiDPI 物理像素；显示缩放不修改 SRD 矩阵或 `FirstCalcMatrix`。
 - 首个二维单贴图 runtime draw 已接入：CAST 二维标志精确进入 packet `+0x60` bit 7，选择 `EAEBABBAABGAAAAAAA`/`ShapeEnv2D` VS，并把显式 target screen size 的半宽半高上传为 `c10 screenParam`。实际 AdvertiseLogo fixture 在强制 `ResetEx` 前后稳定覆盖 `(346,194)..(1573,885)`；runtime 仍不依赖 Cg、D3DX 或 D3DCompiler。
 - Chusan `AdvertiseLogoObject` 的成员、属性与 identity `FirstCalcMatrix` 已闭环；property 2 字符串保持为空。Scene map 空构造、唯一插入入口、18 个注册点和完整 293 个 AFB 类型键审计证明该精确 lookup 返回 null，packet 进入全局队列。
-- Chusan `CommonBackGroundObject` 的嵌入式 SrPlayer、identity 根节点、启用生命周期与 `2DLayer=6` 已闭环。命名 target 成功解析时，Rust 现已复现 `SrRenderer+0x24C..+0x258`、四角屏幕投影和 inclusive AABB ImageCast 剔除；null target 时原二进制无条件读取从未初始化的这四个 f32，Rust 为可重复预览显式跳过该项剔除。Common/MainScene 的全屏 D3D9Ex 回归哈希保持不变。
+- Chusan `CommonBackGroundObject` 的嵌入式 SrPlayer、identity 根节点、启用生命周期与 `2DLayer=6` 已闭环。命名 target 成功解析时，Rust 现已复现 `SrRenderer+0x24C..+0x258`、四角屏幕投影和 inclusive AABB Image/Fennel 剔除；null target 时原二进制无条件读取从未初始化的这四个 f32，Rust 为可重复预览显式跳过该项剔除。Common/MainScene 的全屏 D3D9Ex 回归哈希保持不变。
 - AdvertiseLogo 的实际六阶段 SrCtrl identity 表已解码到 SRD 的 ANMS 下标；`AS_warning_in`、`AS_movie_in` 等页面现在按 SANM gate 和命名动画生成 draw。原先全白输出已由 D3D9Ex 回读定位并修复：页面 smoke 的 2,073,600 个 changed pixels 中 `white_pixels=0`，ResetEx 前后哈希一致。
 
 尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、动态 mode `2..5` 的写入源及 mode 6 的真实调用点、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override 与双纹理 runtime draw、ShapeEnv 剩余 context 到完整 Simple 键的映射，以及其余 bytecode 的 runtime 选择。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。

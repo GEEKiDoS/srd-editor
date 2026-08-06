@@ -1010,9 +1010,9 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     if profile == CorpusProfile::Complete91 {
         assert_eq!(draw_count, 551);
         assert_eq!(vertex_count, 34_326);
-        assert_eq!(reference_draw_count, 1_198);
-        assert_eq!(copied_reference_draw_count, 647);
-        assert_eq!(reference_vertex_count, 57_846);
+        assert_eq!(reference_draw_count, 1_155);
+        assert_eq!(copied_reference_draw_count, 604);
+        assert_eq!(reference_vertex_count, 54_504);
     }
 }
 

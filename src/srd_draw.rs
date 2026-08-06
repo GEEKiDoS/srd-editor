@@ -952,6 +952,8 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
             "scene index {scene_index} is outside the project"
         )));
     }
+    let camera_bridge = renderer_project_camera_bridge(project, host);
+    let project_screen = renderer_project_screen_matrix(host, camera_bridge)?;
     let mut draws = Vec::new();
     for entry in runtime
         .references
@@ -991,6 +993,7 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
             cast_world,
             image_state,
             host,
+            project_screen.as_ref(),
             font_registry,
             runtime_fonts,
             force_color_update,
@@ -1144,6 +1147,7 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             cast_world,
             image_state,
             host,
+            project_screen.as_ref(),
             font_registry,
             runtime_fonts,
             force_color_update,
@@ -1171,6 +1175,8 @@ fn build_evidence_complete_fennel_draws_impl(
         .get(scene_index)
         .ok_or_else(|| SrdDrawError(format!("scene index {scene_index} is outside the project")))?;
     let identity = identity_matrix4x4_game();
+    let camera_bridge = renderer_project_camera_bridge(project, host);
+    let project_screen = renderer_project_screen_matrix(host, camera_bridge)?;
     let mut draws = Vec::new();
 
     for (layer_index, layer) in scene.layers.iter().enumerate() {
@@ -1261,6 +1267,13 @@ fn build_evidence_complete_fennel_draws_impl(
                 || image.initial_runtime_state(),
                 |runtime_layer| runtime_layer.image_states[node_index],
             );
+            let positions = image
+                .build_quad_with_geometry(image_state.geometry, true)
+                .positions
+                .map(|point| world_matrices[node_index].transform_point_game(point));
+            if !runtime_cast_passes_renderer_visibility(positions, true, project_screen.as_ref())? {
+                continue;
+            }
             let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
             if font_param.vertical {
                 return Err(SrdDrawError(format!(
@@ -1499,6 +1512,7 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
     world: RuntimeWorldState,
     image_state: crate::image::RuntimeImageState,
     host: SrdHostDrawContext,
+    project_screen: Option<&(Matrix4x4, [i32; 2])>,
     font_registry: &FennelFontSlotRegistry<Vec<u8>>,
     runtime_fonts: &BTreeMap<Vec<u8>, RuhunaRuntimeFont>,
     force_color_update: bool,
@@ -1557,6 +1571,13 @@ fn build_evidence_complete_fennel_draw_for_runtime_cast(
             ))
         })?
         .font_slot_id;
+    let positions = image
+        .build_quad_with_geometry(image_state.geometry, is_2d)
+        .positions
+        .map(|point| world.matrix.transform_point_game(point));
+    if !runtime_cast_passes_renderer_visibility(positions, is_2d, project_screen)? {
+        return Ok(None);
+    }
     let font_param = layer.font_param_for_node(node_index).unwrap_or_default();
     if font_param.vertical {
         return Err(SrdDrawError(format!(
@@ -1849,7 +1870,7 @@ fn renderer_project_screen_matrix(
     )))
 }
 
-fn runtime_image_passes_renderer_visibility(
+fn runtime_cast_passes_renderer_visibility(
     positions: [[f32; 3]; 4],
     is_2d: bool,
     project_screen: Option<&(Matrix4x4, [i32; 2])>,
@@ -2013,7 +2034,7 @@ fn build_evidence_complete_image_draw_for_runtime_cast(
         .build_quad_with_geometry(image_state.geometry, is_2d)
         .positions;
     let positions = local_positions.map(|point| world.matrix.transform_point_game(point));
-    if !runtime_image_passes_renderer_visibility(positions, is_2d, project_screen)? {
+    if !runtime_cast_passes_renderer_visibility(positions, is_2d, project_screen)? {
         return Ok(None);
     }
     let quad = image.build_render_quad_from_positions(
@@ -2217,7 +2238,7 @@ fn build_evidence_complete_image_draws(
                 .positions;
             let positions =
                 local_positions.map(|point| world_matrices[node_index].transform_point_game(point));
-            if !runtime_image_passes_renderer_visibility(positions, is_2d, project_screen.as_ref())?
+            if !runtime_cast_passes_renderer_visibility(positions, is_2d, project_screen.as_ref())?
             {
                 continue;
             }
@@ -2792,6 +2813,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![11, 22]
         );
+
+        let culled = build_evidence_complete_initial_reference_fennel_draws(
+            &project,
+            0,
+            SrdHostDrawContext::new(
+                Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [10, 10],
+                )),
+                identity_matrix4x4_game(),
+                [10, 10],
+            ),
+            &font_registry,
+            &runtime_fonts,
+            false,
+            &inputs,
+        )
+        .unwrap();
+        assert_eq!(culled.len(), 1);
+        assert_eq!(culled[0].owner, ReferenceLayerParent::ReferenceInstance(0));
 
         let runtime_cast_draws = build_evidence_complete_initial_runtime_cast_draws(
             &project,

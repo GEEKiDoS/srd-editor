@@ -105,6 +105,6 @@ Rust 已实现：
 
 2087 个实例的 11382 次动画应用共执行 371568 个公共通道和 102506 个 SrImage 专用通道。再从完整项目的 3099 个顶层动画入口执行时，语料中的 111 条通道 `23` 全部命中绑定子实例和具名动画，使递归动画层调用数精确增加到 3210。独立副本测试同时证明，对一个实例写入 frame、transform 或 SrImage 不会修改引用同一目标的兄弟实例。
 
-完整 91 文件初始 Fennel 语料中，原始 project layer 的 551 个 draw/34326 个顶点通过新单 CAST helper 后逐项与既有 builder 完全相等；加入 copied layer 后得到 1198 个 draw、57846 个顶点，其中 647 个 draw 来自独立 reference instance。
+完整 91 文件初始 Fennel 语料中，原始 project layer 的 551 个 draw/34326 个顶点通过单 CAST helper 后逐项与既有 builder 完全相等。接入 `sub_AC5740 -> sub_AC6660` 的命名-target 外框剔除后，加入 copied layer 得到 1155 个 draw、54504 个顶点，其中 604 个 draw 来自独立 reference instance；43 个位于 `1920x1080` target 外的复制 TextCast 被排除。
 
 后续仍需闭合 target queue 的 pass 分类、合并和最终排序，才能把当前混合 CAST 调用序列接入 D3D9Ex；同时仍需实现源目标层对根 CAST 的附加抑制条件。`CHU_UI_Common_BK_00_v11.srd` 的当前 100 个证据子集 Image draw 均来自原始层，copied 目标仍因未实现的特殊 CAST matrix 分支被整体排除，所以本页不把独立 Image/Text builder 表述为已经完成 reference 像素渲染。
