@@ -57,6 +57,11 @@ pub struct PreviewHostSettings {
     pub screen_width: i32,
     pub screen_height: i32,
     pub scissor: PreviewScissorSelection,
+    pub common_background_enabled: bool,
+    pub common_background_scene_index: usize,
+    pub common_background_animation_set_index: usize,
+    pub common_background_animation_frame: i32,
+    pub common_background_revision: u64,
 }
 
 pub struct EditorWorkspace {
@@ -78,11 +83,23 @@ pub struct EditorWorkspace {
     preview_screen_width: i32,
     preview_screen_height: i32,
     preview_scissor: PreviewScissorSelection,
+    common_background_path_input: String,
+    common_background_document: Option<EditorDocument>,
+    common_background_load_error: Option<String>,
+    common_background_enabled: bool,
+    common_background_selected_scene: usize,
+    common_background_selected_animation_set: usize,
+    common_background_frame: i32,
+    common_background_revision: u64,
     fennel_runtime_text_inputs: BTreeMap<(usize, usize, usize), FennelSrdRuntimeTextInput>,
 }
 
 impl EditorWorkspace {
-    pub fn new(build_default_layout: bool, document_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        build_default_layout: bool,
+        document_path: Option<PathBuf>,
+        common_background_path: Option<PathBuf>,
+    ) -> Self {
         let (document, load_error) = match document_path {
             Some(path) => match EditorDocument::load(path) {
                 Ok(document) => (Some(document), None),
@@ -90,6 +107,23 @@ impl EditorWorkspace {
             },
             None => (None, None),
         };
+        let common_background_path_input = common_background_path
+            .as_ref()
+            .map_or_else(String::new, |path| path.display().to_string());
+        let (common_background_document, common_background_load_error) =
+            match common_background_path {
+                Some(path) => match EditorDocument::load(path) {
+                    Ok(document) => (Some(document), None),
+                    Err(error) => (None, Some(error)),
+                },
+                None => (None, None),
+            };
+        let common_background_enabled = common_background_document.is_some();
+        let common_background_frame = common_background_document
+            .as_ref()
+            .and_then(|document| document.project.scenes.first())
+            .and_then(|scene| scene.animation_sets.first())
+            .map_or(0, |set| set.start_frame);
         Self {
             build_default_layout,
             frame: 0,
@@ -109,6 +143,14 @@ impl EditorWorkspace {
             preview_screen_width: DEFAULT_TARGET_SCREEN_WIDTH,
             preview_screen_height: DEFAULT_TARGET_SCREEN_HEIGHT,
             preview_scissor: PreviewScissorSelection::Unselected,
+            common_background_path_input,
+            common_background_document,
+            common_background_load_error,
+            common_background_enabled,
+            common_background_selected_scene: 0,
+            common_background_selected_animation_set: 0,
+            common_background_frame,
+            common_background_revision: 0,
             fennel_runtime_text_inputs: BTreeMap::new(),
         }
     }
@@ -143,6 +185,10 @@ impl EditorWorkspace {
         self.document.as_ref()
     }
 
+    pub fn common_background_document(&self) -> Option<&EditorDocument> {
+        self.common_background_document.as_ref()
+    }
+
     pub fn set_composition_texture(&mut self, texture: Option<(TextureId, [u32; 2])>) {
         if texture.is_some() {
             self.composition_unavailable_reason = None;
@@ -166,6 +212,11 @@ impl EditorWorkspace {
             screen_width: self.preview_screen_width,
             screen_height: self.preview_screen_height,
             scissor: self.preview_scissor,
+            common_background_enabled: self.common_background_enabled,
+            common_background_scene_index: self.common_background_selected_scene,
+            common_background_animation_set_index: self.common_background_selected_animation_set,
+            common_background_animation_frame: self.common_background_frame,
+            common_background_revision: self.common_background_revision,
         }
     }
 
@@ -223,6 +274,31 @@ impl EditorWorkspace {
         }
         if settings.scissor == PreviewScissorSelection::Unselected {
             return Err("Select the external material scissor state".to_string());
+        }
+        if settings.common_background_enabled {
+            if settings.player != PreviewPlayerSelection::AdvertiseLogo {
+                return Err(
+                    "The Common background lower layer requires an AdvertiseLogo foreground host"
+                        .to_string(),
+                );
+            }
+            let background_scene = self
+                .common_background_document
+                .as_ref()
+                .and_then(|document| {
+                    document
+                        .project
+                        .scenes
+                        .get(settings.common_background_scene_index)
+                })
+                .ok_or_else(|| "Load a valid Common background lower SRD scene".to_string())?;
+            if background_scene
+                .animation_sets
+                .get(settings.common_background_animation_set_index)
+                .is_none()
+            {
+                return Err("Select a Common background animation set".to_string());
+            }
         }
         let scene = self
             .document
@@ -290,6 +366,17 @@ impl EditorWorkspace {
                     texture.width,
                     texture.height
                 ));
+            }
+            if let Some(background) = &self.common_background_document {
+                ui.separator();
+                ui.text_disabled("COMMON BACKGROUND LOWER SRD");
+                ui.text(background.path.file_name().map_or_else(
+                    || background.path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ));
+                ui.text_disabled(background.path.display().to_string());
+                ui.bullet_text(format!("Scenes: {}", background.project.scenes.len()));
+                ui.bullet_text(format!("Textures: {}", background.textures.textures.len()));
             }
         } else {
             ui.text("No SRD loaded");
@@ -527,6 +614,101 @@ impl EditorWorkspace {
                 ui.text_wrapped("Choose a binary-proven SrPlayer host profile.");
             }
         }
+        ui.separator();
+        ui.text_disabled("COMMON BACKGROUND LOWER LAYER");
+        ui.input_text("Lower SRD path", &mut self.common_background_path_input)
+            .build();
+        if ui.button("Load lower SRD") {
+            self.load_common_background_from_input();
+        }
+        ui.same_line();
+        if ui.button("Clear lower SRD") {
+            self.common_background_document = None;
+            self.common_background_load_error = None;
+            self.common_background_enabled = false;
+            self.common_background_revision = self.common_background_revision.wrapping_add(1);
+        }
+        if let Some(error) = &self.common_background_load_error {
+            ui.text_colored([1.0, 0.35, 0.30, 1.0], "Lower SRD load failed");
+            ui.text_wrapped(error);
+        }
+        if self.common_background_document.is_some() {
+            ui.checkbox(
+                "Render Common below foreground",
+                &mut self.common_background_enabled,
+            );
+            let background_scenes = self
+                .common_background_document
+                .as_ref()
+                .expect("checked Common background document")
+                .project
+                .scenes
+                .iter()
+                .enumerate()
+                .map(|(index, scene)| {
+                    (
+                        format!("{index}: {}", display_srd_name(&scene.name)),
+                        scene
+                            .animation_sets
+                            .iter()
+                            .enumerate()
+                            .map(|(set_index, set)| {
+                                (
+                                    format!("{set_index}: {}", display_srd_name(&set.name)),
+                                    set.start_frame,
+                                    set.runtime_duration,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !background_scenes.is_empty() {
+                self.common_background_selected_scene = self
+                    .common_background_selected_scene
+                    .min(background_scenes.len() - 1);
+                let scene_labels = background_scenes
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>();
+                let mut scene_index = self.common_background_selected_scene;
+                if ui.combo_simple_string("Lower scene", &mut scene_index, &scene_labels) {
+                    self.common_background_selected_scene = scene_index;
+                    self.common_background_selected_animation_set = 0;
+                    self.common_background_frame = background_scenes[scene_index]
+                        .1
+                        .first()
+                        .map_or(0, |(_, start, _)| *start);
+                }
+                let animation_sets = &background_scenes[self.common_background_selected_scene].1;
+                if !animation_sets.is_empty() {
+                    self.common_background_selected_animation_set = self
+                        .common_background_selected_animation_set
+                        .min(animation_sets.len() - 1);
+                    let animation_labels = animation_sets
+                        .iter()
+                        .map(|(name, _, _)| name.as_str())
+                        .collect::<Vec<_>>();
+                    let mut animation_index = self.common_background_selected_animation_set;
+                    if ui.combo_simple_string(
+                        "Lower animation set",
+                        &mut animation_index,
+                        &animation_labels,
+                    ) {
+                        self.common_background_selected_animation_set = animation_index;
+                        self.common_background_frame = animation_sets[animation_index].1;
+                    }
+                    let (_, start, duration) =
+                        &animation_sets[self.common_background_selected_animation_set];
+                    ui.text(format!("Lower ANMS start / duration: {start} / {duration}"));
+                    ui.input_int("Lower frame", &mut self.common_background_frame)
+                        .build();
+                }
+            }
+            ui.text_wrapped(
+                "Game-binary object-list order places CommonBackGroundObject before AdvertiseLogoObject. The editor submits this explicitly selected Common SRD first and does not auto-guess a background file.",
+            );
+        }
         match self.validate_preview_host_settings() {
             Ok(_) => ui.text_colored([0.35, 0.82, 0.48, 1.0], "Host inputs complete"),
             Err(reason) => ui.text_colored([0.92, 0.68, 0.25, 1.0], reason),
@@ -619,6 +801,38 @@ impl EditorWorkspace {
                 );
             }
         }
+    }
+
+    fn load_common_background_from_input(&mut self) {
+        let trimmed = self.common_background_path_input.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            self.common_background_document = None;
+            self.common_background_load_error = Some("Enter a lower SRD path".to_string());
+            self.common_background_enabled = false;
+            self.common_background_revision = self.common_background_revision.wrapping_add(1);
+            return;
+        }
+        match EditorDocument::load(PathBuf::from(trimmed)) {
+            Ok(document) => {
+                self.common_background_selected_scene = 0;
+                self.common_background_selected_animation_set = 0;
+                self.common_background_frame = document
+                    .project
+                    .scenes
+                    .first()
+                    .and_then(|scene| scene.animation_sets.first())
+                    .map_or(0, |set| set.start_frame);
+                self.common_background_document = Some(document);
+                self.common_background_load_error = None;
+                self.common_background_enabled = true;
+            }
+            Err(error) => {
+                self.common_background_document = None;
+                self.common_background_load_error = Some(error);
+                self.common_background_enabled = false;
+            }
+        }
+        self.common_background_revision = self.common_background_revision.wrapping_add(1);
     }
 
     fn draw_timeline(&mut self, ui: &Ui) {
@@ -895,18 +1109,20 @@ mod tests {
 
     #[test]
     fn workspace_starts_with_current_chusan_host_dimensions() {
-        let workspace = EditorWorkspace::new(false, None);
+        let workspace = EditorWorkspace::new(false, None, None);
         let settings = workspace.preview_host_settings();
         assert_eq!(settings.present_width, 1080);
         assert_eq!(settings.present_height, 1920);
         assert_eq!(settings.screen_width, 1920);
         assert_eq!(settings.screen_height, 1080);
         assert_eq!(settings.player, PreviewPlayerSelection::Unselected);
+        assert!(!settings.common_background_enabled);
+        assert!(workspace.common_background_document().is_none());
     }
 
     #[test]
     fn workspace_exports_runtime_text_inputs_only_for_the_selected_scene() {
-        let mut workspace = EditorWorkspace::new(false, None);
+        let mut workspace = EditorWorkspace::new(false, None, None);
         workspace.fennel_runtime_text_inputs.insert(
             (0, 2, 3),
             FennelSrdRuntimeTextInput {

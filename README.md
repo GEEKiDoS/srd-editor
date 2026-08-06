@@ -55,6 +55,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - Dear ImGui D3D9 renderer：固定管线、动态顶点/索引缓冲、字体纹理、scissor、large-mesh offset、状态备份恢复，以及 D3D9Ex reset 时 DEFAULT-pool 资源的失效与重建。Windows 优先使用 Per-Monitor V2；窗口和 backbuffer 使用物理像素，ImGui 使用逻辑坐标；字体图集按实际 DPI 栅格化并支持跨显示器 `ScaleFactorChanged` 重建。smoke 会实际断言逻辑尺寸乘 framebuffer scale 等于物理 backbuffer。
 - After Effects 风格工作区初版：中央 Composition、左侧 Project 与 Scene/Status、右侧 Properties、下方合并的 Layers/Timeline；命令行加载真实 SRD 后，场景、ANMS 页面选择、层、NODE、变换、纹理和动画帧会进入这些面板，时间轴 frame 会重新求值当前动画集。Properties 的宿主尺寸默认使用当前 Chusan 配置的 Present `1080x1920` 与 ShapeEnv2D screen source `1920x1080`，两组值仍保持独立可编辑。
 - Composition 已接入与 SCN 尺寸一致的 D3D9 DEFAULT-pool render-target texture，并通过 ImGui texture ID 在面板中按宽高比居中缩放显示。纹理保持场景像素尺寸，面板布局使用逻辑单位，最终 ImGui 顶点/scissor 再按 framebuffer scale 转到 HiDPI 物理像素；显示缩放不修改 SRD 矩阵或 `FirstCalcMatrix`。
+- Properties 可显式加载一个 Common background 下层 SRD，并独立选择其 SCN/ANMS/frame。两份 SRD 分别持有 TEXL/DDS、RFZ atlas、runtime draw 与 target submission；Composition 只清屏一次，先提交 Common、再提交前景，ResetEx 同时重建两组资源。文件不会按名称自动猜测，SCN 尺寸不一致时也不会擅自缩放。
 - 首个二维单贴图 runtime draw 已接入：CAST 二维标志精确进入 packet `+0x60` bit 7，选择 `EAEBABBAABGAAAAAAA`/`ShapeEnv2D` VS，并把显式 target screen size 的半宽半高上传为 `c10 screenParam`。实际 AdvertiseLogo fixture 在强制 `ResetEx` 前后稳定覆盖 `(346,194)..(1573,885)`；runtime 仍不依赖 Cg、D3DX 或 D3DCompiler。
 - Chusan `AdvertiseLogoObject` 的成员、属性与 identity `FirstCalcMatrix` 已闭环；property 2 字符串保持为空。Scene map 空构造、唯一插入入口、18 个注册点和完整 293 个 AFB 类型键审计证明该精确 lookup 返回 null，packet 进入全局队列。
 - Chusan `CommonBackGroundObject` 的嵌入式 SrPlayer、identity 根节点、启用生命周期与 `2DLayer=6` 已闭环。命名 target 成功解析时，Rust 现已复现 `SrRenderer+0x24C..+0x258`、四角屏幕投影和 inclusive AABB Image/Fennel 剔除；null target 时原二进制无条件读取从未初始化的这四个 f32，Rust 为可重复预览显式跳过该项剔除。Common/MainScene 的全屏 D3D9Ex 回归哈希保持不变。
@@ -98,6 +99,12 @@ cargo run --release -- --srd-texture-smoke --advertise-logo-host=MainScene@1080x
 
 ```powershell
 cargo run --release -- --srd-draw-smoke --common-background-host=MainScene@1080x1920@1920x1080 "D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.srd"
+```
+
+显式把 Common background SRD 放在 Advertise 前景下方，并对双层 Composition 与 ResetEx 做回读：
+
+```powershell
+cargo run -- "D:\sdhd\assets\data\surfboard\advertise\CHU_UI_Advertise_00_v10.srd" --srd-runtime-smoke=0,0,24 --advertise-logo-host=MainScene@1080x1920@1920x1080 --common-background-layer="D:\sdhd\assets\data\surfboard\common\commonBackGround\CHU_UI_Common_BK_00_v11.srd"
 ```
 
 执行整个目录的真实 D3D9Ex DDS 创建/上传审计：

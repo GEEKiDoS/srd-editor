@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use imgui::{ConfigFlags, Context, FontConfig, FontSource, TextureId};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
+use windows::Win32::Graphics::Direct3D9::IDirect3DDevice9;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{Event, WindowEvent};
@@ -17,6 +18,7 @@ use crate::d3d9_backend::{D3d9ExDevice, D3d9ExDeviceStatus, D3d9ExFrameStatus};
 use crate::d3d9_fennel::{EvidenceCompleteFennelBatch, FennelDx9Renderer};
 use crate::d3d9_srd::{SrdDx9ExternalContext, SrdDx9Renderer};
 use crate::d3d9_texture::{RuhunaD3d9AtlasSet, SrdD3d9TextureSet, audit_dds_device_uploads};
+use crate::editor_document::EditorDocument;
 use crate::editor_workspace::{
     EditorWorkspace, PreviewHostSettings, PreviewPlayerSelection, PreviewScissorSelection,
     PreviewTargetSelection, apply_editor_style,
@@ -24,7 +26,7 @@ use crate::editor_workspace::{
 use crate::fennel::FennelFontSlotRegistry;
 use crate::game_host::{
     CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_BG_SCENE, CHUSAN_COMMON_BACKGROUND_PLAYER,
-    CHUSAN_MAIN_SCENE,
+    CHUSAN_MAIN_SCENE, ChusanAirSceneTargetProfile,
 };
 use crate::imgui_dx9::ImguiDx9Renderer;
 use crate::reference_runtime::ReferenceLayerParent;
@@ -36,8 +38,8 @@ use crate::shader_bytecode::{
 use crate::srd_draw::{
     EvidenceCompleteFennelDraw, EvidenceCompleteRuntimeCastDraw, EvidenceCompleteSrdDraw,
     EvidenceMergedRuntimeTargetCommand, EvidenceRuntimeTargetCommandSource,
-    FennelFontResourceAssignment, FennelRuntimeTextCastKey, SrdHostDrawContext,
-    SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
+    FennelFontResourceAssignment, FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput,
+    SrdHostDrawContext, SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
@@ -45,6 +47,7 @@ use crate::srd_draw::{
     build_evidence_merged_runtime_fennel_list, build_evidence_merged_runtime_srd_strip,
     collect_fennel_font_resource_requests,
 };
+use crate::target_pass::EvidenceSrdType1TargetFilter;
 use crate::transform::Affine3x4;
 
 const CLEAR_COLOR_ARGB: u32 = 0xff20_2226;
@@ -65,6 +68,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let dds_device_audit = arguments
         .iter()
         .any(|argument| argument == "--dds-device-audit");
+    let common_background_path = parse_common_background_layer_argument(&arguments)?;
     let smoke_test = srd_draw_smoke
         || srd_texture_smoke
         || srd_fennel_smoke
@@ -88,6 +92,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         dds_device_audit,
         chusan_player_host,
         document_path,
+        common_background_path,
     );
     event_loop.run_app(&mut application)?;
     if let Some(error) = application.fatal_error {
@@ -107,6 +112,7 @@ struct EditorApplication {
     dds_device_audit: bool,
     chusan_player_host: Option<ChusanPlayerHostArgument>,
     document_path: Option<PathBuf>,
+    common_background_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +148,14 @@ struct FennelAtlasRoute {
     page_index: usize,
 }
 
+struct RuntimePreviewLayerResources {
+    textures: Option<SrdD3d9TextureSet>,
+    draws: Vec<EvidenceCompleteRuntimeCastDraw>,
+    submission: Vec<EvidenceMergedRuntimeTargetCommand>,
+    fennel_atlases: BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    fennel_atlas_routes: BTreeMap<u32, FennelAtlasRoute>,
+}
+
 struct EditorWindow {
     window: Window,
     d3d9: D3d9ExDevice,
@@ -156,6 +170,7 @@ struct EditorWindow {
     fennel_renderer: Option<FennelDx9Renderer>,
     fennel_atlases: BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
     fennel_atlas_routes: BTreeMap<u32, FennelAtlasRoute>,
+    common_background_layer: Option<RuntimePreviewLayerResources>,
     fennel_draws: Vec<EvidenceCompleteFennelDraw>,
     composition_texture_id: Option<TextureId>,
     applied_preview_host: Option<PreviewHostSettings>,
@@ -179,6 +194,7 @@ impl EditorApplication {
         dds_device_audit: bool,
         chusan_player_host: Option<ChusanPlayerHostArgument>,
         document_path: Option<PathBuf>,
+        common_background_path: Option<PathBuf>,
     ) -> Self {
         Self {
             window: None,
@@ -191,6 +207,7 @@ impl EditorApplication {
             dds_device_audit,
             chusan_player_host,
             document_path,
+            common_background_path,
         }
     }
 }
@@ -202,6 +219,7 @@ impl EditorWindow {
         smoke_test: bool,
         smoke: EditorSmokeOptions,
         document_path: Option<PathBuf>,
+        common_background_path: Option<PathBuf>,
     ) -> Result<Self, String> {
         let EditorSmokeOptions {
             srd_draw: srd_draw_smoke,
@@ -243,7 +261,8 @@ impl EditorWindow {
         let mut imgui_renderer =
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
         let workspace_path = (!dds_device_audit).then_some(document_path).flatten();
-        let mut workspace = EditorWorkspace::new(build_default_layout, workspace_path);
+        let mut workspace =
+            EditorWorkspace::new(build_default_layout, workspace_path, common_background_path);
         if let Some(runtime) = srd_runtime_smoke {
             let host = chusan_player_host.ok_or_else(|| {
                 "--srd-runtime-smoke requires --advertise-logo-host or --common-background-host"
@@ -553,6 +572,7 @@ impl EditorWindow {
             fennel_renderer,
             fennel_atlases,
             fennel_atlas_routes,
+            common_background_layer: None,
             fennel_draws,
             composition_texture_id,
             applied_preview_host: None,
@@ -601,6 +621,14 @@ impl EditorWindow {
                 for atlas in self.fennel_atlases.values_mut() {
                     atlas.invalidate_device_objects();
                 }
+                if let Some(layer) = &mut self.common_background_layer {
+                    if let Some(textures) = &mut layer.textures {
+                        textures.invalidate_device_objects();
+                    }
+                    for atlas in layer.fennel_atlases.values_mut() {
+                        atlas.invalidate_device_objects();
+                    }
+                }
                 self.d3d9.reset().map_err(|error| error.to_string())?;
                 self.imgui_renderer
                     .create_device_objects(&mut self.imgui)
@@ -635,6 +663,18 @@ impl EditorWindow {
                     atlas
                         .create_device_objects(self.d3d9.device())
                         .map_err(|error| error.to_string())?;
+                }
+                if let Some(layer) = &mut self.common_background_layer {
+                    if let Some(textures) = &mut layer.textures {
+                        textures
+                            .create_device_objects(self.d3d9.device())
+                            .map_err(|error| error.to_string())?;
+                    }
+                    for atlas in layer.fennel_atlases.values_mut() {
+                        atlas
+                            .create_device_objects(self.d3d9.device())
+                            .map_err(|error| error.to_string())?;
+                    }
                 }
             }
             D3d9ExDeviceStatus::DeviceLost => return Ok(D3d9ExFrameStatus::DeviceLost),
@@ -678,15 +718,17 @@ impl EditorWindow {
             let fennel_renderer = self.fennel_renderer.as_mut();
             let fennel_atlases = &self.fennel_atlases;
             let fennel_atlas_routes = &self.fennel_atlas_routes;
+            let common_background_layer = self.common_background_layer.as_ref();
             let renderer = self
                 .srd_renderer
                 .as_mut()
                 .ok_or_else(|| "Runtime target stream lost the Composition renderer".to_string())?;
             renderer
                 .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
-                    render_runtime_target_submission(
+                    render_preview_runtime_layers(
                         renderer,
                         fennel_renderer,
+                        common_background_layer,
                         runtime_draws,
                         runtime_submission,
                         srd_textures,
@@ -735,6 +777,100 @@ impl EditorWindow {
                 .ok_or_else(|| "runtime smoke lost the Composition renderer".to_string())?
                 .read_composition_bgra()
                 .map_err(|error| format!("runtime smoke readback failed: {error}"))?;
+            if let Some(common_background_layer) = self.common_background_layer.as_ref() {
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let fennel_renderer = self.fennel_renderer.as_mut();
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during Common background comparison"
+                            .to_string()
+                    })?;
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_runtime_target_submission(
+                                renderer,
+                                fennel_renderer,
+                                &common_background_layer.draws,
+                                &common_background_layer.submission,
+                                common_background_layer.textures.as_ref(),
+                                &common_background_layer.fennel_atlases,
+                                &common_background_layer.fennel_atlas_routes,
+                                composition_external,
+                                true,
+                                true,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke Common-background-only draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let background_only = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "runtime smoke lost its Common background comparison target".to_string()
+                    })?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!(
+                            "runtime smoke Common background comparison readback failed: {error}"
+                        )
+                    })?;
+                let background_diagnostic = analyze_composition_readback(
+                    background_only.width,
+                    background_only.height,
+                    &background_only.bgra,
+                    [0x26, 0x22, 0x20],
+                )?;
+                if background_diagnostic.changed_pixels == 0 {
+                    return Err(
+                        "runtime smoke Common background layer changed no RGB pixels from clear"
+                            .to_string(),
+                    );
+                }
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during foreground-only comparison"
+                            .to_string()
+                    })?;
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_runtime_target_submission(
+                                renderer,
+                                self.fennel_renderer.as_mut(),
+                                &self.runtime_draws,
+                                &self.runtime_submission,
+                                self.srd_textures.as_ref(),
+                                &self.fennel_atlases,
+                                &self.fennel_atlas_routes,
+                                composition_external,
+                                true,
+                                true,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke foreground-only draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let foreground_only = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "runtime smoke lost its foreground-only comparison target".to_string()
+                    })?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!("runtime smoke foreground-only readback failed: {error}")
+                    })?;
+                let visible_pixels = runtime_rgb_difference(&complete.bgra, &foreground_only.bgra);
+                eprintln!(
+                    "runtime target Common background pixels={} visible_after_foreground={visible_pixels}",
+                    background_diagnostic.changed_pixels,
+                );
+            }
             if fennel_sources != 0 {
                 self.d3d9.begin_scene().map_err(|error| error.to_string())?;
                 {
@@ -744,15 +880,17 @@ impl EditorWindow {
                     let fennel_renderer = self.fennel_renderer.as_mut();
                     let fennel_atlases = &self.fennel_atlases;
                     let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let common_background_layer = self.common_background_layer.as_ref();
                     let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
                         "runtime smoke lost the Composition renderer during Fennel comparison"
                             .to_string()
                     })?;
                     renderer
                         .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
-                            render_runtime_target_submission(
+                            render_preview_runtime_layers(
                                 renderer,
                                 fennel_renderer,
+                                common_background_layer,
                                 runtime_draws,
                                 runtime_submission,
                                 srd_textures,
@@ -796,15 +934,17 @@ impl EditorWindow {
                     let fennel_renderer = self.fennel_renderer.as_mut();
                     let fennel_atlases = &self.fennel_atlases;
                     let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let common_background_layer = self.common_background_layer.as_ref();
                     let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
                         "runtime smoke lost the Composition renderer during Number comparison"
                             .to_string()
                     })?;
                     renderer
                         .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
-                            render_runtime_target_submission(
+                            render_preview_runtime_layers(
                                 renderer,
                                 fennel_renderer,
+                                common_background_layer,
                                 runtime_draws,
                                 runtime_submission,
                                 srd_textures,
@@ -1046,6 +1186,7 @@ impl EditorWindow {
         self.fennel_renderer = None;
         self.fennel_atlases.clear();
         self.fennel_atlas_routes.clear();
+        self.common_background_layer = None;
         self.fennel_draws.clear();
     }
 
@@ -1212,6 +1353,45 @@ impl EditorWindow {
             )
         };
 
+        let common_background_layer = if settings.common_background_enabled {
+            let background_document = self
+                .workspace
+                .common_background_document()
+                .ok_or_else(|| "Common background lower SRD is no longer loaded".to_string())?;
+            let background_host = CHUSAN_COMMON_BACKGROUND_PLAYER
+                .host_context_for_target(
+                    target,
+                    present_width,
+                    present_height,
+                    [screen_width, screen_height],
+                )
+                .map_err(|error| error.to_string())?;
+            let empty_runtime_text_inputs = BTreeMap::new();
+            let (background, background_size) = build_runtime_preview_layer_resources(
+                self.d3d9.device(),
+                background_document,
+                settings.common_background_scene_index,
+                settings.common_background_animation_set_index,
+                settings.common_background_animation_frame,
+                background_host,
+                target,
+                CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(target),
+                &empty_runtime_text_inputs,
+            )?;
+            if background_size != composition_size {
+                return Err(format!(
+                    "Common background Composition size {}x{} does not match foreground {}x{}; the game binary does not provide an implicit editor scaling rule",
+                    background_size[0],
+                    background_size[1],
+                    composition_size[0],
+                    composition_size[1],
+                ));
+            }
+            Some(background)
+        } else {
+            None
+        };
+
         let mut renderer = SrdDx9Renderer::new(self.d3d9.device())
             .map_err(|error| format!("Failed to create the SRD D3D9 renderer: {error}"))?;
         renderer
@@ -1230,15 +1410,22 @@ impl EditorWindow {
         self.srd_draws.clear();
         self.runtime_draws = runtime_draws;
         self.runtime_submission = runtime_submission;
-        self.fennel_renderer = self
+        self.fennel_renderer = (self
             .runtime_draws
             .iter()
             .any(|draw| matches!(draw, EvidenceCompleteRuntimeCastDraw::Fennel(_)))
-            .then(|| FennelDx9Renderer::new(self.d3d9.device()))
-            .transpose()
-            .map_err(|error| format!("Failed to create Fennel renderer: {error}"))?;
+            || common_background_layer.as_ref().is_some_and(|layer| {
+                layer
+                    .draws
+                    .iter()
+                    .any(|draw| matches!(draw, EvidenceCompleteRuntimeCastDraw::Fennel(_)))
+            }))
+        .then(|| FennelDx9Renderer::new(self.d3d9.device()))
+        .transpose()
+        .map_err(|error| format!("Failed to create Fennel renderer: {error}"))?;
         self.fennel_atlases = fennel_atlases;
         self.fennel_atlas_routes = fennel_atlas_routes;
+        self.common_background_layer = common_background_layer;
         self.fennel_draws.clear();
         Ok(())
     }
@@ -1261,6 +1448,126 @@ fn checked_scene_composition_size(width: f32, height: f32) -> Result<[u32; 2], S
         ));
     }
     Ok([width as u32, height as u32])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_runtime_preview_layer_resources(
+    device: &IDirect3DDevice9,
+    document: &EditorDocument,
+    scene_index: usize,
+    animation_set_index: usize,
+    animation_frame: i32,
+    host: SrdHostDrawContext,
+    target: ChusanAirSceneTargetProfile,
+    target_filter: EvidenceSrdType1TargetFilter,
+    runtime_text_inputs: &BTreeMap<FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput>,
+) -> Result<(RuntimePreviewLayerResources, [u32; 2]), String> {
+    let scene = document
+        .project
+        .scenes
+        .get(scene_index)
+        .ok_or_else(|| format!("Scene {scene_index} is no longer available"))?;
+    let composition_size = checked_scene_composition_size(scene.width, scene.height)?;
+    scene
+        .animation_sets
+        .get(animation_set_index)
+        .ok_or_else(|| format!("Animation set {animation_set_index} is no longer available"))?;
+
+    let mut font_registry = FennelFontSlotRegistry::default();
+    let assignments = assign_fennel_font_resource_requests(
+        &mut font_registry,
+        collect_fennel_font_resource_requests(&document.project)
+            .map_err(|error| error.to_string())?,
+    );
+    let game_data_root = if assignments.is_empty() {
+        None
+    } else {
+        Some(find_game_data_root(&document.path).ok_or_else(|| {
+            format!(
+                "Could not locate the game data root above {} for RFZ resources",
+                document.path.display()
+            )
+        })?)
+    };
+    let (runtime_fonts, fennel_atlases, fennel_atlas_routes) = if assignments.is_empty() {
+        (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+    } else {
+        load_fennel_resources(
+            device,
+            game_data_root
+                .as_ref()
+                .expect("non-empty assignments require a game data root"),
+            &assignments,
+        )?
+    };
+    let draws = build_evidence_complete_animation_set_runtime_cast_draws(
+        &document.project,
+        &document.textures,
+        scene_index,
+        animation_set_index,
+        animation_frame as f32,
+        host,
+        &font_registry,
+        &runtime_fonts,
+        false,
+        runtime_text_inputs,
+    )
+    .map_err(|error| error.to_string())?;
+    let target_profile = target
+        .scene_pass_profile()
+        .map_err(|error| error.to_string())?;
+    let submission = build_evidence_filtered_merged_runtime_target_submission(
+        &draws,
+        &target_profile,
+        target_filter,
+    )
+    .map_err(|error| error.to_string())?;
+    if submission.is_empty() {
+        return Err(format!(
+            "No target-admitted evidence-complete GPU draw for {}",
+            target.name
+        ));
+    }
+    let required_texture_indices = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(draw) => Some(draw),
+            EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => Some(&cell.draw),
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => Some(&glyph.draw),
+            EvidenceCompleteRuntimeCastDraw::Fennel(_) => None,
+        })
+        .flat_map(|draw| draw.texture_bindings.iter().flatten())
+        .map(|binding| binding.texture_index)
+        .collect::<Vec<_>>();
+    let textures = if required_texture_indices.is_empty() {
+        None
+    } else {
+        let texture_root = find_game_data_root(&document.path).ok_or_else(|| {
+            format!(
+                "Could not locate the game data root above {}",
+                document.path.display()
+            )
+        })?;
+        Some(
+            SrdD3d9TextureSet::load_required(
+                device,
+                &texture_root,
+                &document.textures,
+                required_texture_indices,
+            )
+            .map_err(|error| format!("Failed to load SRD textures: {error}"))?,
+        )
+    };
+    Ok((
+        RuntimePreviewLayerResources {
+            textures,
+            draws,
+            submission,
+            fennel_atlases,
+            fennel_atlas_routes,
+        },
+        composition_size,
+    ))
 }
 
 /// Preserves the existing GPU smoke as an explicit diagnostic host. This is
@@ -1323,6 +1630,23 @@ fn parse_runtime_smoke_argument(
         animation_set_index,
         frame,
     }))
+}
+
+fn parse_common_background_layer_argument(arguments: &[String]) -> Result<Option<PathBuf>, String> {
+    let mut values = arguments
+        .iter()
+        .filter_map(|argument| argument.strip_prefix("--common-background-layer="));
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err("--common-background-layer may be specified only once".to_string());
+    }
+    let value = value.trim().trim_matches('"');
+    if value.is_empty() {
+        return Err("--common-background-layer requires an SRD path".to_string());
+    }
+    Ok(Some(PathBuf::from(value)))
 }
 
 fn parse_chusan_player_host_argument(
@@ -1486,6 +1810,48 @@ fn load_fennel_resources(
         atlases.insert(assignment.request.name.clone(), atlas);
     }
     Ok((runtime_fonts, atlases, atlas_routes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_preview_runtime_layers(
+    srd_renderer: &mut SrdDx9Renderer,
+    mut fennel_renderer: Option<&mut FennelDx9Renderer>,
+    common_background: Option<&RuntimePreviewLayerResources>,
+    foreground_draws: &[EvidenceCompleteRuntimeCastDraw],
+    foreground_submission: &[EvidenceMergedRuntimeTargetCommand],
+    foreground_textures: Option<&SrdD3d9TextureSet>,
+    foreground_fennel_atlases: &BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    foreground_fennel_atlas_routes: &BTreeMap<u32, FennelAtlasRoute>,
+    external: SrdDx9ExternalContext,
+    render_fennel: bool,
+    render_number: bool,
+) -> windows::core::Result<()> {
+    if let Some(background) = common_background {
+        render_runtime_target_submission(
+            srd_renderer,
+            fennel_renderer.as_deref_mut(),
+            &background.draws,
+            &background.submission,
+            background.textures.as_ref(),
+            &background.fennel_atlases,
+            &background.fennel_atlas_routes,
+            external,
+            render_fennel,
+            render_number,
+        )?;
+    }
+    render_runtime_target_submission(
+        srd_renderer,
+        fennel_renderer,
+        foreground_draws,
+        foreground_submission,
+        foreground_textures,
+        foreground_fennel_atlases,
+        foreground_fennel_atlas_routes,
+        external,
+        render_fennel,
+        render_number,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1846,6 +2212,7 @@ impl ApplicationHandler for EditorApplication {
                                 chusan_player_host: self.chusan_player_host,
                             },
                             self.document_path.clone(),
+                            self.common_background_path.clone(),
                         )
                     })
             });
@@ -2031,6 +2398,26 @@ mod tests {
             parse_runtime_smoke_argument(&["--srd-runtime-smoke=0,1,2,3".to_string()]).is_err()
         );
         assert!(parse_runtime_smoke_argument(&["--srd-runtime-smoke=x,1,2".to_string()]).is_err());
+    }
+
+    #[test]
+    fn common_background_layer_argument_requires_one_nonempty_path() {
+        let arguments = vec!["--common-background-layer=D:\\data\\Common.srd".to_string()];
+        assert_eq!(
+            parse_common_background_layer_argument(&arguments).unwrap(),
+            Some(PathBuf::from("D:\\data\\Common.srd"))
+        );
+        assert!(
+            parse_common_background_layer_argument(&["--common-background-layer=".to_string()])
+                .is_err()
+        );
+        assert!(
+            parse_common_background_layer_argument(&[
+                "--common-background-layer=A.srd".to_string(),
+                "--common-background-layer=B.srd".to_string(),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

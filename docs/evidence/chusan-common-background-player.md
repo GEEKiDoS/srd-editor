@@ -62,3 +62,5 @@ Common 与 Advertise 一样满足：
 - 100 个逻辑 source 全部仍可从 9 个 record 反查，不发生丢失或跨 key 合并。
 
 该已闭环的 null lookup 路径中，`srd_renderer_configure_project_camera` 不进入 Width/Height/Camera 分支，`SrRenderer+0x08/+0x48` 保持构造 identity；三维 ImageCast 把 world XYZ 写入顶点，packet `c0..c3` 使用该 identity，最终 MainScene Camera 只从 target-local ShapeEnv 写入 `c10..c13`。D3D9Ex smoke 覆盖完整 `1920x1080`，ResetEx 前后哈希一致。原二进制随后读取未初始化可见性矩形；Rust 预览在该边界跳过剔除，不伪造默认矩形。
+
+Common 与 Advertise 作为两个显式编辑器文档提交时的对象列表证据、独立资源边界和双层 D3D9Ex 回归见 [`chusan-common-foreground-composition.md`](chusan-common-foreground-composition.md)。具体 Common 文件与 ANMS 仍由用户选择，不从前景名称猜测。
