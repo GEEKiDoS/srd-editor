@@ -3,6 +3,7 @@ use std::fmt;
 use crate::animation::RuntimeAnimationState;
 use crate::csli::{add_color_saturating_game, multiply_color_game};
 use crate::image::{ImageDefinition, RuntimeImageState};
+use crate::projection::{Matrix4x4, inverse_matrix4x4_game};
 use crate::reference::ReferenceAnimationRequest;
 use crate::scene::{AnimationSetDefinition, Layer, Project, ReferenceTarget, SceneError};
 use crate::texture::TextureList;
@@ -706,6 +707,7 @@ impl ProjectRuntime {
         &self,
         project: &Project,
         first_calc_matrix: Affine3x4,
+        renderer_inverse_camera_view: Affine3x4,
     ) -> Result<ProjectRuntimeWorldStates, SceneError> {
         let mut project_worlds = Vec::with_capacity(project.scenes.len());
         for (scene_index, scene) in project.scenes.iter().enumerate() {
@@ -741,6 +743,7 @@ impl ProjectRuntime {
                     &runtime_layer.cast_transforms,
                     layer_world,
                     layer.is_2d(),
+                    renderer_inverse_camera_view,
                 )?;
                 scene_worlds.push(RuntimeLayerWorldStates {
                     owner: ReferenceLayerParent::ProjectLayer(source),
@@ -799,6 +802,7 @@ impl ProjectRuntime {
                 &runtime_layer.cast_transforms,
                 layer_world,
                 instance.is_2d,
+                renderer_inverse_camera_view,
             )?;
             result.references.push(RuntimeLayerWorldStates {
                 owner: ReferenceLayerParent::ReferenceInstance(instance_index),
@@ -941,24 +945,29 @@ fn compose_runtime_cast_world_states(
     transforms: &[SpatialTransform],
     layer_world: RuntimeWorldState,
     is_2d: bool,
+    renderer_inverse_camera_view: Affine3x4,
 ) -> Result<Vec<RuntimeWorldState>, SceneError> {
-    let matrices = layer.compose_world_matrices_with_runtime_mode_and_csli_layout(
-        transforms,
-        layer_world.matrix,
-        is_2d,
-        false,
-    )?;
+    if transforms.len() != layer.nodes.len() {
+        return Err(SceneError(format!(
+            "world composition needs {} transforms, got {}",
+            layer.nodes.len(),
+            transforms.len()
+        )));
+    }
+    let offsets = layer.compute_parent_csli_offsets()?;
     let hierarchy = layer.build_hierarchy()?;
     let mut result = vec![RuntimeWorldState::default(); layer.nodes.len()];
     for &root in &hierarchy.roots {
         compose_runtime_cast_world_state_node(
             layer,
             transforms,
-            &matrices,
+            &offsets,
             &hierarchy.children,
             root,
             layer_world,
             layer_world,
+            is_2d,
+            renderer_inverse_camera_view,
             &mut result,
         );
     }
@@ -969,19 +978,29 @@ fn compose_runtime_cast_world_states(
 fn compose_runtime_cast_world_state_node(
     layer: &Layer,
     transforms: &[SpatialTransform],
-    matrices: &[Affine3x4],
+    offsets: &[[f32; 2]],
     children: &[Vec<usize>],
     index: usize,
     layer_world: RuntimeWorldState,
     parent: RuntimeWorldState,
+    is_2d: bool,
+    renderer_inverse_camera_view: Affine3x4,
     output: &mut [RuntimeWorldState],
 ) {
     let flags = layer.nodes[index].type_flags.unwrap_or(0);
     let local = transforms[index];
+    let local_matrix = build_local_matrix(&local, is_2d, false, offsets[index]);
+    let matrix = compose_cast_matrix_game(
+        parent.matrix,
+        local_matrix,
+        flags,
+        is_2d,
+        renderer_inverse_camera_view,
+    );
     let visible =
         local.is_visible() && layer_world.visible && (flags & 0x400 == 0 || parent.visible);
     let world = RuntimeWorldState {
-        matrix: matrices[index],
+        matrix,
         multiply_color: if flags & 0x200 != 0 {
             multiply_color_game(parent.multiply_color, local.multiply_color)
         } else {
@@ -1000,13 +1019,81 @@ fn compose_runtime_cast_world_state_node(
         compose_runtime_cast_world_state_node(
             layer,
             transforms,
-            matrices,
+            offsets,
             children,
             child,
             layer_world,
             world,
+            is_2d,
+            renderer_inverse_camera_view,
             output,
         );
+    }
+    if flags & 0x0100_0000 != 0 && flags & 0x0007_0000 == 0x0001_0000 {
+        output[index].matrix.rows[2][3] = 0.0;
+    }
+}
+
+fn compose_cast_matrix_game(
+    parent: Affine3x4,
+    local: Affine3x4,
+    flags: u32,
+    is_2d: bool,
+    renderer_inverse_camera_view: Affine3x4,
+) -> Affine3x4 {
+    let mut world = parent.mul_game(local);
+    let matrix_kind = flags & 0x0007_0000;
+    if matrix_kind == 0 {
+        return world;
+    }
+
+    let translation = [world.rows[0][3], world.rows[1][3], world.rows[2][3]];
+    let inverse_parent = inverse_affine_via_matrix4x4_game(parent);
+    if is_2d {
+        world = inverse_parent.mul_game(world);
+        if flags & 0x0100_0000 != 0 {
+            let scale_x = (((parent.rows[0][0] * parent.rows[0][0])
+                + (parent.rows[1][0] * parent.rows[1][0]))
+                + parent.rows[2][0] * parent.rows[2][0])
+                .sqrt();
+            let scale_y = (((parent.rows[0][1] * parent.rows[0][1])
+                + (parent.rows[1][1] * parent.rows[1][1]))
+                + parent.rows[2][1] * parent.rows[2][1])
+                .sqrt();
+            let scale = Affine3x4 {
+                rows: [
+                    [scale_x, 0.0, 0.0, 0.0],
+                    [0.0, scale_y, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                ],
+            };
+            world = scale.mul_game(world);
+        }
+        world = renderer_inverse_camera_view.mul_game(world);
+    } else {
+        world = match matrix_kind {
+            0x0002_0000 => world.mul_game(inverse_parent),
+            0x0003_0000 | 0x0004_0000 | 0x0005_0000 => world,
+            _ => renderer_inverse_camera_view.mul_game(inverse_parent.mul_game(world)),
+        };
+    }
+    world.rows[0][3] = translation[0];
+    world.rows[1][3] = translation[1];
+    world.rows[2][3] = translation[2];
+    world
+}
+
+fn inverse_affine_via_matrix4x4_game(matrix: Affine3x4) -> Affine3x4 {
+    let inverse = inverse_matrix4x4_game(&Matrix4x4 {
+        rows: [
+            matrix.rows[0],
+            matrix.rows[1],
+            matrix.rows[2],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    });
+    Affine3x4 {
+        rows: [inverse.rows[0], inverse.rows[1], inverse.rows[2]],
     }
 }
 
@@ -1122,6 +1209,82 @@ mod tests {
             }],
             fonts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn matrix_kind_10000_removes_parent_basis_and_keeps_world_translation() {
+        let parent = Affine3x4 {
+            rows: [
+                [2.0, 0.0, 0.0, 10.0],
+                [0.0, 3.0, 0.0, 20.0],
+                [0.0, 0.0, 1.0, 30.0],
+            ],
+        };
+        let local = Affine3x4 {
+            rows: [
+                [4.0, 0.0, 0.0, 1.0],
+                [0.0, 5.0, 0.0, 2.0],
+                [0.0, 0.0, 1.0, 3.0],
+            ],
+        };
+        let renderer_inverse_camera_view = Affine3x4 {
+            rows: [
+                [7.0, 0.0, 0.0, 100.0],
+                [0.0, 11.0, 0.0, 200.0],
+                [0.0, 0.0, 1.0, 300.0],
+            ],
+        };
+        assert_eq!(
+            compose_cast_matrix_game(
+                parent,
+                local,
+                0x0001_0000,
+                true,
+                renderer_inverse_camera_view,
+            ),
+            Affine3x4 {
+                rows: [
+                    [28.0, 0.0, 0.0, 12.0],
+                    [0.0, 55.0, 0.0, 26.0],
+                    [0.0, 0.0, 1.0, 33.0],
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn matrix_modifier_keeps_parent_axis_lengths_and_zeroes_only_own_final_z() {
+        let mut special = layer(b"special", true, vec![None, None]);
+        special.nodes[0].type_flags = Some(3 | 0x0001_0000 | 0x0100_0000);
+        special.nodes[0].first_child_index = 1;
+        special.transforms[0] = RawTransform::Trs2(SpatialTransform {
+            translation: [0.0, 0.0, 5.0],
+            ..SpatialTransform::default()
+        });
+        special.transforms[1] = RawTransform::Trs2(SpatialTransform {
+            translation: [0.0, 0.0, 2.0],
+            ..SpatialTransform::default()
+        });
+        let project = project(vec![special]);
+        let runtime = ProjectRuntime::new(&project).unwrap();
+        let worlds = runtime
+            .compose_world_states(
+                &project,
+                Affine3x4 {
+                    rows: [
+                        [2.0, 0.0, 0.0, 10.0],
+                        [0.0, 3.0, 0.0, 20.0],
+                        [0.0, 0.0, 1.0, 30.0],
+                    ],
+                },
+                Affine3x4::IDENTITY,
+            )
+            .unwrap();
+        let casts = &worlds.project_layers[0][0].casts;
+        assert_eq!(casts[0].matrix.rows[0][0], 2.0);
+        assert_eq!(casts[0].matrix.rows[1][1], 3.0);
+        assert_eq!(casts[0].matrix.rows[2][3], 0.0);
+        assert_eq!(casts[1].matrix.rows[2][3], 37.0);
     }
 
     #[test]
@@ -1452,7 +1615,7 @@ mod tests {
         runtime.references.layers[0].local.transform.additive_color = [250, 240, 230, 220];
 
         let worlds = runtime
-            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
             .unwrap();
         let copied = &worlds.references[0];
         assert!(copied.is_2d);
@@ -1480,7 +1643,7 @@ mod tests {
 
         runtime.project_layers[0][0].enabled = false;
         let gated = runtime
-            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
             .unwrap();
         assert!(gated.references[0].layer.visible);
         assert!(!gated.references[0].layer.render_gate);
@@ -1509,7 +1672,7 @@ mod tests {
         runtime.references.layers[0].local.transform.translation[1] = 3.0;
 
         let copied = runtime
-            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
             .unwrap()
             .references
             .remove(0);

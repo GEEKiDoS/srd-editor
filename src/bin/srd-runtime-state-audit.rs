@@ -52,6 +52,19 @@ struct StaticAuditSummary {
     stencil_first: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct SpecialMatrixAuditSummary {
+    layer_count: usize,
+    flagged_node_count: usize,
+    flag_counts: BTreeMap<u32, usize>,
+    full_flag_counts: BTreeMap<u32, usize>,
+    billboard_modifier_count: usize,
+    billboard_modifier_mode_counts: BTreeMap<&'static str, usize>,
+    layer_mode_counts: BTreeMap<&'static str, usize>,
+    affected_cast_type_counts: BTreeMap<u8, usize>,
+    first: Option<String>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let root = arguments
@@ -136,9 +149,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut potential_outside_collection =
         BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>::new();
     let mut static_summary = StaticAuditSummary::default();
+    let mut special_matrix_summary = SpecialMatrixAuditSummary::default();
+    let mut initial_runtime_draw_count = 0usize;
+    let mut initial_runtime_special_layer_draw_count = 0usize;
+    let mut initial_runtime_flagged_node_draw_count = 0usize;
 
     for (file_index, path) in files.iter().enumerate() {
         let document = EditorDocument::load(path)?;
+        audit_special_matrix_layers(path, &document, &mut special_matrix_summary);
         let base_runtime = ProjectRuntime::new(&document.project)?;
         audit_potential_shader_keys(
             path,
@@ -150,6 +168,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             &mut potential_outside_collection,
             &mut static_summary,
         )?;
+        for scene_index in 0..document.project.scenes.len() {
+            let draws = build_evidence_complete_runtime_srd_draws_from_runtime(
+                &document.project,
+                &document.textures,
+                scene_index,
+                host,
+                &base_runtime,
+            )?;
+            for draw in &draws {
+                let (state, _, _) = srd_state(draw);
+                initial_runtime_draw_count += 1;
+                let layer = &document.project.scenes[state.scene_index].layers[state.layer_index];
+                if layer
+                    .nodes
+                    .iter()
+                    .any(|node| node.type_flags.unwrap_or(0) & 0x0007_0000 != 0)
+                {
+                    initial_runtime_special_layer_draw_count += 1;
+                }
+                if layer.nodes[state.node_index].type_flags.unwrap_or(0) & 0x0007_0000 != 0 {
+                    initial_runtime_flagged_node_draw_count += 1;
+                }
+            }
+        }
         if !exhaustive_integer_frames {
             continue;
         }
@@ -233,8 +275,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("files={}", files.len());
     println!(
+        "special_matrix_layers={} flagged_nodes={} flags={:?} full_flags={:?} modifier_01000000={} modifier_modes={:?} layer_modes={:?} affected_cast_types={:?} first={}",
+        special_matrix_summary.layer_count,
+        special_matrix_summary.flagged_node_count,
+        special_matrix_summary.flag_counts,
+        special_matrix_summary.full_flag_counts,
+        special_matrix_summary.billboard_modifier_count,
+        special_matrix_summary.billboard_modifier_mode_counts,
+        special_matrix_summary.layer_mode_counts,
+        special_matrix_summary.affected_cast_type_counts,
+        special_matrix_summary.first.as_deref().unwrap_or("none")
+    );
+    println!(
         "initial_node_contexts={} image/slice/number={:?}",
         static_summary.node_context_count, static_summary.type_counts
+    );
+    println!(
+        "initial_runtime_draws={} draws_in_special_layers={} draws_from_flagged_nodes={}",
+        initial_runtime_draw_count,
+        initial_runtime_special_layer_draw_count,
+        initial_runtime_flagged_node_draw_count
     );
     println!(
         "initial_direct_shader_keys={} unpacked={} outside_game_collection={}",
@@ -330,6 +390,64 @@ fn main() -> Result<(), Box<dyn Error>> {
         alpha_test_first.as_ref().map_or("none".into(), describe)
     );
     Ok(())
+}
+
+fn audit_special_matrix_layers(
+    path: &Path,
+    document: &EditorDocument,
+    summary: &mut SpecialMatrixAuditSummary,
+) {
+    for (scene_index, scene) in document.project.scenes.iter().enumerate() {
+        for (layer_index, layer) in scene.layers.iter().enumerate() {
+            let flagged = layer
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(node_index, node)| {
+                    let full_flags = node.type_flags.unwrap_or(0);
+                    let matrix_flags = full_flags & 0x0007_0000;
+                    (matrix_flags != 0).then_some((node_index, matrix_flags, full_flags))
+                })
+                .collect::<Vec<_>>();
+            if flagged.is_empty() {
+                continue;
+            }
+            summary.layer_count += 1;
+            summary.flagged_node_count += flagged.len();
+            *summary
+                .layer_mode_counts
+                .entry(if layer.is_2d() { "2d" } else { "3d" })
+                .or_insert(0) += 1;
+            for (_, matrix_flags, full_flags) in &flagged {
+                *summary.flag_counts.entry(*matrix_flags).or_insert(0) += 1;
+                *summary.full_flag_counts.entry(*full_flags).or_insert(0) += 1;
+                if full_flags & 0x0100_0000 != 0 {
+                    summary.billboard_modifier_count += 1;
+                    *summary
+                        .billboard_modifier_mode_counts
+                        .entry(if layer.is_2d() { "2d" } else { "3d" })
+                        .or_insert(0) += 1;
+                }
+            }
+            for node in &layer.nodes {
+                if let Some(cast_type) = node.cast_type() {
+                    *summary
+                        .affected_cast_type_counts
+                        .entry(cast_type)
+                        .or_insert(0) += 1;
+                }
+            }
+            summary.first.get_or_insert_with(|| {
+                format!(
+                    "{} SCN[{}]/LAYR[{}] flagged={:?}",
+                    path.display(),
+                    scene_index,
+                    layer_index,
+                    flagged
+                )
+            });
+        }
+    }
 }
 
 /// Returns the last integer frame needed to cover every distinct combination

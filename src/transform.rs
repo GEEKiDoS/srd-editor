@@ -141,6 +141,51 @@ impl Affine3x4 {
         Self { rows: result }
     }
 
+    /// Reproduces the affine inverse routine at `0x60B2A0`. The game uses an
+    /// explicit 3x3 cofactor inverse, falls back to an identity linear part
+    /// when `abs(det) <= 2^-23`, and still applies the resulting linear part
+    /// to the original translation.
+    pub fn inverse_game(self) -> Self {
+        let m00 = self.rows[0][0];
+        let m01 = self.rows[0][1];
+        let m02 = self.rows[0][2];
+        let m10 = self.rows[1][0];
+        let m11 = self.rows[1][1];
+        let m12 = self.rows[1][2];
+        let m20 = self.rows[2][0];
+        let m21 = self.rows[2][1];
+        let m22 = self.rows[2][2];
+
+        let determinant = (((m00 * m11) * m22 + (m01 * m12) * m20) + (m02 * m10) * m21)
+            - (m00 * m12) * m21
+            - (m10 * m01) * m22
+            - (m02 * m11) * m20;
+        let mut result = Self::IDENTITY;
+        if determinant.abs() > f32::from_bits(0x3400_0000) {
+            let reciprocal = 1.0 / determinant;
+            result.rows[0][0] = (m22 * m11 - m21 * m12) * reciprocal;
+            result.rows[0][1] = (m21 * m02 - m22 * m01) * reciprocal;
+            result.rows[0][2] = (m12 * m01 - m11 * m02) * reciprocal;
+            result.rows[1][0] = (m20 * m12 - m22 * m10) * reciprocal;
+            result.rows[1][1] = (m22 * m00 - m20 * m02) * reciprocal;
+            result.rows[1][2] = (m10 * m02 - m12 * m00) * reciprocal;
+            result.rows[2][0] = (m21 * m10 - m20 * m11) * reciprocal;
+            result.rows[2][1] = (m20 * m01 - m21 * m00) * reciprocal;
+            result.rows[2][2] = (m11 * m00 - m10 * m01) * reciprocal;
+        }
+
+        let tx = self.rows[0][3];
+        let ty = self.rows[1][3];
+        let tz = self.rows[2][3];
+        result.rows[0][3] =
+            (-result.rows[0][0] * tx - result.rows[0][1] * ty) - tz * result.rows[0][2];
+        result.rows[1][3] =
+            (-result.rows[1][0] * tx - result.rows[1][1] * ty) - result.rows[1][2] * tz;
+        result.rows[2][3] =
+            (-tx * result.rows[2][0] - result.rows[2][1] * ty) - tz * result.rows[2][2];
+        result
+    }
+
     /// Applies the exact scalar grouping used by `srd_render_image_cast`
     /// before its CPU-transformed positions are copied into format 14 vertices.
     pub fn transform_point_game(self, point: [f32; 3]) -> [f32; 3] {
@@ -401,6 +446,48 @@ mod tests {
                     [2.0, 0.0, 0.0, 11.0],
                     [0.0, 3.0, 0.0, 22.0],
                     [0.0, 0.0, 4.0, 33.0],
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn affine_inverse_matches_the_game_cofactor_path() {
+        let matrix = Affine3x4 {
+            rows: [
+                [2.0, 0.0, 0.0, 10.0],
+                [0.0, 4.0, 0.0, 20.0],
+                [0.0, 0.0, 5.0, 30.0],
+            ],
+        };
+        assert_eq!(
+            matrix.inverse_game(),
+            Affine3x4 {
+                rows: [
+                    [0.5, 0.0, 0.0, -5.0],
+                    [0.0, 0.25, 0.0, -5.0],
+                    [0.0, 0.0, 0.2, -6.0],
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn affine_inverse_singular_fallback_still_negates_translation() {
+        let matrix = Affine3x4 {
+            rows: [
+                [0.0, 0.0, 0.0, 10.0],
+                [0.0, 0.0, 0.0, 20.0],
+                [0.0, 0.0, 0.0, 30.0],
+            ],
+        };
+        assert_eq!(
+            matrix.inverse_game(),
+            Affine3x4 {
+                rows: [
+                    [1.0, 0.0, 0.0, -10.0],
+                    [0.0, 1.0, 0.0, -20.0],
+                    [0.0, 0.0, 1.0, -30.0],
                 ]
             }
         );

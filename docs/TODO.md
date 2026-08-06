@@ -14,7 +14,7 @@ Advertise/Common 的空 property 2 已闭环为 null lookup：Scene 管理器构
 
 ## Fennel 行元数据与剩余 effect/crop 输入
 
-静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记、fresh mode 1 的 `0x08` X/Y 联动 auto-fit、fresh mode 5/6 的 `0x4000` 垂直截止关闭、flags `0x200` 的固定 cell 度量/尾部 X 居中修正、`sub_7C90A0` 尾部 record-limit 返回值，以及 TextBoxObject `+0x12C/+0x34C` 的锁步行元数据已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` normal/effect glyph 的 bearing origin、effective scale、2D matrix 顺序，以及 `sub_7C10B0` 的无裁剪/裁剪 UV 重映射两套顶点同样已实现。CATR `FontParamData` 的顺序解析、实际 mode、低位 flags、monospaced、clip 与 shadow 已接入；完整 1292 条 RFZ TEXT 的实际 mode 为 `0:1173, 2:12, 4:107`，真实语料有 551 个初始可见 2D draw、34326 个顶点，Advertise 像素回归仍为 40920 个 changed pixels。
+静态 `sub_7C1F90` 的自动断行、两张固定表、空格候选、二次纵向 pass、独立 TextBox `+0x108`、`-254` 标记、fresh mode 1 的 `0x08` X/Y 联动 auto-fit、fresh mode 5/6 的 `0x4000` 垂直截止关闭、flags `0x200` 的固定 cell 度量/尾部 X 居中修正、`sub_7C90A0` 尾部 record-limit 返回值，以及 TextBoxObject `+0x12C/+0x34C` 的锁步行元数据已经实现；`sub_7C0D40` 的负记录过滤、`-254` 立即停止、静态 maximum=-1、texture token 分组、normal/effect 计数和初始 17 桶前向链顺序也已实现；`sub_7C7F90` normal/effect glyph 的 bearing origin、effective scale、2D matrix 顺序，以及 `sub_7C10B0` 的无裁剪/裁剪 UV 重映射两套顶点同样已实现。CATR `FontParamData` 的顺序解析、实际 mode、低位 flags、monospaced、clip 与 shadow 已接入；特殊 CAST matrix 已并入相同 runtime world composition。完整 1292 条 RFZ TEXT 的实际 mode 为 `0:1173, 2:12, 4:107`，真实语料有 557 个初始可见 2D draw、35466 个顶点，Advertise 像素回归仍为 40920 个 changed pixels。
 
 尚未闭合：
 

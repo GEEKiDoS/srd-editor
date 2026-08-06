@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::attribute::CastAttributeValue;
-use crate::csli::{
-    SliceQuad, add_color_saturating_game, build_slice_render_quad, multiply_color_game,
-    slice_vertex_colors,
-};
+use crate::csli::{SliceQuad, build_slice_render_quad, multiply_color_game, slice_vertex_colors};
 use crate::fennel::{
     FENNEL_DEFAULT_D_VALUE, FENNEL_DEFAULT_REPEAT_SPACE_COUNT, FennelFontSlotRegistry,
     FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelRenderVertex,
@@ -44,7 +41,7 @@ use crate::target_pass::{
     build_evidence_srd_scene_submission_indices,
 };
 use crate::texture::{TextureList, TextureSamplerState};
-use crate::transform::{Affine3x4, SpatialTransform};
+use crate::transform::Affine3x4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SrdDrawError(pub String);
@@ -886,13 +883,6 @@ impl SrdHostDrawContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct InitialWorldColorState {
-    multiply: [u8; 4],
-    additive: [u8; 4],
-    visible: bool,
-}
-
 /// Builds only the initial ImageCast subset whose complete Simple shader pair
 /// and packet/device inputs are proven. TEXT, explicit texture overrides,
 /// special CAST matrix branches, alpha-test/stencil base contexts and
@@ -977,8 +967,13 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
     host: SrdHostDrawContext,
     runtime: &ProjectRuntime,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
+    let renderer_inverse_camera_view = renderer_inverse_camera_view(project, host);
     let worlds = runtime
-        .compose_world_states(project, host.first_calc_matrix)
+        .compose_world_states(
+            project,
+            host.first_calc_matrix,
+            renderer_inverse_camera_view,
+        )
         .map_err(|error| SrdDrawError(error.to_string()))?;
     if project.scenes.get(scene_index).is_none() {
         return Err(SrdDrawError(format!(
@@ -999,9 +994,6 @@ fn build_evidence_complete_reference_image_draws_from_runtime(
         .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
-        if reject_special_matrix_branches(layer).is_err() {
-            continue;
-        }
         let layer_worlds = worlds.layer(entry.owner).ok_or_else(|| {
             SrdDrawError(format!(
                 "runtime draw owner {:?} has no composed world state",
@@ -1227,8 +1219,13 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
     runtime_text_inputs: &BTreeMap<FennelRuntimeTextCastKey, FennelSrdRuntimeTextInput>,
     runtime: &ProjectRuntime,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
+    let renderer_inverse_camera_view = renderer_inverse_camera_view(project, host);
     let worlds = runtime
-        .compose_world_states(project, host.first_calc_matrix)
+        .compose_world_states(
+            project,
+            host.first_calc_matrix,
+            renderer_inverse_camera_view,
+        )
         .map_err(|error| SrdDrawError(error.to_string()))?;
     if project.scenes.get(scene_index).is_none() {
         return Err(SrdDrawError(format!(
@@ -1245,9 +1242,6 @@ fn build_evidence_complete_reference_fennel_draws_from_runtime(
         .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
-        if reject_special_matrix_branches(layer).is_err() {
-            continue;
-        }
         let layer_worlds = worlds.layer(entry.owner).ok_or_else(|| {
             SrdDrawError(format!(
                 "runtime draw owner {:?} has no composed world state",
@@ -1416,8 +1410,13 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
     runtime: &ProjectRuntime,
     include_fennel: bool,
 ) -> Result<Vec<EvidenceCompleteRuntimeCastDraw>, SrdDrawError> {
+    let renderer_inverse_camera_view = renderer_inverse_camera_view(project, host);
     let worlds = runtime
-        .compose_world_states(project, host.first_calc_matrix)
+        .compose_world_states(
+            project,
+            host.first_calc_matrix,
+            renderer_inverse_camera_view,
+        )
         .map_err(|error| SrdDrawError(error.to_string()))?;
     if project.scenes.get(scene_index).is_none() {
         return Err(SrdDrawError(format!(
@@ -1437,9 +1436,6 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
         .map_err(|error| SrdDrawError(error.to_string()))?
     {
         let layer = &project.scenes[entry.source.scene_index].layers[entry.source.layer_index];
-        if reject_special_matrix_branches(layer).is_err() {
-            continue;
-        }
         let layer_worlds = worlds.layer(entry.owner).ok_or_else(|| {
             SrdDrawError(format!(
                 "runtime draw owner {:?} has no composed world state",
@@ -1561,6 +1557,32 @@ fn build_evidence_complete_fennel_draws_impl(
     runtime_text_inputs: Option<&BTreeMap<(usize, usize), FennelSrdRuntimeTextInput>>,
 ) -> Result<Vec<EvidenceCompleteFennelDraw>, SrdDrawError> {
     validate_host_draw_context(host)?;
+    let mut composition_runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    if let Some(runtime_layers) = runtime_layers {
+        let destination = composition_runtime
+            .project_layers
+            .get_mut(scene_index)
+            .ok_or_else(|| {
+                SrdDrawError(format!("scene index {scene_index} is outside the runtime"))
+            })?;
+        if destination.len() != runtime_layers.len() {
+            return Err(SrdDrawError(format!(
+                "SCN[{scene_index}] has {} runtime layers, expected {}",
+                runtime_layers.len(),
+                destination.len()
+            )));
+        }
+        destination.clone_from_slice(runtime_layers);
+    }
+    let renderer_inverse_camera_view = renderer_inverse_camera_view(project, host);
+    let composed_worlds = composition_runtime
+        .compose_world_states(
+            project,
+            host.first_calc_matrix,
+            renderer_inverse_camera_view,
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
     let scene = project
         .scenes
         .get(scene_index)
@@ -1583,24 +1605,18 @@ fn build_evidence_complete_fennel_draws_impl(
         let layer_enabled = runtime_layer
             .map(|runtime_layer| runtime_layer.enabled)
             .unwrap_or(layer.flags & 0x100 != 0);
-        if !layer_enabled || !layer.is_2d() || reject_special_matrix_branches(layer).is_err() {
+        if !layer_enabled || !layer.is_2d() {
             continue;
         }
-        let transforms = runtime_layer.map_or_else(
-            || {
-                layer
-                    .transforms
-                    .iter()
-                    .copied()
-                    .map(|transform| transform.spatial())
-                    .collect::<Vec<_>>()
-            },
-            |runtime_layer| runtime_layer.cast_transforms.clone(),
-        );
-        let world_matrices = layer
-            .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
-            .map_err(|error| SrdDrawError(error.to_string()))?;
-        let world_colors = compose_initial_world_colors(layer, &transforms, layer_enabled)?;
+        let layer_worlds = composed_worlds
+            .project_layers
+            .get(scene_index)
+            .and_then(|layers| layers.get(layer_index))
+            .ok_or_else(|| {
+                SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}] has no composed runtime world state"
+                ))
+            })?;
         let cast_layer_keys = layer
             .compose_runtime_cast_layer_keys(host.renderer_layer_key)
             .map_err(|error| SrdDrawError(error.to_string()))?;
@@ -1615,8 +1631,8 @@ fn build_evidence_complete_fennel_draws_impl(
             let Some(text) = image.text.as_ref() else {
                 continue;
             };
-            let world_color = world_colors[node_index];
-            if !world_color.visible {
+            let cast_world = layer_worlds.casts[node_index];
+            if !cast_world.render_gate {
                 continue;
             }
             let font_index = usize::try_from(text.font_index.unwrap_or(-1)).map_err(|_| {
@@ -1661,7 +1677,7 @@ fn build_evidence_complete_fennel_draws_impl(
             let positions = image
                 .build_quad_with_geometry(image_state.geometry, true)
                 .positions
-                .map(|point| world_matrices[node_index].transform_point_game(point));
+                .map(|point| cast_world.matrix.transform_point_game(point));
             if !runtime_cast_passes_renderer_visibility(positions, true, project_screen.as_ref())? {
                 continue;
             }
@@ -1681,9 +1697,9 @@ fn build_evidence_complete_fennel_draws_impl(
                 .coordinate_state(ImageReferenceChannel::Cref)
                 .vertex_colors;
             let primary_rgba = [0usize, 2, 1, 3].map(|source_index| {
-                multiply_color_game(source_colors[source_index], world_color.multiply)
+                multiply_color_game(source_colors[source_index], cast_world.multiply_color)
             });
-            let secondary_rgba = premultiply_additive_color_game(world_color.additive);
+            let secondary_rgba = premultiply_additive_color_game(cast_world.additive_color);
             if !force_color_update
                 && !secondary_rgba[..3].iter().any(|component| *component != 0)
                 && !primary_rgba.iter().any(|color| color[3] != 0)
@@ -1843,7 +1859,7 @@ fn build_evidence_complete_fennel_draws_impl(
                     ],
                     textbox_scale: [properties.layout.scale_x, properties.layout.scale_y],
                     textbox_vertical_offset: layout.layout.textbox_vertical_offset,
-                    textbox_transform: affine_to_matrix4x4(world_matrices[node_index]),
+                    textbox_transform: affine_to_matrix4x4(cast_world.matrix),
                     secondary_color,
                     // `sub_7C04F0` restores the original word after a fit
                     // guard relayout and draws with that original clip state.
@@ -2234,6 +2250,20 @@ fn renderer_project_camera_bridge(project: &Project, host: SrdHostDrawContext) -
         .runtime_matrices(target.render_size[0] as f32)
         .projection_view;
     mul_matrix4x4_game(&external_inverse, &srd_projection_view)
+}
+
+fn renderer_inverse_camera_view(project: &Project, host: SrdHostDrawContext) -> Affine3x4 {
+    let Some(target) = host.renderer_project_target else {
+        return Affine3x4::IDENTITY;
+    };
+    let view = project
+        .camera
+        .runtime_matrices(target.render_size[0] as f32)
+        .view;
+    Affine3x4 {
+        rows: [view.rows[0], view.rows[1], view.rows[2]],
+    }
+    .inverse_game()
 }
 
 fn renderer_project_screen_matrix(
@@ -2804,6 +2834,32 @@ fn build_evidence_complete_image_draws(
     runtime_layers: Option<&[ProjectLayerRuntimeState]>,
 ) -> Result<Vec<EvidenceCompleteSrdDraw>, SrdDrawError> {
     validate_host_draw_context(host)?;
+    let mut composition_runtime = ProjectRuntime::new(project)
+        .map_err(|error| SrdDrawError(format!("failed to construct SRD runtime: {error}")))?;
+    if let Some(runtime_layers) = runtime_layers {
+        let destination = composition_runtime
+            .project_layers
+            .get_mut(scene_index)
+            .ok_or_else(|| {
+                SrdDrawError(format!("scene index {scene_index} is outside the runtime"))
+            })?;
+        if destination.len() != runtime_layers.len() {
+            return Err(SrdDrawError(format!(
+                "SCN[{scene_index}] has {} runtime layers, expected {}",
+                runtime_layers.len(),
+                destination.len()
+            )));
+        }
+        destination.clone_from_slice(runtime_layers);
+    }
+    let renderer_inverse_camera_view = renderer_inverse_camera_view(project, host);
+    let composed_worlds = composition_runtime
+        .compose_world_states(
+            project,
+            host.first_calc_matrix,
+            renderer_inverse_camera_view,
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
     let scene = project
         .scenes
         .get(scene_index)
@@ -2834,24 +2890,15 @@ fn build_evidence_complete_image_draws(
             continue;
         }
         let is_2d = layer.is_2d();
-        let transforms = runtime_layer.map_or_else(
-            || {
-                layer
-                    .transforms
-                    .iter()
-                    .copied()
-                    .map(|transform| transform.spatial())
-                    .collect::<Vec<_>>()
-            },
-            |runtime_layer| runtime_layer.cast_transforms.clone(),
-        );
-        if reject_special_matrix_branches(layer).is_err() {
-            continue;
-        }
-        let world_matrices = layer
-            .compose_world_matrices_with_csli_layout(&transforms, host.first_calc_matrix, false)
-            .map_err(|error| SrdDrawError(error.to_string()))?;
-        let world_colors = compose_initial_world_colors(layer, &transforms, layer_enabled)?;
+        let layer_worlds = composed_worlds
+            .project_layers
+            .get(scene_index)
+            .and_then(|layers| layers.get(layer_index))
+            .ok_or_else(|| {
+                SrdDrawError(format!(
+                    "SCN[{scene_index}]/LAYR[{layer_index}] has no composed runtime world state"
+                ))
+            })?;
 
         for node_index in 0..layer.nodes.len() {
             let Some(image) = layer.image_by_node[node_index]
@@ -2860,8 +2907,8 @@ fn build_evidence_complete_image_draws(
             else {
                 continue;
             };
-            let world_color = world_colors[node_index];
-            if !world_color.visible {
+            let cast_world = layer_worlds.casts[node_index];
+            if !cast_world.render_gate {
                 continue;
             }
 
@@ -2968,7 +3015,7 @@ fn build_evidence_complete_image_draws(
                 .build_quad_with_geometry(image_state.geometry, is_2d)
                 .positions;
             let positions =
-                local_positions.map(|point| world_matrices[node_index].transform_point_game(point));
+                local_positions.map(|point| cast_world.matrix.transform_point_game(point));
             if !runtime_cast_passes_renderer_visibility(positions, is_2d, project_screen.as_ref())?
             {
                 continue;
@@ -2978,8 +3025,8 @@ fn build_evidence_complete_image_draws(
                 image_state.coordinate_state(ImageReferenceChannel::Cref),
                 slots.channels[0],
                 slots.channels[1],
-                world_color.multiply,
-                world_color.additive,
+                cast_world.multiply_color,
+                cast_world.additive_color,
             );
             let mut raster = CeylonRasterState::default();
             raster.apply_draw_packet(packet);
@@ -3007,82 +3054,6 @@ fn build_evidence_complete_image_draws(
     Ok(draws)
 }
 
-fn reject_special_matrix_branches(layer: &Layer) -> Result<(), SrdDrawError> {
-    for (node_index, node) in layer.nodes.iter().enumerate() {
-        let flags = node.type_flags.unwrap_or(0);
-        if flags & 0x0007_0000 != 0 {
-            return Err(SrdDrawError(format!(
-                "NODE[{node_index}] uses unimplemented CAST matrix flags {:#x}",
-                flags & 0x0007_0000
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn compose_initial_world_colors(
-    layer: &Layer,
-    transforms: &[SpatialTransform],
-    layer_enabled: bool,
-) -> Result<Vec<InitialWorldColorState>, SrdDrawError> {
-    let hierarchy = layer
-        .build_hierarchy()
-        .map_err(|error| SrdDrawError(error.to_string()))?;
-    let mut result = vec![
-        InitialWorldColorState {
-            multiply: [255; 4],
-            additive: [0; 4],
-            visible: false,
-        };
-        layer.nodes.len()
-    ];
-    let layer_world = InitialWorldColorState {
-        multiply: [255; 4],
-        additive: [0; 4],
-        visible: layer_enabled,
-    };
-    for &root in &hierarchy.roots {
-        compose_initial_world_color_node(
-            layer,
-            transforms,
-            &hierarchy.children,
-            root,
-            layer_world,
-            &mut result,
-        );
-    }
-    Ok(result)
-}
-
-fn compose_initial_world_color_node(
-    layer: &Layer,
-    transforms: &[SpatialTransform],
-    children: &[Vec<usize>],
-    index: usize,
-    parent: InitialWorldColorState,
-    output: &mut [InitialWorldColorState],
-) {
-    let flags = layer.nodes[index].type_flags.unwrap_or(0);
-    let local = transforms[index];
-    let world = InitialWorldColorState {
-        multiply: if flags & 0x200 != 0 {
-            multiply_color_game(parent.multiply, local.multiply_color)
-        } else {
-            local.multiply_color
-        },
-        additive: if flags & 0x0008_0000 != 0 {
-            add_color_saturating_game(parent.additive, local.additive_color)
-        } else {
-            local.additive_color
-        },
-        visible: local.is_visible() && (flags & 0x400 == 0 || parent.visible),
-    };
-    output[index] = world;
-    for &child in &children[index] {
-        compose_initial_world_color_node(layer, transforms, children, child, world, output);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3095,6 +3066,7 @@ mod tests {
     use crate::scene::{NodeRecord, RawTransform, Scene};
     use crate::text::{FontDefinition, TextDefinition};
     use crate::texture::{TextureCrop, TextureDefinition};
+    use crate::transform::SpatialTransform;
 
     fn text_image(node_index: i32, font_index: i32) -> ImageDefinition {
         ImageDefinition {

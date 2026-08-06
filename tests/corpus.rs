@@ -725,7 +725,7 @@ fn common_background_runtime_keeps_the_shipped_alpha_test_image_path() {
             .map(|draw| String::from_utf8_lossy(&draw.shader_key))
             .collect::<Vec<_>>()
     );
-    assert_eq!(alpha_test.len(), 8);
+    assert_eq!(alpha_test.len(), 13);
     assert_eq!(
         alpha_test
             .iter()
@@ -733,6 +733,11 @@ fn common_background_runtime_keeps_the_shipped_alpha_test_image_path() {
             .collect::<Vec<_>>(),
         (10..=17)
             .map(|node_index| (5, node_index))
+            .chain(
+                [35, 36, 52, 53, 58]
+                    .into_iter()
+                    .map(|node_index| (1, node_index))
+            )
             .collect::<Vec<_>>()
     );
     assert!(
@@ -1460,11 +1465,11 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
     assert!(copied_reference_draw_count > 0);
     assert!(reference_vertex_count >= vertex_count);
     if profile == CorpusProfile::Complete91 {
-        assert_eq!(draw_count, 551);
-        assert_eq!(vertex_count, 34_326);
-        assert_eq!(reference_draw_count, 1_155);
-        assert_eq!(copied_reference_draw_count, 604);
-        assert_eq!(reference_vertex_count, 54_504);
+        assert_eq!(draw_count, 557);
+        assert_eq!(vertex_count, 35_466);
+        assert_eq!(reference_draw_count, 1_228);
+        assert_eq!(copied_reference_draw_count, 671);
+        assert_eq!(reference_vertex_count, 58_488);
     }
 }
 
@@ -1686,11 +1691,11 @@ fn audits_initial_slice_and_number_runtime_draws_in_the_real_corpus() {
     eprintln!(
         "{profile:?}: NumberGlyph draws={number_glyph_draw_count}, copied={copied_number_glyph_draw_count}, 3D={three_d_number_glyph_draw_count}, modes={number_animation_modes:?}, shader keys={number_shader_key_strings:?}, samples={number_samples:?}"
     );
-    assert_eq!(cell_draw_count, 3_745);
-    assert_eq!(copied_cell_draw_count, 1_314);
-    assert_eq!(textured_cell_draw_count, 3_564);
-    assert_eq!(untextured_cell_draw_count, 181);
-    assert_eq!(three_d_cell_draw_count, 858);
+    assert_eq!(cell_draw_count, 4_884);
+    assert_eq!(copied_cell_draw_count, 1_395);
+    assert_eq!(textured_cell_draw_count, 4_686);
+    assert_eq!(untextured_cell_draw_count, 198);
+    assert_eq!(three_d_cell_draw_count, 1_362);
     assert_eq!(
         shader_keys,
         BTreeSet::from([
@@ -1707,15 +1712,16 @@ fn audits_initial_slice_and_number_runtime_draws_in_the_real_corpus() {
         cell_draw_count,
         textured_cell_draw_count + untextured_cell_draw_count
     );
-    assert_eq!(number_glyph_draw_count, 2_216);
-    assert_eq!(copied_number_glyph_draw_count, 1_936);
+    assert_eq!(number_glyph_draw_count, 2_696);
+    assert_eq!(copied_number_glyph_draw_count, 2_223);
     assert_eq!(three_d_number_glyph_draw_count, 6);
-    assert_eq!(number_animation_modes, BTreeSet::from([0]));
+    assert_eq!(number_animation_modes, BTreeSet::from([0, 1]));
     assert_eq!(
         number_shader_keys,
         BTreeSet::from([
             FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
             FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+            *b"EAEBABBAADGAAAAAAA",
         ])
     );
 }
@@ -2682,7 +2688,7 @@ fn reference_runtime_construction_converges_for_the_local_corpus() {
         let runtime = ProjectRuntime::new(&project)
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         let worlds = runtime
-            .compose_world_states(&project, Affine3x4::IDENTITY)
+            .compose_world_states(&project, Affine3x4::IDENTITY, Affine3x4::IDENTITY)
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         assert_eq!(worlds.references.len(), plan.instances.len());
         for world in worlds

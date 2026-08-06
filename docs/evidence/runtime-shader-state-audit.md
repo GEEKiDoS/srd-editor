@@ -45,6 +45,15 @@ the original collection; the other 197 already have exact packaged collection
 shaders. SrImage alpha/stencil fields are not animation targets, so CREF/CRE1
 animation does not turn the zero authored stencil result into a stencil path.
 
+The same tool now audits special CAST matrix coverage before any runtime host
+scan. All 1,226 flagged nodes use matrix kind `0x10000`; 134 also carry the
+independent `0x01000000` modifier, all in 2D runtime layers. The 101 affected
+layers contain 10,369 CASTs. After the executable-derived matrix branch was
+implemented, the complete initial runtime emits 21,136 Image/Slice/Number
+draws: 5,124 come from those layers and 1,155 directly from flagged nodes.
+The exact matrix and camera evidence is recorded in
+[`special-cast-matrix.md`](special-cast-matrix.md).
+
 The optional `--integer-frames` mode uses fresh runtime state for each frame.
 It reduces repeated tails exactly: non-wrapped tracks are constant after their
 last range end, while wrapped integer-frame tracks repeat after the least
@@ -62,17 +71,20 @@ AdvertiseLogo / CHU_UI_Advertise_00_v10.srd
   stencil=0, alpha-test=0
 
 CommonBackGround / CHU_UI_Common_BK_00_v11.srd
-  ANMS=10, covered frames=19580, draws=2644127
+  ANMS=10, covered frames=19580, draws=2683732
   distinct keys=6, unpackaged=0, outside collection=0
-  texture masks: none=51599, slot0=2454566, slot0+slot1=137962
+  texture masks: none=75532, slot0=2470238, slot0+slot1=137962
   stencil=0
-  alpha-test draws=8248, exact key AAEBABBAABCBAAAAAA
+  alpha-test draws=13403, exact key AAEBABBAABCBAAAAAA
 ```
 
-For Common `ANMS[1] blue_in`, frame `1`, the alpha-test path is exactly eight
-Image draws at `LAYR[5]/NODE[10..17]`. A corpus regression fixes that count,
-node sequence and key. The D3D9Ex smoke submits all 561 Image/Slice sources and
-then submits those eight alpha-test sources alone; both ResetEx passes succeed.
+For Common `ANMS[1] blue_in`, frame `1`, the alpha-test path is exactly thirteen
+Image draws: `LAYR[5]/NODE[10..17]` followed by
+`LAYR[1]/NODE[35,36,52,53,58]`. The second group belongs to a 3D layer whose
+`NODE[2]` uses matrix kind `0x10000`; the old whole-layer rejection hid these
+five normal Image nodes. A corpus regression fixes the complete count, node
+sequence and key. The D3D9Ex smoke submits the full Image/Slice stream and then
+submits those thirteen alpha-test sources alone; both ResetEx passes succeed.
 The alpha-test-only readback changes zero RGB pixels at that frame, which is
 recorded rather than treated as a failure: successful packet/shader submission
 and final visibility are separate facts, and later/failed-alpha pixels must not

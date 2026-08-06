@@ -363,7 +363,7 @@ TextBoxObject 构造函数 `sub_7BEB80` 请求至少 11 个桶，prime table 首
 
 Rust 现在要求 `build_evidence_complete_initial_fennel_draws` 接收已经包含宿主先存资源的 `FennelFontSlotRegistry`。TextCast 主字体从该 registry 取得初始全局 slot；`$F[n]` 按 `n as u16` 查询同一 registry，裸 `$F` 回到主 slot。内部 glyph token 用 `(slot, code)` 的无碰撞组合维持 layout/vertex 两阶段查找，runtime glyph 自身仍携带调用方提供的不透明 texture token。编辑器为每个已上传的 `(RFZ 资源, atlas page)` 分配唯一 token，并保存 token 到实际 `RuhunaD3d9AtlasSet/page` 的路由；提交时逐 batch 选择对应字体和页面，不再使用会在不同字体间冲突的 `page+1` 约定。
 
-游戏 texture handle 的绝对数值来自进程内 renderer 资源项，不由 SRD/RFZ 文件决定；它与更早存在的宿主纹理生命周期一样属于外部运行时输入。Rust 精确保留 handle equality、32 位 wrapping hash、batch 顺序和路由语义，但不声称编辑器自行分配的数值等于某次原版进程的资源 handle。真实 RFZ 专项测试构造主字体、`$F[n]` 第二字体和裸 `$F` 复位，确认输出 batch 同时命中两个字体各自的 atlas token。完整 91 文件语料当前没有 `$F` token；接入 FontParam mode/shadow 后的初始帧回归为 551 draw/34326 vertices。
+游戏 texture handle 的绝对数值来自进程内 renderer 资源项，不由 SRD/RFZ 文件决定；它与更早存在的宿主纹理生命周期一样属于外部运行时输入。Rust 精确保留 handle equality、32 位 wrapping hash、batch 顺序和路由语义，但不声称编辑器自行分配的数值等于某次原版进程的资源 handle。真实 RFZ 专项测试构造主字体、`$F[n]` 第二字体和裸 `$F` 复位，确认输出 batch 同时命中两个字体各自的 atlas token。完整 91 文件语料当前没有 `$F` token；接入 FontParam mode/shadow 与特殊 CAST matrix 后的初始帧回归为 557 draw/35466 vertices。
 
 ### FontManager 固定断行字符表
 
@@ -434,7 +434,7 @@ TextBox +0x2CC = max(float(+0x134) * float(FC), 0)
 
 Rust 的 `prepare_fennel_srd_runtime_text`、`build_fennel_srd_repeated_text` 与 `prepare_fennel_srd_draw` 已分别固化上述文本、辅助串和位移/重排版决策；无法证明的 `atoi` 溢出不会伪造 CRT 结果，而是显式报错。`measure_fennel_srd_text_size_mode0` 进一步按 `sub_7BFAB0` 的 batch 遍历、maximum 截止、bearing/correction、scale、effect-origin 选择和正向最大值比较生成实际几何尺寸；draw-list 现在会按 TextBox 的真实对象状态选择原串、循环串或 `flags & 0xFFFF835F` 的原串二次排版，并在 fit guard 后恢复原 flags 作裁剪/绘制。`build_evidence_complete_fennel_draws_with_runtime_text` 接受每个 `(layer,node)` 的 8 个替换槽、default D、repeat-space count 与当前精确 `F4`；它不会把编辑器 animation frame 猜成游戏 host clock。initial 包装器仍在遇到 `$[0]..$[7]` 时明确拒绝，而不是假定空替换值。
 
-完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 输入 `+0x2C4=0`，两轴 draw offset 精确为零。完整 91 文件回归仍为 551 draw/34326 vertices，Advertise D3D9Ex 像素哈希仍为 `7B466FC4B4E0EC9A`。动画集 Fennel API 已复用 ProjectRuntime 的 layer enable、CAST transform/color 与 SrImage geometry；project layer/Cast vector/RefCast 结构递归、copied layer 独立 Image/Text draw、runtime gate、mixed CAST 顺序、命名-target 可见性剔除和 target planner 均已接线。右侧 Properties 以 `(runtime owner, NODE)` 保存显式替换/scroll 输入。剩余边界是何种已证明的游戏宿主事件驱动 `F4` 累加，以及尚未闭合的 3D TextCast 与特殊布局路径。
+完整语料的 scroll 三元组有六种，但解码后的 1,292 个 TEXT 中 `$D/$L` 都为 0；因此首帧 `F4=0`、maximum glyphs=`-1`，mode 2/4 的 fmod 输入 `+0x2C4=0`，两轴 draw offset 精确为零。完整 91 文件回归为 557 draw/35466 vertices，Advertise D3D9Ex 像素哈希仍为 `7B466FC4B4E0EC9A`。动画集 Fennel API 已复用 ProjectRuntime 的 layer enable、CAST transform/color、特殊 matrix 与 SrImage geometry；project layer/Cast vector/RefCast 结构递归、copied layer 独立 Image/Text draw、runtime gate、mixed CAST 顺序、命名-target 可见性剔除和 target planner 均已接线。右侧 Properties 以 `(runtime owner, NODE)` 保存显式替换/scroll 输入。剩余边界是何种已证明的游戏宿主事件驱动 `F4` 累加，以及尚未闭合的 3D TextCast 与特殊布局路径。
 
 `sub_7C7F90` 的 `record+0x0C & 0x40000` 第二组 effect glyph 下游也已闭合：
 
@@ -525,7 +525,7 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 此前直接用全局 RenderState reset 默认值 `1`（`D3DCULL_CCW`）会把 Fennel 的右上→左上→左下三角形全部剔除，导致顶点、alpha 和 viewport 均正常但 Composition 没有任何 changed pixel。这个失败只用于定位，最终实现使用上述二进制闭环得到的 `D3DCULL_CW`，没有保留诊断性的 `CULL_NONE`。
 
-真实语料初始帧审计得到 551 个可见 2D Fennel draw、34326 个顶点。独立 `--srd-fennel-smoke` 对 `CHU_UI_Advertise_00_v10.srd` 仍为 1 draw、834 vertices、两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
+真实语料初始帧审计得到 557 个可见 2D Fennel draw、35466 个顶点。独立 `--srd-fennel-smoke` 对 `CHU_UI_Advertise_00_v10.srd` 仍为 1 draw、834 vertices、两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
 
 普通编辑器路径现已不再停留于该独立 smoke。对用户截图对应的 scene 0、`AS_warning_in`、frame 24、AdvertiseLogo/MainScene、present `1080x1920`、screenParam `1920x1080`，统一 runtime builder 精确产生 22 个 source、2 个 target group，其中 20 个是 Fennel source、共 3072 个字体顶点；这 20 个 source 的 packet/layer/atlas token 相同，现已物理拼成一次 3072 顶点 triangle-list draw。隐藏 `--srd-runtime-smoke=0,0,24` 在同一个 Composition pass 中先渲染完整 Image/Slice/Number/Fennel stream，再关闭 Fennel 重绘并比较 RGB；两次（强制 `ResetEx` 前后）均有 73588 个像素因这条合并 list 而变化。这证明文字已经进入正常预览的 D3D9Ex target stream，而不是只在字体专项窗口中成立。
 

@@ -108,7 +108,7 @@ glyph 记录只在 `mapped_index < CREF count` 的 signed 比较成立时建立�
 
 纹理绑定与 UV 的两个时点也已区分：`srd_render_number_cast` 在进入 history 前，以当前 CREF/CRE1 descriptor 各解析一次并调用 `srd_select_render_texture_pair`，因此整次 NumberCast 共用这两个 packet texture slot；每 glyph 随后只用 `srd_set_image_reference_index` 替换 CREF selector 并清除该 descriptor 的显式矩形标志，再重建两组 UV，不重新绑定 texture。Rust 的 `NumberGlyph` runtime draw 保留该公共 binding 与逐 glyph UV 的差异，并保存 glyph/segment 身份、每次 packet 与 renderer layer key。
 
-本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。完整 91 文件统一 runtime 语料得到 2216 个实际 NumberGlyph draw，其中 1936 个来自 reference copy、6 个为 3D；只出现 `AAEBABBAABGAAAAAAA` 与 `EAEBABBAABGAAAAAAA` 两个已经验证的单贴图 shader key。完整语料所有 CNUM `0x90` 均为 `0`；该 mode 在每次 append 前清空旧 history，所以 shipped corpus 始终走上述单记录提交，不需要用未证明的历史插值代替。
+本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。接入特殊 CAST matrix 后，完整 91 文件统一 runtime 语料得到 2696 个实际 NumberGlyph draw，其中 2223 个来自 reference copy、6 个为 3D；实际可达的 value animation mode 为 `0/1`，精确出现 `AAEBABBAABGAAAAAAA`、`EAEBABBAABGAAAAAAA` 与 `EAEBABBAADGAAAAAAA` 三个已经验证的单贴图 shader key。mode 0 在每次 append 前清空旧 history；mode 1 的新增可达实例由完整语料回归固定，不用未证明的历史插值代替。
 
 固定 D3D9Ex 回归使用 `common/time/CHU_UI_Time_00_v10.srd`、scene 0、`AnimationSet1`、frame 0 与 CommonBackground/MainScene 宿主。runtime stream 为 10 个 draw、4 个 target group，其中 3 个 NumberGlyph source；关闭 NumberGlyph 后 Composition 有 2369 个 RGB 像素变化，强制 `ResetEx` 前后相同。
 

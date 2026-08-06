@@ -148,8 +148,12 @@ world = parent_world * local
 
 Rust `Layer::build_hierarchy` 已按该首子/同级链构建 parents、children 和 roots，并通过全部 53 个样本回归。
 
+特殊矩阵 flags 的 parent inverse、SRD Camera inverse View、2D parent-axis scale
+保留、3D switch、translation 恢复与递归后 Z 清零已经闭环，详见
+[`special-cast-matrix.md`](special-cast-matrix.md)。
+
 ## 尚未闭环
 
 - `srd_compute_parent_csli_cell_offset` 的 SrSliceCast 尺寸、origin、显式单元累计、2D flags 分支与公式均已闭环并由 Rust 从 SRD 数据自行计算。
 - TRS packed color、公共通道 `9/19/21/22` 及父子颜色组合已经实现。
-- CAST 专属动画通道 `11..17/20/23`、引用资源递归实例化及投影/视口映射已闭环；剩余工作是完整 layer animation 对象、特殊矩阵 flags 和最终 D3D9 状态提交。
+- CAST 专属动画通道 `11..17/20/23`、引用资源递归实例化、特殊矩阵 flags 及投影/视口映射已闭环；剩余工作是完整 layer animation 对象和最终 D3D9 状态提交。
