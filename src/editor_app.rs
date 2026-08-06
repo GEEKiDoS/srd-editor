@@ -693,6 +693,7 @@ impl EditorWindow {
                         fennel_atlas_routes,
                         composition_external,
                         true,
+                        true,
                     )
                 })
                 .map_err(|error| format!("Runtime target composition draw failed: {error}"))?;
@@ -709,66 +710,134 @@ impl EditorWindow {
                     )
                 })
                 .count();
-            if fennel_sources == 0 {
-                return Err("runtime smoke target stream contains no Fennel batch".to_string());
+            let number_sources = self
+                .runtime_submission
+                .iter()
+                .flat_map(|command| &command.sources)
+                .filter(|source| {
+                    matches!(
+                        source,
+                        EvidenceRuntimeTargetCommandSource::NumberGlyph { .. }
+                    )
+                })
+                .count();
+            if fennel_sources == 0 && number_sources == 0 {
+                return Err(
+                    "runtime smoke target stream contains neither Fennel nor NumberGlyph sources"
+                        .to_string(),
+                );
             }
             self.d3d9.end_scene().map_err(|error| error.to_string())?;
-            let with_fennel = self
+            let complete = self
                 .srd_renderer
                 .as_ref()
                 .ok_or_else(|| "runtime smoke lost the Composition renderer".to_string())?
                 .read_composition_bgra()
                 .map_err(|error| format!("runtime smoke readback failed: {error}"))?;
-            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
-            {
-                let runtime_draws = &self.runtime_draws;
-                let runtime_submission = &self.runtime_submission;
-                let srd_textures = self.srd_textures.as_ref();
-                let fennel_renderer = self.fennel_renderer.as_mut();
-                let fennel_atlases = &self.fennel_atlases;
-                let fennel_atlas_routes = &self.fennel_atlas_routes;
-                let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
-                    "runtime smoke lost the Composition renderer during comparison".to_string()
-                })?;
-                renderer
-                    .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
-                        render_runtime_target_submission(
-                            renderer,
-                            fennel_renderer,
-                            runtime_draws,
-                            runtime_submission,
-                            srd_textures,
-                            fennel_atlases,
-                            fennel_atlas_routes,
-                            composition_external,
-                            false,
-                        )
-                    })
-                    .map_err(|error| {
-                        format!("runtime smoke no-Fennel comparison draw failed: {error}")
+            if fennel_sources != 0 {
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let runtime_draws = &self.runtime_draws;
+                    let runtime_submission = &self.runtime_submission;
+                    let srd_textures = self.srd_textures.as_ref();
+                    let fennel_renderer = self.fennel_renderer.as_mut();
+                    let fennel_atlases = &self.fennel_atlases;
+                    let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during Fennel comparison"
+                            .to_string()
                     })?;
-            }
-            self.d3d9.end_scene().map_err(|error| error.to_string())?;
-            let without_fennel = self
-                .srd_renderer
-                .as_ref()
-                .ok_or_else(|| "runtime smoke lost its comparison target".to_string())?
-                .read_composition_bgra()
-                .map_err(|error| format!("runtime smoke comparison readback failed: {error}"))?;
-            let fennel_changed_pixels = with_fennel
-                .bgra
-                .chunks_exact(4)
-                .zip(without_fennel.bgra.chunks_exact(4))
-                .filter(|(with, without)| with[..3] != without[..3])
-                .count();
-            if fennel_changed_pixels == 0 {
-                return Err(
-                    "runtime smoke Fennel batches changed no Composition RGB pixels".to_string(),
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_runtime_target_submission(
+                                renderer,
+                                fennel_renderer,
+                                runtime_draws,
+                                runtime_submission,
+                                srd_textures,
+                                fennel_atlases,
+                                fennel_atlas_routes,
+                                composition_external,
+                                false,
+                                true,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke no-Fennel comparison draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let comparison = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| "runtime smoke lost its Fennel comparison target".to_string())?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!("runtime smoke Fennel comparison readback failed: {error}")
+                    })?;
+                let changed_pixels = runtime_rgb_difference(&complete.bgra, &comparison.bgra);
+                if changed_pixels == 0 {
+                    return Err(
+                        "runtime smoke Fennel batches changed no Composition RGB pixels"
+                            .to_string(),
+                    );
+                }
+                eprintln!(
+                    "runtime target Fennel sources={fennel_sources} changed_pixels={changed_pixels}"
                 );
             }
-            eprintln!(
-                "runtime target Fennel sources={fennel_sources} changed_pixels={fennel_changed_pixels}"
-            );
+            if number_sources != 0 {
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let runtime_draws = &self.runtime_draws;
+                    let runtime_submission = &self.runtime_submission;
+                    let srd_textures = self.srd_textures.as_ref();
+                    let fennel_renderer = self.fennel_renderer.as_mut();
+                    let fennel_atlases = &self.fennel_atlases;
+                    let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during Number comparison"
+                            .to_string()
+                    })?;
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_runtime_target_submission(
+                                renderer,
+                                fennel_renderer,
+                                runtime_draws,
+                                runtime_submission,
+                                srd_textures,
+                                fennel_atlases,
+                                fennel_atlas_routes,
+                                composition_external,
+                                true,
+                                false,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke no-Number comparison draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let comparison = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| "runtime smoke lost its Number comparison target".to_string())?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!("runtime smoke Number comparison readback failed: {error}")
+                    })?;
+                let changed_pixels = runtime_rgb_difference(&complete.bgra, &comparison.bgra);
+                if changed_pixels == 0 {
+                    return Err(
+                        "runtime smoke NumberGlyph draws changed no Composition RGB pixels"
+                            .to_string(),
+                    );
+                }
+                eprintln!(
+                    "runtime target NumberGlyph sources={number_sources} changed_pixels={changed_pixels}"
+                );
+            }
             self.d3d9.begin_scene().map_err(|error| error.to_string())?;
         }
         if !self.srd_draws.is_empty()
@@ -1116,6 +1185,7 @@ impl EditorWindow {
             .filter_map(|draw| match draw {
                 EvidenceCompleteRuntimeCastDraw::Image(draw) => Some(draw),
                 EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => Some(&cell.draw),
+                EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => Some(&glyph.draw),
                 EvidenceCompleteRuntimeCastDraw::Fennel(_) => None,
             })
             .flat_map(|draw| draw.texture_bindings.iter().flatten())
@@ -1428,6 +1498,7 @@ fn render_runtime_target_submission(
     atlas_routes: &BTreeMap<u32, FennelAtlasRoute>,
     external: SrdDx9ExternalContext,
     render_fennel: bool,
+    render_number: bool,
 ) -> windows::core::Result<()> {
     for command in submission {
         for source in &command.sources {
@@ -1453,6 +1524,20 @@ fn render_runtime_target_submission(
                         ));
                     };
                     srd_renderer.render(std::slice::from_ref(&cell.draw), external, textures)?;
+                }
+                EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index } => {
+                    if !render_number {
+                        continue;
+                    }
+                    let Some(EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph)) =
+                        draws.get(runtime_draw_index)
+                    else {
+                        return Err(windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target NumberGlyph source does not match its draw",
+                        ));
+                    };
+                    srd_renderer.render(std::slice::from_ref(&glyph.draw), external, textures)?;
                 }
                 EvidenceRuntimeTargetCommandSource::FennelBatch {
                     runtime_draw_index,
@@ -1610,6 +1695,13 @@ struct CompositionReadbackDiagnostic {
     max_x: u32,
     max_y: u32,
     fnv1a64: u64,
+}
+
+fn runtime_rgb_difference(left: &[u8], right: &[u8]) -> usize {
+    left.chunks_exact(4)
+        .zip(right.chunks_exact(4))
+        .filter(|(left, right)| left[..3] != right[..3])
+        .count()
 }
 
 fn analyze_composition_readback(
@@ -1799,6 +1891,13 @@ mod tests {
         assert_eq!(result.changed_pixels, 2);
         assert_eq!([result.min_x, result.min_y], [0, 1]);
         assert_eq!([result.max_x, result.max_y], [1, 1]);
+    }
+
+    #[test]
+    fn runtime_rgb_difference_compares_only_color_channels() {
+        let left = [1, 2, 3, 0, 4, 5, 6, 7];
+        let right = [1, 2, 3, 255, 4, 5, 7, 7];
+        assert_eq!(runtime_rgb_difference(&left, &right), 1);
     }
 
     #[test]

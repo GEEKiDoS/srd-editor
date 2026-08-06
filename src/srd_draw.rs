@@ -20,6 +20,7 @@ use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
     premultiply_additive_color_game,
 };
+use crate::number::{NumberGlyphRecord, NumberGlyphSegment};
 use crate::projection::{
     Matrix4x4, cast_overlaps_render_target_game, compose_screen_matrix_game,
     identity_matrix4x4_game, inverse_matrix4x4_game, mul_matrix4x4_game,
@@ -104,6 +105,17 @@ pub struct EvidenceCompleteSliceCellDraw {
     pub draw: EvidenceCompleteSrdDraw,
 }
 
+/// One drawable glyph emitted by the first history record of a freshly
+/// constructed SrNumberCast. The binary calls `srd_begin_quad_draw` once per
+/// non-negative glyph mapping, so glyph identity remains part of the runtime
+/// stream even when adjacent packet records later merge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EvidenceCompleteNumberGlyphDraw {
+    pub glyph_index: i16,
+    pub segment: NumberGlyphSegment,
+    pub draw: EvidenceCompleteSrdDraw,
+}
+
 /// Draw payloads produced at each CAST render invocation. This preserves the
 /// runtime layer/CAST/RefCast recursion order, but it is not yet the later
 /// renderer target-queue sort/submission order.
@@ -111,6 +123,7 @@ pub struct EvidenceCompleteSliceCellDraw {
 pub enum EvidenceCompleteRuntimeCastDraw {
     Image(EvidenceCompleteSrdDraw),
     SliceCell(EvidenceCompleteSliceCellDraw),
+    NumberGlyph(EvidenceCompleteNumberGlyphDraw),
     Fennel(EvidenceCompleteFennelDraw),
 }
 
@@ -119,6 +132,7 @@ impl EvidenceCompleteRuntimeCastDraw {
         match self {
             Self::Image(draw) => draw.owner,
             Self::SliceCell(draw) => draw.draw.owner,
+            Self::NumberGlyph(draw) => draw.draw.owner,
             Self::Fennel(draw) => draw.owner,
         }
     }
@@ -127,6 +141,7 @@ impl EvidenceCompleteRuntimeCastDraw {
         match self {
             Self::Image(draw) => draw.node_index,
             Self::SliceCell(draw) => draw.draw.node_index,
+            Self::NumberGlyph(draw) => draw.draw.node_index,
             Self::Fennel(draw) => draw.node_index,
         }
     }
@@ -135,20 +150,25 @@ impl EvidenceCompleteRuntimeCastDraw {
         match self {
             Self::Image(draw) => draw.renderer_layer_key,
             Self::SliceCell(draw) => draw.draw.renderer_layer_key,
+            Self::NumberGlyph(draw) => draw.draw.renderer_layer_key,
             Self::Fennel(draw) => draw.renderer_layer_key,
         }
     }
 }
 
-/// One logical draw command before the still-open adjacent-packet merge. An
-/// image contributes one command; Fennel contributes one command per texture
-/// batch in the exact `sub_7C7F90` traversal order.
+/// One logical draw command before the adjacent-packet merge. Image, active
+/// Slice cell, and drawable Number glyph each contribute one format-14
+/// command; Fennel contributes one format-13 command per texture batch in the
+/// exact `sub_7C7F90` traversal order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceRuntimeTargetCommandSource {
     Image {
         runtime_draw_index: usize,
     },
     SliceCell {
+        runtime_draw_index: usize,
+    },
+    NumberGlyph {
         runtime_draw_index: usize,
     },
     FennelBatch {
@@ -297,6 +317,28 @@ fn build_evidence_adjacent_merge_commands(
                     vertex_count: 4,
                 });
             }
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => {
+                let draw = &glyph.draw;
+                validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
+                let textures = draw
+                    .texture_bindings
+                    .map(|binding| binding.map(EvidenceMergeTextureIdentity::Srd));
+                commands.push(EvidenceAdjacentMergeCommand {
+                    source: EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index },
+                    key: EvidenceAdjacentMergeKey {
+                        packet: draw.packet,
+                        renderer_layer_key: draw.renderer_layer_key,
+                        vertex_format: 14,
+                        primitive_type: 4,
+                        textures,
+                        packet_matrix_prefix: packet_matrix_prefix(
+                            draw.is_2d,
+                            draw.fixed_constants.vertex_c0_c3_world,
+                        ),
+                    },
+                    vertex_count: 4,
+                });
+            }
             EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
                 validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
                 let packet_matrix_prefix =
@@ -414,6 +456,14 @@ fn build_evidence_runtime_target_submission_impl(
                     sources
                         .push(EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index });
                     packets.push(cell.draw.packet);
+                }
+            }
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => {
+                if admits(glyph.draw.packet) {
+                    sources.push(EvidenceRuntimeTargetCommandSource::NumberGlyph {
+                        runtime_draw_index,
+                    });
+                    packets.push(glyph.draw.packet);
                 }
             }
             EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
@@ -1205,6 +1255,30 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             );
             continue;
         }
+        if layer.number_by_node[entry.node_index].is_some() {
+            let glyphs = build_evidence_complete_number_glyph_draws_for_runtime_cast(
+                textures,
+                entry.owner,
+                entry.source,
+                layer,
+                entry.node_index,
+                entry.renderer_layer_key,
+                layer_worlds.is_2d,
+                cast_world,
+                image_state,
+                host,
+                camera_bridge,
+                project_screen.as_ref(),
+                identity,
+                &mut packet_current_matrix,
+            )?;
+            draws.extend(
+                glyphs
+                    .into_iter()
+                    .map(EvidenceCompleteRuntimeCastDraw::NumberGlyph),
+            );
+            continue;
+        }
         let runtime_text_input = runtime_text_inputs.get(&FennelRuntimeTextCastKey {
             owner: entry.owner,
             node_index: entry.node_index,
@@ -1988,6 +2062,209 @@ fn runtime_image_state_for_owner(
             "runtime draw owner {owner:?} has no image state for NODE[{node_index}]"
         ))
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_evidence_complete_number_glyph_draws_for_runtime_cast(
+    textures: &TextureList,
+    owner: ReferenceLayerParent,
+    source: ReferenceTarget,
+    layer: &Layer,
+    node_index: usize,
+    renderer_layer_key: u32,
+    is_2d: bool,
+    world: RuntimeWorldState,
+    image_state: crate::image::RuntimeImageState,
+    host: SrdHostDrawContext,
+    camera_bridge: Matrix4x4,
+    project_screen: Option<&(Matrix4x4, [i32; 2])>,
+    identity: Matrix4x4,
+    packet_current_matrix: &mut Matrix4x4,
+) -> Result<Vec<EvidenceCompleteNumberGlyphDraw>, SrdDrawError> {
+    let Some(definition) = layer.number_by_node[node_index].as_ref() else {
+        return Ok(Vec::new());
+    };
+    if !world.visible || !world.render_gate {
+        return Ok(Vec::new());
+    }
+
+    let image = definition.image_base();
+    let cast_positions = image
+        .build_quad_with_geometry(image_state.geometry, is_2d)
+        .positions
+        .map(|point| world.matrix.transform_point_game(point));
+    if !runtime_cast_passes_renderer_visibility(cast_positions, is_2d, project_screen)? {
+        return Ok(Vec::new());
+    }
+
+    let preset = select_srd_image_render_preset(
+        image.flags,
+        image_state.render_preset_override,
+        false,
+    )
+    .ok_or_else(|| {
+        SrdDrawError(format!(
+            "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast does not select a proven render preset",
+            source.scene_index, source.layer_index
+        ))
+    })?;
+
+    // `srd_render_number_cast` selects the texture pair once from the current
+    // two SrImage descriptors before `srd_render_number_glyph` replaces only
+    // channel 0's selector for per-glyph UV construction.
+    let slots = image
+        .resolve_texture_slots(
+            &image_state,
+            textures,
+            crate::number::NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+            [false; 2],
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    let mut texture_bindings = [None; 3];
+    for (slot_index, destination) in texture_bindings.iter_mut().enumerate().take(2) {
+        match slots.slots[slot_index] {
+            Some(SrdTextureBindingSource::TextureList(texture_index)) => {
+                let sampler = slots.channels[slot_index].selected_sampler.ok_or_else(|| {
+                    SrdDrawError(format!(
+                        "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast texture slot {slot_index} has no proven sampler",
+                        source.scene_index, source.layer_index
+                    ))
+                })?;
+                *destination = Some(EvidenceSrdTextureBinding {
+                    texture_index,
+                    sampler,
+                });
+            }
+            Some(SrdTextureBindingSource::ExplicitOverride) => {
+                return Err(SrdDrawError(format!(
+                    "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast uses an unrecorded explicit texture override",
+                    source.scene_index, source.layer_index
+                )));
+            }
+            None => {}
+        }
+    }
+
+    let second_coordinates = image
+        .resolve_coordinates(
+            ImageReferenceChannel::Cre1,
+            image_state.coordinate_state(ImageReferenceChannel::Cre1),
+            textures,
+            crate::number::NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    let formatted = definition.initial_formatted_text();
+    let records = definition.first_history_render_records(&formatted, is_2d);
+    let renderer_layer_prefix = renderer_layer_key & !0xff;
+    let mut renderer_counter = renderer_layer_key as u8;
+    let mut draws = Vec::with_capacity(records.len());
+    for NumberGlyphRecord {
+        glyph_index,
+        is_digit: _,
+        segment,
+        mut quad,
+    } in records
+    {
+        if glyph_index < 0 {
+            continue;
+        }
+
+        let mut first_state = image_state.coordinate_state(ImageReferenceChannel::Cref);
+        first_state.reference_index = glyph_index;
+        first_state.uses_explicit_rectangle = false;
+        let first_coordinates = image
+            .resolve_coordinates(
+                ImageReferenceChannel::Cref,
+                first_state,
+                textures,
+                crate::number::NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+            )
+            .map_err(|error| SrdDrawError(error.to_string()))?;
+        quad.positions = quad
+            .positions
+            .map(|point| world.matrix.transform_point_game(point));
+        let render_quad = definition.build_glyph_render_quad(
+            quad,
+            first_state,
+            first_coordinates,
+            second_coordinates,
+            world.multiply_color,
+            world.additive_color,
+        );
+
+        let mut fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+            host.target_projection_view,
+            host.target_screen_size,
+        );
+        if is_2d {
+            fixed_constants.vertex_c0_c3_world = identity;
+            fixed_constants.vertex_c4_c7 = identity;
+            *packet_current_matrix = identity;
+        } else {
+            fixed_constants.vertex_c4_c7 = *packet_current_matrix;
+            fixed_constants.vertex_c0_c3_world = camera_bridge;
+            *packet_current_matrix = camera_bridge;
+        }
+
+        let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+        packet.set_render_preset_id(preset);
+        packet.set_srd_quad_is_2d(is_2d);
+        apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
+        apply_srd_image_alpha_stencil_packet_fields(
+            &mut packet,
+            image_state.field_10,
+            image_state.field_14,
+            image_state.field_18,
+            0,
+            &mut renderer_counter,
+        );
+        let glyph_renderer_layer_key = renderer_layer_prefix | u32::from(renderer_counter);
+        apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
+
+        let shader_key = packet
+            .srd_quad_shader_key(slots.texture_present())
+            .srd_simple_shader_direct_contributions()
+            .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
+            .compact_key();
+        if embedded_simple_shader_pair(&shader_key).is_none() {
+            return Err(SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast glyph {glyph_index} selects an unpackaged Simple shader key {:?}",
+                source.scene_index,
+                source.layer_index,
+                String::from_utf8_lossy(&shader_key)
+            )));
+        }
+        let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
+        if packet.flags_0c & 0x100 != 0 {
+            return Err(SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{node_index}] NumberCast glyph {glyph_index} requires the unported stencil sequence byte",
+                source.scene_index, source.layer_index
+            )));
+        }
+        let mut raster = CeylonRasterState::default();
+        raster.apply_draw_packet(packet);
+        draws.push(EvidenceCompleteNumberGlyphDraw {
+            glyph_index,
+            segment,
+            draw: EvidenceCompleteSrdDraw {
+                owner,
+                scene_index: source.scene_index,
+                layer_index: source.layer_index,
+                node_index,
+                is_2d,
+                renderer_layer_key: glyph_renderer_layer_key,
+                shader_key,
+                quad: render_quad,
+                packet,
+                fixed_constants,
+                blend,
+                raster,
+                depth: CeylonDepthState::from_draw_flags(packet.draw_flags_00),
+                texture_bindings,
+            },
+        });
+    }
+    Ok(draws)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3139,6 +3416,9 @@ mod tests {
                 EvidenceCompleteRuntimeCastDraw::SliceCell(_) => {
                     vec![EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index }]
                 }
+                EvidenceCompleteRuntimeCastDraw::NumberGlyph(_) => {
+                    vec![EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index }]
+                }
                 EvidenceCompleteRuntimeCastDraw::Fennel(draw) => (0..draw.batches.len())
                     .map(
                         |batch_index| EvidenceRuntimeTargetCommandSource::FennelBatch {
@@ -3200,6 +3480,7 @@ mod tests {
                 .map(|source| match *source {
                     EvidenceRuntimeTargetCommandSource::Image { .. } => 4,
                     EvidenceRuntimeTargetCommandSource::SliceCell { .. } => 4,
+                    EvidenceRuntimeTargetCommandSource::NumberGlyph { .. } => 4,
                     EvidenceRuntimeTargetCommandSource::FennelBatch {
                         runtime_draw_index,
                         batch_index,
@@ -3208,7 +3489,8 @@ mod tests {
                             draw.batches[batch_index].vertices.len()
                         }
                         EvidenceCompleteRuntimeCastDraw::Image(_)
-                        | EvidenceCompleteRuntimeCastDraw::SliceCell(_) => unreachable!(),
+                        | EvidenceCompleteRuntimeCastDraw::SliceCell(_)
+                        | EvidenceCompleteRuntimeCastDraw::NumberGlyph(_) => unreachable!(),
                     },
                 })
                 .sum::<usize>();
@@ -3233,6 +3515,7 @@ mod tests {
             let packet = match draw {
                 EvidenceCompleteRuntimeCastDraw::Image(draw) => draw.packet,
                 EvidenceCompleteRuntimeCastDraw::SliceCell(draw) => draw.draw.packet,
+                EvidenceCompleteRuntimeCastDraw::NumberGlyph(draw) => draw.draw.packet,
                 EvidenceCompleteRuntimeCastDraw::Fennel(draw) => draw.packet,
             };
             assert_eq!(packet.flags_60 & 0x2000, 0);

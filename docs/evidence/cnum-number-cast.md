@@ -104,10 +104,17 @@ glyph 记录只在 `mapped_index < CREF count` 的 signed 比较成立时建立�
 
 `NumberDefinition` 复现上述默认值、属性布局、CREF/CRE1 表、初始数值、格式化、字段访问、字符串宽度、逐字符 quad、glyph 过滤顺序和每 glyph 的 CREF/CRE1 坐标状态。`Layer::from_block` 根据 CNUM `0x51` 把定义连接到 NODE，并验证对应 NODE 的 cast type 为 `4`。
 
-本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。样本中的 `0x89` 为 `1..10`、`0x88` 为 `3`、`0x8B` 为 `0..4` 或 `10`；这些统计用于验证实现路径，不被提升为格式限制。
+首次 history 提交现已闭环。SrNumberCast 构造器把 `+0x228/+0x22C/+0x230` 的 56-byte history vector 清空；`srd_render_number_cast` 每次先调用 `srd_number_rebuild_glyph_geometry`，按 `0x90` 清理旧记录，再用 `srd_append_number_glyph_record` 追加当前记录。`srd_render_number_glyph_history` 在 history count `<= 1` 时不进入 pair blend，而以 alpha `1.0` 依次提交 sign 正序、integer 逆序、decimal-point 正序、fraction 正序。`srd_render_number_glyph` 对负 glyph 下标直接返回；其余每 glyph 各调用一次 `srd_begin_quad_draw`。
+
+纹理绑定与 UV 的两个时点也已区分：`srd_render_number_cast` 在进入 history 前，以当前 CREF/CRE1 descriptor 各解析一次并调用 `srd_select_render_texture_pair`，因此整次 NumberCast 共用这两个 packet texture slot；每 glyph 随后只用 `srd_set_image_reference_index` 替换 CREF selector 并清除该 descriptor 的显式矩形标志，再重建两组 UV，不重新绑定 texture。Rust 的 `NumberGlyph` runtime draw 保留该公共 binding 与逐 glyph UV 的差异，并保存 glyph/segment 身份、每次 packet 与 renderer layer key。
+
+本地 53 个 SRD 的回归测试解析并链接了 552 个 CNUM、5852 条 CREF 和 12 条 CRE1；初始格式化共生成 2192 个可绘制 glyph，2192 个 glyph 的 CREF 都能解析到 TEXL/CROP。完整 91 文件统一 runtime 语料得到 2216 个实际 NumberGlyph draw，其中 1936 个来自 reference copy、6 个为 3D；只出现 `AAEBABBAABGAAAAAAA` 与 `EAEBABBAABGAAAAAAA` 两个已经验证的单贴图 shader key。完整语料所有 CNUM `0x90` 均为 `0`；该 mode 在每次 append 前清空旧 history，所以 shipped corpus 始终走上述单记录提交，不需要用未证明的历史插值代替。
+
+固定 D3D9Ex 回归使用 `common/time/CHU_UI_Time_00_v10.srd`、scene 0、`AnimationSet1`、frame 0 与 CommonBackground/MainScene 宿主。runtime stream 为 10 个 draw、4 个 target group，其中 3 个 NumberGlyph source；关闭 NumberGlyph 后 Composition 有 2369 个 RGB 像素变化，强制 `ResetEx` 前后相同。
 
 ## 动画边界与仍未闭环
 
 - `srd_apply_animation_motion_set` 的完整调用边界和 `srd_apply_cast_animation_channels` 的穷尽 switch 已证明：ANIM/TRK 不存在另一组 Number 专用目标，`11..17/20` 只修改内嵌 SrImage，`23` 对 NumberCast 是虚表空操作。CNUM 数值、格式和布局字段不会由这条 ANIM 路径绑定；数值变化来自 `srd_number_cast_set_value_parts` 等外部调用路径；
-- `0x90` 各动画模式在 `srd_render_number_glyph_history` (`0xADED10`) 中对历史 glyph 的完整插值/裁剪行为；
-- `srd_render_number_cast` (`0xADE6C0`) 下游混合、深度/裁剪和 shader 状态；每个 glyph 的 36 字节顶点、双 UV、triangle strip 与 `DrawPrimitive` 参数已经闭环。
+- shipped corpus 未出现的 `0x90 = 1..8` 历史 glyph pair 插值/裁剪；实现不会把 mode 0 的单记录行为外推到这些模式；
+- 外部宿主调用 `srd_number_cast_set_value_parts` 后的编辑器输入接口；当前 fresh runtime 使用 CNUM 初值，ANIM/TRK 已证明不会修改数值字段；
+- packet stencil sequence 与 special-depth 的未完成公共边界；普通 mode-0 NumberGlyph 的混合、alpha、深度、裁剪、shader、纹理、36 字节顶点和 D3D9Ex 提交已经接入。

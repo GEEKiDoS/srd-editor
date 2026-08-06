@@ -575,11 +575,12 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
         CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(CHUSAN_MAIN_SCENE),
     )
     .unwrap();
-    let draw_type_counts = draws.iter().fold([0usize; 3], |mut counts, draw| {
+    let draw_type_counts = draws.iter().fold([0usize; 4], |mut counts, draw| {
         match draw {
             EvidenceCompleteRuntimeCastDraw::Image(_) => counts[0] += 1,
             EvidenceCompleteRuntimeCastDraw::SliceCell(_) => counts[1] += 1,
-            EvidenceCompleteRuntimeCastDraw::Fennel(_) => counts[2] += 1,
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(_) => counts[2] += 1,
+            EvidenceCompleteRuntimeCastDraw::Fennel(_) => counts[3] += 1,
         }
         counts
     });
@@ -587,7 +588,7 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
         merged
             .iter()
             .flat_map(|group| &group.sources)
-            .fold([0usize; 3], |mut counts, source| {
+            .fold([0usize; 4], |mut counts, source| {
                 match source {
                     srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::Image { .. } => {
                         counts[0] += 1
@@ -595,9 +596,12 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
                     srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::SliceCell {
                         ..
                     } => counts[1] += 1,
-                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::FennelBatch {
+                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::NumberGlyph {
                         ..
                     } => counts[2] += 1,
+                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::FennelBatch {
+                        ..
+                    } => counts[3] += 1,
                 }
                 counts
             });
@@ -615,10 +619,10 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
             .collect::<Vec<_>>(),
     );
     assert_eq!(draws.len(), 241);
-    assert_eq!(draw_type_counts, [100, 141, 0]);
+    assert_eq!(draw_type_counts, [100, 141, 0, 0]);
     assert_eq!(key_counts, BTreeMap::from([(0x8680, 241)]));
     assert_eq!(merged.len(), 10);
-    assert_eq!(merged_source_type_counts, [100, 141, 0]);
+    assert_eq!(merged_source_type_counts, [100, 141, 0, 0]);
     assert_eq!(
         merged
             .iter()
@@ -737,6 +741,75 @@ fn advertise_warning_frame_routes_fennel_into_the_runtime_target_stream() {
     assert_eq!(submission.len(), 2);
     assert_eq!(fennel_sources, 20);
     assert_eq!(fennel_vertices, 3_072);
+}
+
+#[test]
+fn time_animation_set_routes_number_glyphs_into_the_runtime_target_stream() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/common/time/CHU_UI_Time_00_v10.srd")).unwrap();
+    assert_eq!(
+        document.project.scenes[0].animation_sets[0].name,
+        b"AnimationSet1"
+    );
+    let host = CHUSAN_COMMON_BACKGROUND_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
+    let draws = build_evidence_complete_animation_set_runtime_cast_draws(
+        &document.project,
+        &document.textures,
+        0,
+        0,
+        0.0,
+        host,
+        &FennelFontSlotRegistry::default(),
+        &BTreeMap::new(),
+        false,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let submission = build_evidence_filtered_merged_runtime_target_submission(
+        &draws,
+        &CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap(),
+        CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(CHUSAN_MAIN_SCENE),
+    )
+    .unwrap();
+    let number_draws = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => Some(glyph),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let number_sources = submission
+        .iter()
+        .flat_map(|command| &command.sources)
+        .filter(|source| {
+            matches!(
+                source,
+                EvidenceRuntimeTargetCommandSource::NumberGlyph { .. }
+            )
+        })
+        .count();
+    eprintln!(
+        "Time AnimationSet1 runtime draws={} target groups={} NumberGlyph draws={} sources={}",
+        draws.len(),
+        submission.len(),
+        number_draws.len(),
+        number_sources
+    );
+    assert_eq!(draws.len(), 10);
+    assert_eq!(submission.len(), 4);
+    assert_eq!(number_draws.len(), 3);
+    assert_eq!(number_sources, 3);
+    assert!(
+        number_draws
+            .iter()
+            .all(|glyph| glyph.draw.shader_key == FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY)
+    );
 }
 
 #[test]
@@ -1171,7 +1244,7 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
 }
 
 #[test]
-fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
+fn audits_initial_slice_and_number_runtime_draws_in_the_real_corpus() {
     let root = corpus_root();
     if !root.exists() {
         eprintln!("skipping: SRD corpus not found at {}", root.display());
@@ -1196,6 +1269,12 @@ fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
     let mut untextured_cell_draw_count = 0usize;
     let mut three_d_cell_draw_count = 0usize;
     let mut shader_keys = BTreeSet::new();
+    let mut number_glyph_draw_count = 0usize;
+    let mut copied_number_glyph_draw_count = 0usize;
+    let mut three_d_number_glyph_draw_count = 0usize;
+    let mut number_shader_keys = BTreeSet::new();
+    let mut number_animation_modes = BTreeSet::new();
+    let mut number_samples = BTreeSet::new();
 
     for path in files {
         let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
@@ -1249,31 +1328,121 @@ fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
             )
             .unwrap_or_else(|error| panic!("{} scene {scene_index}: {error}", path.display()));
             for draw in draws {
-                let EvidenceCompleteRuntimeCastDraw::SliceCell(cell) = draw else {
-                    continue;
-                };
-                let source_layer =
-                    &project.scenes[cell.draw.scene_index].layers[cell.draw.layer_index];
-                let definition = source_layer.csli_by_node[cell.draw.node_index]
-                    .as_ref()
-                    .expect("SliceCell draw lost its CSLI source");
-                assert!(
-                    definition.cells[cell.cell_index].flags & 0x100 != 0,
-                    "{} emitted inactive SliceCell",
-                    path.display()
-                );
-                let resolved = textures.resolve_slice_cell(definition, cell.cell_index);
-                assert_eq!(cell.draw.texture_bindings[0].is_some(), resolved.is_some());
-                assert_eq!(cell.draw.texture_bindings[1..], [None, None]);
-                shader_keys.insert(cell.draw.shader_key);
-                cell_draw_count += 1;
-                copied_cell_draw_count += usize::from(matches!(
-                    cell.draw.owner,
-                    ReferenceLayerParent::ReferenceInstance(_)
-                ));
-                textured_cell_draw_count += usize::from(resolved.is_some());
-                untextured_cell_draw_count += usize::from(resolved.is_none());
-                three_d_cell_draw_count += usize::from(!cell.draw.is_2d);
+                match draw {
+                    EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => {
+                        let source_layer =
+                            &project.scenes[cell.draw.scene_index].layers[cell.draw.layer_index];
+                        let definition = source_layer.csli_by_node[cell.draw.node_index]
+                            .as_ref()
+                            .expect("SliceCell draw lost its CSLI source");
+                        assert!(
+                            definition.cells[cell.cell_index].flags & 0x100 != 0,
+                            "{} emitted inactive SliceCell",
+                            path.display()
+                        );
+                        let resolved = textures.resolve_slice_cell(definition, cell.cell_index);
+                        assert_eq!(cell.draw.texture_bindings[0].is_some(), resolved.is_some());
+                        assert_eq!(cell.draw.texture_bindings[1..], [None, None]);
+                        shader_keys.insert(cell.draw.shader_key);
+                        cell_draw_count += 1;
+                        copied_cell_draw_count += usize::from(matches!(
+                            cell.draw.owner,
+                            ReferenceLayerParent::ReferenceInstance(_)
+                        ));
+                        textured_cell_draw_count += usize::from(resolved.is_some());
+                        untextured_cell_draw_count += usize::from(resolved.is_none());
+                        three_d_cell_draw_count += usize::from(!cell.draw.is_2d);
+                    }
+                    EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph) => {
+                        let source_layer =
+                            &project.scenes[glyph.draw.scene_index].layers[glyph.draw.layer_index];
+                        let definition = source_layer.number_by_node[glyph.draw.node_index]
+                            .as_ref()
+                            .expect("NumberGlyph draw lost its CNUM source");
+                        assert!(glyph.glyph_index >= 0);
+                        let image = definition.image_base();
+                        let image_state = image.initial_runtime_state();
+                        let slots = image
+                            .resolve_texture_slots(
+                                &image_state,
+                                &textures,
+                                NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                                [false; 2],
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("{} NumberGlyph slots: {error}", path.display())
+                            });
+                        for slot_index in 0..2 {
+                            let expected =
+                                slots.slots[slot_index].and_then(|source| {
+                                    match source {
+                                srd_editor::image::SrdTextureBindingSource::TextureList(index) => {
+                                    Some(index)
+                                }
+                                srd_editor::image::SrdTextureBindingSource::ExplicitOverride => {
+                                    None
+                                }
+                            }
+                                });
+                            assert_eq!(
+                                glyph.draw.texture_bindings[slot_index]
+                                    .map(|binding| binding.texture_index),
+                                expected,
+                                "{} NumberGlyph binding slot {slot_index}",
+                                path.display()
+                            );
+                        }
+                        assert_eq!(glyph.draw.texture_bindings[2], None);
+
+                        let mut first_state =
+                            image_state.coordinate_state(ImageReferenceChannel::Cref);
+                        first_state.reference_index = glyph.glyph_index;
+                        first_state.uses_explicit_rectangle = false;
+                        let first = image
+                            .resolve_coordinates(
+                                ImageReferenceChannel::Cref,
+                                first_state,
+                                &textures,
+                                NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                            )
+                            .unwrap();
+                        let second = image
+                            .resolve_coordinates(
+                                ImageReferenceChannel::Cre1,
+                                image_state.coordinate_state(ImageReferenceChannel::Cre1),
+                                &textures,
+                                NumberDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
+                            )
+                            .unwrap();
+                        for vertex_index in 0..4 {
+                            assert_eq!(
+                                glyph.draw.quad.vertices[vertex_index].texture_coordinates,
+                                [
+                                    first.coordinates[vertex_index],
+                                    second.coordinates[vertex_index]
+                                ]
+                            );
+                        }
+                        number_shader_keys.insert(glyph.draw.shader_key);
+                        number_animation_modes.insert(definition.value_animation_mode());
+                        if number_samples.len() < 12 {
+                            number_samples.insert((
+                                path.strip_prefix(&root).unwrap_or(&path).to_path_buf(),
+                                glyph.draw.scene_index,
+                                glyph.draw.layer_index,
+                                glyph.draw.node_index,
+                            ));
+                        }
+                        number_glyph_draw_count += 1;
+                        copied_number_glyph_draw_count += usize::from(matches!(
+                            glyph.draw.owner,
+                            ReferenceLayerParent::ReferenceInstance(_)
+                        ));
+                        three_d_number_glyph_draw_count += usize::from(!glyph.draw.is_2d);
+                    }
+                    EvidenceCompleteRuntimeCastDraw::Image(_)
+                    | EvidenceCompleteRuntimeCastDraw::Fennel(_) => {}
+                }
             }
         }
     }
@@ -1284,6 +1453,13 @@ fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
         .collect::<Vec<_>>();
     eprintln!(
         "{profile:?}: SliceCell draws={cell_draw_count}, copied={copied_cell_draw_count}, textured={textured_cell_draw_count}, untextured={untextured_cell_draw_count}, 3D={three_d_cell_draw_count}, shader keys={shader_key_strings:?}"
+    );
+    let number_shader_key_strings = number_shader_keys
+        .iter()
+        .map(|key| String::from_utf8_lossy(key).into_owned())
+        .collect::<Vec<_>>();
+    eprintln!(
+        "{profile:?}: NumberGlyph draws={number_glyph_draw_count}, copied={copied_number_glyph_draw_count}, 3D={three_d_number_glyph_draw_count}, modes={number_animation_modes:?}, shader keys={number_shader_key_strings:?}, samples={number_samples:?}"
     );
     assert_eq!(cell_draw_count, 3_745);
     assert_eq!(copied_cell_draw_count, 1_314);
@@ -1305,6 +1481,17 @@ fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
     assert_eq!(
         cell_draw_count,
         textured_cell_draw_count + untextured_cell_draw_count
+    );
+    assert_eq!(number_glyph_draw_count, 2_216);
+    assert_eq!(copied_number_glyph_draw_count, 1_936);
+    assert_eq!(three_d_number_glyph_draw_count, 6);
+    assert_eq!(number_animation_modes, BTreeSet::from([0]));
+    assert_eq!(
+        number_shader_keys,
+        BTreeSet::from([
+            FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
+            FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+        ])
     );
 }
 

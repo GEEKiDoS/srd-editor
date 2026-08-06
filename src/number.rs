@@ -323,6 +323,45 @@ impl NumberDefinition {
         records
     }
 
+    /// Reproduces the `history_count <= 1` branch of
+    /// `srd_render_number_glyph_history`. A fresh SrNumberCast appends one
+    /// current 56-byte history record, then renders sign forward, integer
+    /// backward, decimal point forward, and fraction forward with alpha 1.0.
+    pub fn first_history_render_records(
+        &self,
+        formatted: &NumberFormattedText,
+        axis_mode: bool,
+    ) -> Vec<NumberGlyphRecord> {
+        let records = self.build_glyph_records(formatted, axis_mode);
+        let mut ordered = Vec::with_capacity(records.len());
+        ordered.extend(
+            records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Sign),
+        );
+        ordered.extend(
+            records
+                .iter()
+                .rev()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Integer),
+        );
+        ordered.extend(
+            records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::DecimalPoint),
+        );
+        ordered.extend(
+            records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Fraction),
+        );
+        ordered
+    }
+
     pub fn glyph_coordinate_state(
         &self,
         glyph_index: i16,
@@ -756,6 +795,15 @@ mod tests {
         let positions = definition.build_glyph_positions(&formatted.combined, true);
         assert_eq!(records[3].quad, positions[3]);
         assert_eq!(records[7].quad, positions[7]);
+
+        let first_history = definition.first_history_render_records(&formatted, true);
+        assert_eq!(
+            first_history
+                .iter()
+                .map(|record| record.glyph_index)
+                .collect::<Vec<_>>(),
+            [10, 5, 4, 3, 2, 1, -1, 5, 0]
+        );
     }
 
     #[test]

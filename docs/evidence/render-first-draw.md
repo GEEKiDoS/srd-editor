@@ -42,7 +42,7 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 - 排除 `SrTextCast`；
 - 只产出 CREF/CRE1 绑定、sampler 与 exact shader pair 都已闭环的纹理 draw；
 - 暂不产出没有已注册 VS/PS bytecode 的 shader key；
-- CNUM、CSLI 与引用层递归尚未进入这个首个 draw list。
+- 本页旧的窄 builder 仍只描述首个 Image fixture；统一 runtime builder 已另外接入 CSLI、CNUM 与引用层递归，见各自证据页。
 
 因此“没有产出”不等于对象不可渲染，只表示它尚未到达本项目要求的完整证据门槛。本页 fixture 测试断言 draw 数量、节点、二维 shader key、`screenParam`、四顶点、两组顶点色、color-write 和深度状态。
 
