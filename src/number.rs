@@ -63,6 +63,53 @@ impl NumberGlyphRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NumberGlyphHistoryRecord {
+    pub sign: Vec<NumberGlyphRecord>,
+    pub integer: Vec<NumberGlyphRecord>,
+    pub decimal_point: Vec<NumberGlyphRecord>,
+    pub fraction: Vec<NumberGlyphRecord>,
+    pub total_value: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumberGlyphFirstUvCrop {
+    None,
+    MoveTopTowardBottom { amount: f32 },
+    MoveBottomTowardTop { amount: f32 },
+}
+
+impl NumberGlyphFirstUvCrop {
+    pub fn apply(self, coordinates: &mut ResolvedImageCoordinates) {
+        let span = coordinates.coordinates[1][1] - coordinates.coordinates[0][1];
+        match self {
+            Self::None => {}
+            Self::MoveTopTowardBottom { amount } => {
+                let offset = span * amount;
+                coordinates.coordinates[0][1] += offset;
+                coordinates.coordinates[2][1] += offset;
+            }
+            Self::MoveBottomTowardTop { amount } => {
+                let offset = span * amount;
+                coordinates.coordinates[1][1] -= offset;
+                coordinates.coordinates[3][1] -= offset;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberGlyphMode1Draw {
+    pub record: NumberGlyphRecord,
+    pub first_uv_crop: NumberGlyphFirstUvCrop,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumberGlyphMode1RenderPlan {
+    pub increasing: bool,
+    pub draws: Vec<NumberGlyphMode1Draw>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NumberDefinition {
     pub flags: u32,
     pub width: f32,
@@ -362,6 +409,145 @@ impl NumberDefinition {
         ordered
     }
 
+    pub fn build_history_record(
+        &self,
+        integer: i32,
+        fraction: f64,
+        axis_mode: bool,
+    ) -> NumberGlyphHistoryRecord {
+        let formatted = self.format_value_parts(integer, fraction);
+        let records = self.build_glyph_records(&formatted, axis_mode);
+        NumberGlyphHistoryRecord {
+            sign: records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Sign)
+                .collect(),
+            integer: records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Integer)
+                .collect(),
+            decimal_point: records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::DecimalPoint)
+                .collect(),
+            fraction: records
+                .iter()
+                .copied()
+                .filter(|record| record.segment == NumberGlyphSegment::Fraction)
+                .collect(),
+            total_value: f64::from(integer) + fraction,
+        }
+    }
+
+    /// Reproduces the shipped mode-1 branch of
+    /// `srd_render_number_glyph_history` and `srd_render_number_glyph` for two
+    /// history records. `progress` is `SrNumberCast+0x238`: one selects the
+    /// older record and zero selects the newer record.
+    pub fn mode1_history_render_plan(
+        &self,
+        older: &NumberGlyphHistoryRecord,
+        newer: &NumberGlyphHistoryRecord,
+        progress: f32,
+        previous_increasing: bool,
+    ) -> NumberGlyphMode1RenderPlan {
+        let increasing = if older.total_value != newer.total_value {
+            newer.total_value > older.total_value
+        } else {
+            previous_increasing
+        };
+        let factor = if progress <= 1.0 {
+            progress.max(0.0)
+        } else {
+            1.0
+        };
+
+        let mut older_sign = older.sign.clone();
+        while older_sign.len() < newer.sign.len() {
+            older_sign.push(number_glyph_sentinel(NumberGlyphSegment::Sign));
+        }
+
+        let mut older_integer = older.integer.clone();
+        let mut newer_integer = newer.integer.clone();
+        while older_integer.len() < newer_integer.len() {
+            older_integer.insert(0, number_glyph_sentinel(NumberGlyphSegment::Integer));
+        }
+        if older_integer.len() > newer_integer.len() {
+            let missing = older_integer.len() - newer_integer.len();
+            for record in older_integer.iter().take(missing).rev().copied() {
+                newer_integer.insert(
+                    0,
+                    NumberGlyphRecord {
+                        glyph_index: -1,
+                        ..record
+                    },
+                );
+            }
+        }
+
+        let mut older_decimal_point = older.decimal_point.clone();
+        while older_decimal_point.len() < newer.decimal_point.len() {
+            older_decimal_point.push(number_glyph_sentinel(NumberGlyphSegment::DecimalPoint));
+        }
+        let mut older_fraction = older.fraction.clone();
+        while older_fraction.len() < newer.fraction.len() {
+            older_fraction.push(number_glyph_sentinel(NumberGlyphSegment::Fraction));
+        }
+
+        let mut draws = Vec::new();
+        let mut emitted_pair = false;
+        for (older_record, newer_record) in older_sign
+            .iter()
+            .zip(&newer.sign)
+            .chain(older_integer.iter().zip(&newer_integer))
+            .chain(older_decimal_point.iter().zip(&newer.decimal_point))
+            .chain(older_fraction.iter().zip(&newer.fraction))
+        {
+            let mut current = *newer_record;
+            if current.glyph_index >= 0
+                && older_record.glyph_index >= 0
+                && !current.is_digit
+                && !older_record.is_digit
+            {
+                for (current_point, older_point) in current
+                    .quad
+                    .positions
+                    .iter_mut()
+                    .zip(older_record.quad.positions)
+                {
+                    for (current_value, older_value) in current_point.iter_mut().zip(older_point) {
+                        *current_value = (older_value - *current_value) * factor + *current_value;
+                    }
+                }
+            }
+
+            if !current.is_digit
+                || (current.glyph_index == older_record.glyph_index && !emitted_pair)
+            {
+                if current.drawable() {
+                    draws.push(NumberGlyphMode1Draw {
+                        record: current,
+                        first_uv_crop: NumberGlyphFirstUvCrop::None,
+                    });
+                }
+                continue;
+            }
+
+            if current.drawable() {
+                draws.push(mode1_cropped_draw(current, increasing, !increasing, factor));
+            }
+            current.glyph_index = older_record.glyph_index;
+            if current.drawable() {
+                draws.push(mode1_cropped_draw(current, increasing, increasing, factor));
+            }
+            emitted_pair = true;
+        }
+
+        NumberGlyphMode1RenderPlan { increasing, draws }
+    }
+
     pub fn glyph_coordinate_state(
         &self,
         glyph_index: i16,
@@ -579,6 +765,46 @@ impl NumberDefinition {
             has_text_child: false,
             text: None,
         }
+    }
+}
+
+fn number_glyph_sentinel(segment: NumberGlyphSegment) -> NumberGlyphRecord {
+    NumberGlyphRecord {
+        glyph_index: -1,
+        is_digit: false,
+        segment,
+        quad: NumberGlyphQuad {
+            positions: [[0.0; 3]; 4],
+        },
+    }
+}
+
+fn mode1_cropped_draw(
+    mut record: NumberGlyphRecord,
+    use_progress: bool,
+    keep_top: bool,
+    progress: f32,
+) -> NumberGlyphMode1Draw {
+    let amount = if use_progress {
+        progress
+    } else {
+        1.0 - progress
+    };
+    let height = record.quad.positions[1][1] - record.quad.positions[0][1];
+    let first_uv_crop = if keep_top {
+        record.quad.positions[1][1] = record.quad.positions[0][1] + amount * height;
+        record.quad.positions[3][1] = record.quad.positions[2][1] + amount * height;
+        NumberGlyphFirstUvCrop::MoveTopTowardBottom {
+            amount: 1.0 - amount,
+        }
+    } else {
+        record.quad.positions[0][1] += amount * height;
+        record.quad.positions[2][1] += amount * height;
+        NumberGlyphFirstUvCrop::MoveBottomTowardTop { amount }
+    };
+    NumberGlyphMode1Draw {
+        record,
+        first_uv_crop,
     }
 }
 
@@ -861,5 +1087,73 @@ mod tests {
         );
         assert_eq!(draw.vertices[0].primary_color, [255; 4]);
         assert_eq!(draw.vertices[0].secondary_color, [50, 75, 100, 0]);
+    }
+
+    #[test]
+    fn mode1_history_scrolls_changed_digits_in_the_binary_pair_order() {
+        let mut definition = definition();
+        definition.cref_count = 14;
+        definition.format_flags = 0;
+        let older = definition.build_history_record(11, 0.0, true);
+        let newer = definition.build_history_record(12, 0.0, true);
+        let plan = definition.mode1_history_render_plan(&older, &newer, 0.25, false);
+        assert!(plan.increasing);
+        assert_eq!(
+            plan.draws
+                .iter()
+                .map(|draw| draw.record.glyph_index)
+                .collect::<Vec<_>>(),
+            [1, 2, 1]
+        );
+        assert_eq!(plan.draws[1].record.quad.positions[0][1], 5.0);
+        assert_eq!(plan.draws[1].record.quad.positions[1][1], 20.0);
+        assert_eq!(plan.draws[2].record.quad.positions[0][1], 0.0);
+        assert_eq!(plan.draws[2].record.quad.positions[1][1], 5.0);
+
+        let coordinates = ResolvedImageCoordinates {
+            image_index: 0,
+            coordinates: [[0.0, 0.1], [0.0, 0.9], [1.0, 0.1], [1.0, 0.9]],
+            selected_sampler: None,
+        };
+        let mut newer_coordinates = coordinates;
+        plan.draws[1].first_uv_crop.apply(&mut newer_coordinates);
+        assert_eq!(newer_coordinates.coordinates[1][1], 0.7);
+        assert_eq!(newer_coordinates.coordinates[3][1], 0.7);
+        let mut older_coordinates = coordinates;
+        plan.draws[2].first_uv_crop.apply(&mut older_coordinates);
+        assert_eq!(older_coordinates.coordinates[0][1], 0.7);
+        assert_eq!(older_coordinates.coordinates[2][1], 0.7);
+    }
+
+    #[test]
+    fn mode1_history_interpolates_punctuation_and_preserves_equal_direction() {
+        let mut definition = definition();
+        definition.cref_count = 14;
+        definition.format_flags = 1;
+        let mut older = definition.build_history_record(-1, 0.0, true);
+        let mut newer = definition.build_history_record(1, 0.0, true);
+        for position in &mut older.sign[0].quad.positions {
+            position[0] += 100.0;
+        }
+        let plan = definition.mode1_history_render_plan(&older, &newer, 0.25, false);
+        assert!(plan.increasing);
+        assert_eq!(
+            plan.draws[0].record.glyph_index,
+            definition.special_glyphs().plus
+        );
+        assert_eq!(plan.draws[0].record.quad.positions[0][0], 25.0);
+        assert_eq!(plan.draws[0].first_uv_crop, NumberGlyphFirstUvCrop::None);
+
+        newer.total_value = older.total_value;
+        assert!(
+            definition
+                .mode1_history_render_plan(&older, &newer, 0.5, true)
+                .increasing
+        );
+        assert!(
+            !definition
+                .mode1_history_render_plan(&older, &newer, 0.5, false)
+                .increasing
+        );
     }
 }

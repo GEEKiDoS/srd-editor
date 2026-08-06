@@ -61,7 +61,7 @@ SEGA Surfride `.srd` 文件的离线解析、预览与编辑工具。
 - Chusan `CommonBackGroundObject` 的嵌入式 SrPlayer、identity 根节点、启用生命周期与 `2DLayer=6` 已闭环。命名 target 成功解析时，Rust 现已复现 `SrRenderer+0x24C..+0x258`、四角屏幕投影和 inclusive AABB Image/Fennel 剔除；null target 时原二进制无条件读取从未初始化的这四个 f32，Rust 为可重复预览显式跳过该项剔除。Common/MainScene 的全屏 D3D9Ex 回归哈希保持不变。
 - AdvertiseLogo 的实际六阶段 SrCtrl identity 表已解码到 SRD 的 ANMS 下标；`AS_warning_in`、`AS_movie_in` 等页面现在按 SANM gate 和命名动画生成 draw。原先全白输出已由 D3D9Ex 回读定位并修复：页面 smoke 的 2,073,600 个 changed pixels 中 `white_pixels=0`，ResetEx 前后哈希一致。
 
-尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 历史 glyph 动画、TEXT 内部行元数据、动态 mode `2..5` 的写入源及 mode 6 的真实调用点、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override，以及 ShapeEnv 剩余 scene/pass context 到每次实际 Simple 键的映射。这些部分会在对应游戏代码完成证据闭环后逐项加入。贴图像素解码由独立库完成，全程不依赖 D3DX。
+尚未实现：SRD 写回、公共 packed color/alpha 通道、CNUM 宿主数值事件与 transition delta、shipped 数据未出现的 CNUM mode `2..8` effect、TEXT 动态 mode `2..5` 的写入源及 mode 6 的真实调用点、texture batch rehash（当前完整语料不触发）、完整语料未出现的 DDS 内部格式转换/cube request、显式纹理 override，以及 ShapeEnv 剩余 scene/pass context 到每次实际 Simple 键的映射。CNUM mode 1 的双 history 对齐、方向、标点插值、上下擦除及仅第一套 UV 裁剪已实现为显式运行时计划；未知宿主输入不会由 timeline 猜测。贴图像素解码由独立库完成，全程不依赖 D3DX。
 
 运行编辑器并直接加载一个文件：
 
