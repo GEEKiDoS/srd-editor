@@ -5,6 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use srd_editor::editor_document::EditorDocument;
+use srd_editor::game_host::{
+    CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE,
+};
 use srd_editor::image::ImageDefinition;
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::identity_matrix4x4_game;
@@ -12,7 +15,7 @@ use srd_editor::reference_runtime::ProjectRuntime;
 use srd_editor::render::{
     CeylonDrawPacketPresetState, SRD_RENDERER_INITIAL_LAYER_KEY,
     apply_srd_image_alpha_stencil_packet_fields, apply_srd_image_field_0c_shader_bits,
-    select_srd_image_render_preset,
+    ceylon_d3d9_blend_preset, select_srd_image_render_preset,
 };
 use srd_editor::scene::{AnimationSetDefinition, ReferenceTarget, Scene};
 use srd_editor::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
@@ -34,33 +37,85 @@ struct FirstOccurrence {
     kind: &'static str,
 }
 
+#[derive(Debug, Default)]
+struct StaticAuditSummary {
+    node_context_count: usize,
+    type_counts: [usize; 3],
+    initial_key_counts: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], usize>,
+    initial_unpacked: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>,
+    initial_outside_collection: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>,
+    alpha_test_count: usize,
+    alpha_test_keys: BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], (usize, String)>,
+    alpha_test_outside_collection: usize,
+    alpha_test_first: Option<String>,
+    stencil_count: usize,
+    stencil_first: Option<String>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let root = arguments
         .next()
         .map(PathBuf::from)
         .ok_or("usage: srd-runtime-state-audit <game-data-root>")?;
-    let exhaustive_integer_frames = arguments
-        .next()
-        .is_some_and(|argument| argument == "--integer-frames");
-    if arguments.next().is_some() {
-        return Err("usage: srd-runtime-state-audit <game-data-root> [--integer-frames]".into());
+    let mut exhaustive_integer_frames = false;
+    let mut file_filter = None;
+    let mut host_profile = None;
+    for argument in arguments {
+        let argument = argument.to_string_lossy();
+        if argument == "--integer-frames" {
+            exhaustive_integer_frames = true;
+        } else if let Some(value) = argument.strip_prefix("--file=")
+            && !value.is_empty()
+        {
+            file_filter = Some(value.to_ascii_lowercase());
+        } else if let Some(value) = argument.strip_prefix("--host=")
+            && matches!(value, "advertise-logo" | "common-background")
+        {
+            host_profile = Some(value.to_owned());
+        } else {
+            return Err(
+                "usage: srd-runtime-state-audit <game-data-root> [--integer-frames] [--file=<path-substring>] [--host=advertise-logo|common-background]"
+                    .into(),
+            );
+        }
     }
     let collection = load_simple_collection(&root)?;
     let mut files = Vec::new();
     collect_srd_files(&root.join("surfboard"), &mut files)?;
     files.sort();
+    if let Some(filter) = &file_filter {
+        files.retain(|path| path.to_string_lossy().to_ascii_lowercase().contains(filter));
+    }
+    if files.is_empty() {
+        return Err("no SRD files matched the requested filter".into());
+    }
 
-    let host = SrdHostDrawContext::new(
-        Affine3x4::IDENTITY,
-        SRD_RENDERER_INITIAL_LAYER_KEY,
-        Some(SrdRendererProjectTargetContext::new(
+    let host = match host_profile.as_deref() {
+        Some("advertise-logo") => CHUSAN_ADVERTISE_LOGO_PLAYER.host_context_for_target(
+            CHUSAN_MAIN_SCENE,
+            1080,
+            1920,
+            [1920, 1080],
+        )?,
+        Some("common-background") => CHUSAN_COMMON_BACKGROUND_PLAYER.host_context_for_target(
+            CHUSAN_MAIN_SCENE,
+            1080,
+            1920,
+            [1920, 1080],
+        )?,
+        None => SrdHostDrawContext::new(
+            Affine3x4::IDENTITY,
+            SRD_RENDERER_INITIAL_LAYER_KEY,
+            Some(SrdRendererProjectTargetContext::new(
+                identity_matrix4x4_game(),
+                [1920, 1080],
+            )),
             identity_matrix4x4_game(),
             [1920, 1080],
-        )),
-        identity_matrix4x4_game(),
-        [1920, 1080],
-    );
+        ),
+        Some(_) => unreachable!(),
+    };
     let mut animation_set_count = 0usize;
     let mut sampled_frame_count = 0usize;
     let mut draw_count = 0usize;
@@ -69,12 +124,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut unpackaged = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], FirstOccurrence>::new();
     let mut outside_collection =
         BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], FirstOccurrence>::new();
-    let mut stencil = Vec::<FirstOccurrence>::new();
-    let mut alpha_test = Vec::<FirstOccurrence>::new();
+    let mut stencil_count = 0usize;
+    let mut stencil_first = None::<FirstOccurrence>;
+    let mut alpha_test_count = 0usize;
+    let mut alpha_test_first = None::<FirstOccurrence>;
+    let mut alpha_test_key_counts = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], usize>::new();
     let mut potential_key_counts = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], usize>::new();
     let mut potential_unpacked = BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>::new();
     let mut potential_outside_collection =
         BTreeMap::<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>::new();
+    let mut static_summary = StaticAuditSummary::default();
 
     for (file_index, path) in files.iter().enumerate() {
         let document = EditorDocument::load(path)?;
@@ -87,6 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &mut potential_key_counts,
             &mut potential_unpacked,
             &mut potential_outside_collection,
+            &mut static_summary,
         )?;
         if !exhaustive_integer_frames {
             continue;
@@ -137,11 +197,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 .entry(state.shader_key)
                                 .or_insert_with(occurrence);
                         }
-                        if state.packet.flags_0c & 0x100 != 0 && stencil.is_empty() {
-                            stencil.push(occurrence());
+                        if state.packet.flags_0c & 0x100 != 0 {
+                            stencil_count += 1;
+                            stencil_first.get_or_insert_with(occurrence);
                         }
-                        if state.blend.alpha_test_enabled && alpha_test.is_empty() {
-                            alpha_test.push(occurrence());
+                        if state.blend.alpha_test_enabled {
+                            alpha_test_count += 1;
+                            *alpha_test_key_counts.entry(state.shader_key).or_insert(0) += 1;
+                            alpha_test_first.get_or_insert_with(occurrence);
                         }
                     }
                 }
@@ -156,6 +219,40 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("files={}", files.len());
+    println!(
+        "initial_node_contexts={} image/slice/number={:?}",
+        static_summary.node_context_count, static_summary.type_counts
+    );
+    println!(
+        "initial_direct_shader_keys={} unpacked={} outside_game_collection={}",
+        static_summary.initial_key_counts.len(),
+        static_summary.initial_unpacked.len(),
+        static_summary.initial_outside_collection.len()
+    );
+    println!(
+        "initial_alpha_test={} first={}",
+        static_summary.alpha_test_count,
+        static_summary.alpha_test_first.as_deref().unwrap_or("none")
+    );
+    println!(
+        "initial_alpha_test_keys={} outside_game_collection={}",
+        static_summary.alpha_test_keys.len(),
+        static_summary.alpha_test_outside_collection
+    );
+    for (key, (count, first)) in &static_summary.alpha_test_keys {
+        println!(
+            "  alpha_test_key={} count={} in_collection={} first={}",
+            String::from_utf8_lossy(key),
+            count,
+            collection.contains(key),
+            first
+        );
+    }
+    println!(
+        "initial_stencil={} first={}",
+        static_summary.stencil_count,
+        static_summary.stencil_first.as_deref().unwrap_or("none")
+    );
     println!(
         "potential_upper_bound_shader_keys={}",
         potential_key_counts.len()
@@ -198,13 +295,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             describe(first)
         );
     }
+    println!("stencil_draws={stencil_count}");
     println!(
         "stencil_first={}",
-        stencil.first().map_or("none".into(), describe)
+        stencil_first.as_ref().map_or("none".into(), describe)
+    );
+    println!(
+        "alpha_test_draws={} keys={:?}",
+        alpha_test_count,
+        alpha_test_key_counts
+            .iter()
+            .map(|(key, count)| (String::from_utf8_lossy(key), count))
+            .collect::<Vec<_>>()
     );
     println!(
         "alpha_test_first={}",
-        alpha_test.first().map_or("none".into(), describe)
+        alpha_test_first.as_ref().map_or("none".into(), describe)
     );
     Ok(())
 }
@@ -274,6 +380,7 @@ fn audit_potential_shader_keys(
     key_counts: &mut BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], usize>,
     unpacked: &mut BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>,
     outside_collection: &mut BTreeMap<[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH], String>,
+    static_summary: &mut StaticAuditSummary,
 ) -> Result<(), Box<dyn Error>> {
     let mut contexts = BTreeSet::<(ReferenceTarget, bool)>::new();
     for (scene_index, scene) in document.project.scenes.iter().enumerate() {
@@ -299,7 +406,8 @@ fn audit_potential_shader_keys(
     for (target, is_2d) in contexts {
         let layer = &document.project.scenes[target.scene_index].layers[target.layer_index];
         for node_index in 0..layer.nodes.len() {
-            let Some(image) = (match layer.nodes[node_index].cast_type() {
+            let cast_type = layer.nodes[node_index].cast_type();
+            let Some(image) = (match cast_type {
                 Some(1) => layer.image_by_node[node_index]
                     .clone()
                     .filter(|image| !image.creates_text_cast()),
@@ -328,6 +436,75 @@ fn audit_potential_shader_keys(
                 ImageDefinition::INITIAL_COORDINATE_OFFSET_SCALE,
                 [false; 2],
             )?;
+            let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+            packet.set_render_preset_id(preset);
+            packet.set_srd_quad_is_2d(is_2d);
+            apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
+            let mut renderer_counter = SRD_RENDERER_INITIAL_LAYER_KEY as u8;
+            apply_srd_image_alpha_stencil_packet_fields(
+                &mut packet,
+                state.field_10,
+                state.field_14,
+                state.field_18,
+                0,
+                &mut renderer_counter,
+            );
+            let initial_key = packet
+                .srd_quad_shader_key(initial_slots.texture_present())
+                .srd_simple_shader_direct_contributions()
+                .map_err(|error| format!("unsupported Simple mapping: {error:?}"))?
+                .compact_key();
+            let initial_location = format!(
+                "{} SCN[{}]/LAYR[{}]/NODE[{}] is_2d={} presence={:?}",
+                path.display(),
+                target.scene_index,
+                target.layer_index,
+                node_index,
+                is_2d,
+                initial_slots.texture_present()
+            );
+            static_summary.node_context_count += 1;
+            static_summary.type_counts[match cast_type {
+                Some(1) => 0,
+                Some(2) => 1,
+                Some(4) => 2,
+                _ => unreachable!(),
+            }] += 1;
+            *static_summary
+                .initial_key_counts
+                .entry(initial_key)
+                .or_insert(0) += 1;
+            if embedded_simple_shader_pair(&initial_key).is_none() {
+                static_summary
+                    .initial_unpacked
+                    .entry(initial_key)
+                    .or_insert_with(|| initial_location.clone());
+            }
+            if !collection.contains(&initial_key) {
+                static_summary
+                    .initial_outside_collection
+                    .entry(initial_key)
+                    .or_insert_with(|| initial_location.clone());
+            }
+            if ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id())).alpha_test_enabled {
+                static_summary.alpha_test_count += 1;
+                static_summary
+                    .alpha_test_keys
+                    .entry(initial_key)
+                    .and_modify(|(count, _)| *count += 1)
+                    .or_insert_with(|| (1, initial_location.clone()));
+                static_summary.alpha_test_outside_collection +=
+                    usize::from(!collection.contains(&initial_key));
+                static_summary
+                    .alpha_test_first
+                    .get_or_insert_with(|| initial_location.clone());
+            }
+            if packet.flags_0c & 0x100 != 0 {
+                static_summary.stencil_count += 1;
+                static_summary
+                    .stencil_first
+                    .get_or_insert_with(|| initial_location.clone());
+            }
             let animated_channels = layer
                 .animations
                 .iter()
@@ -365,19 +542,6 @@ fn audit_potential_shader_keys(
                     .into_iter()
                     .filter(|present| possible_presence[1][usize::from(*present)])
                 {
-                    let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
-                    packet.set_render_preset_id(preset);
-                    packet.set_srd_quad_is_2d(is_2d);
-                    apply_srd_image_field_0c_shader_bits(&mut packet, state.field_0c as i32);
-                    let mut renderer_counter = SRD_RENDERER_INITIAL_LAYER_KEY as u8;
-                    apply_srd_image_alpha_stencil_packet_fields(
-                        &mut packet,
-                        state.field_10,
-                        state.field_14,
-                        state.field_18,
-                        0,
-                        &mut renderer_counter,
-                    );
                     let key = packet
                         .srd_quad_shader_key([slot_0, slot_1, false])
                         .srd_simple_shader_direct_contributions()

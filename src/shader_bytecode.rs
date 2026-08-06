@@ -19,6 +19,10 @@ pub const FENNEL_TEXTURED_2D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
 /// whose SrImage field_0c contributes the additional pixel-shader branch.
 pub const SLICE_TEXTURED_2D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
     *b"EAEBABBAABCBAAAAAA";
+/// Exact 3D counterpart selected by CommonBackGround's shipped alpha-test
+/// image path. It is part of the original 82-key collection.
+pub const SLICE_TEXTURED_3D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAEBABBAABCBAAAAAA";
 /// Second exact textured 2D SliceCast key observed in the complete game
 /// corpus. The game's compiler emits the already packaged textured 2D pair
 /// byte-for-byte for this selector variant.
@@ -140,6 +144,10 @@ mod tests {
         assert_ne!(slice.pixel_shader, textured.pixel_shader);
         assert_eq!(slice.pixel_shader[0], 0xFFFF0300);
         assert_eq!(slice.pixel_shader.last(), Some(&0x0000FFFF));
+
+        let slice_3d = embedded_simple_shader_pair(&SLICE_TEXTURED_3D_SIMPLE_KEY).unwrap();
+        assert_eq!(slice_3d.vertex_shader, pair.vertex_shader);
+        assert_eq!(slice_3d.pixel_shader, slice.pixel_shader);
 
         let slice_variant_i =
             embedded_simple_shader_pair(&SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY).unwrap();

@@ -37,12 +37,44 @@ position-2 sibling, and 45 direct keys outside the collection. Those numbers
 also do not establish runtime reachability because that test intentionally
 ignores ANMS layer gates and world visibility.
 
+The non-text audit also covers 18,192 Image/Slice/Number node/dimension
+contexts (the difference is the 1,292 TextCast definitions). Their exact
+initial packet states contain 216 alpha-test contexts across six keys and zero
+stencil contexts. Nineteen alpha-test contexts use broad direct keys outside
+the original collection; the other 197 already have exact packaged collection
+shaders. SrImage alpha/stencil fields are not animation targets, so CREF/CRE1
+animation does not turn the zero authored stencil result into a stencil path.
+
 The optional `--integer-frames` mode uses fresh runtime state for each frame.
 It reduces repeated tails exactly: non-wrapped tracks are constant after their
 last range end, while wrapped integer-frame tracks repeat after the least
 common multiple of their selected spans. Geometry-heavy full-corpus execution
 is retained as a diagnostic tool, but no incomplete run is recorded as a
 result here.
+
+Two concrete hosts have complete integer-cycle results:
+
+```text
+AdvertiseLogo / CHU_UI_Advertise_00_v10.srd
+  ANMS=19, covered frames=2303, draws=82158
+  distinct keys=7, unpackaged=0, outside collection=0
+  stencil=0, alpha-test=0
+
+CommonBackGround / CHU_UI_Common_BK_00_v11.srd
+  ANMS=10, covered frames=19580, draws=2644127
+  distinct keys=6, unpackaged=0, outside collection=0
+  stencil=0
+  alpha-test draws=8248, exact key AAEBABBAABCBAAAAAA
+```
+
+For Common `ANMS[1] blue_in`, frame `1`, the alpha-test path is exactly eight
+Image draws at `LAYR[5]/NODE[10..17]`. A corpus regression fixes that count,
+node sequence and key. The D3D9Ex smoke submits all 561 Image/Slice sources and
+then submits those eight alpha-test sources alone; both ResetEx passes succeed.
+The alpha-test-only readback changes zero RGB pixels at that frame, which is
+recorded rather than treated as a failure: successful packet/shader submission
+and final visibility are separate facts, and later/failed-alpha pixels must not
+be invented to make a diagnostic nonzero.
 
 The unified runtime draw builder no longer drops Image, Slice, or Number draws
 merely because a shader key is not packaged or packet stencil is enabled. It

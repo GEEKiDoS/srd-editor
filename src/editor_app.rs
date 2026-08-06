@@ -737,6 +737,7 @@ impl EditorWindow {
                         composition_external,
                         true,
                         true,
+                        RuntimeAlphaTestFilter::All,
                     )
                 })
                 .map_err(|error| format!("Runtime target composition draw failed: {error}"))?;
@@ -764,12 +765,29 @@ impl EditorWindow {
                     )
                 })
                 .count();
-            if fennel_sources == 0 && number_sources == 0 {
-                return Err(
-                    "runtime smoke target stream contains neither Fennel nor NumberGlyph sources"
-                        .to_string(),
-                );
-            }
+            let srd_sources = self
+                .runtime_submission
+                .iter()
+                .flat_map(|command| &command.sources)
+                .filter(|source| {
+                    matches!(
+                        source,
+                        EvidenceRuntimeTargetCommandSource::Image { .. }
+                            | EvidenceRuntimeTargetCommandSource::SliceCell { .. }
+                    )
+                })
+                .count();
+            let alpha_test_sources =
+                count_runtime_alpha_test_sources(&self.runtime_draws, &self.runtime_submission)
+                    + self
+                        .common_background_layer
+                        .as_ref()
+                        .map_or(0, |background| {
+                            count_runtime_alpha_test_sources(
+                                &background.draws,
+                                &background.submission,
+                            )
+                        });
             self.d3d9.end_scene().map_err(|error| error.to_string())?;
             let complete = self
                 .srd_renderer
@@ -777,6 +795,24 @@ impl EditorWindow {
                 .ok_or_else(|| "runtime smoke lost the Composition renderer".to_string())?
                 .read_composition_bgra()
                 .map_err(|error| format!("runtime smoke readback failed: {error}"))?;
+            if fennel_sources == 0 && number_sources == 0 {
+                let diagnostic = analyze_composition_readback(
+                    complete.width,
+                    complete.height,
+                    &complete.bgra,
+                    [0x26, 0x22, 0x20],
+                )?;
+                if diagnostic.changed_pixels == 0 {
+                    return Err(
+                        "runtime smoke Image/Slice sources changed no Composition RGB pixels"
+                            .to_string(),
+                    );
+                }
+                eprintln!(
+                    "runtime target Image/Slice sources={srd_sources} changed_pixels={}",
+                    diagnostic.changed_pixels
+                );
+            }
             if let Some(common_background_layer) = self.common_background_layer.as_ref() {
                 self.d3d9.begin_scene().map_err(|error| error.to_string())?;
                 {
@@ -798,6 +834,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 true,
+                                RuntimeAlphaTestFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -848,6 +885,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 true,
+                                RuntimeAlphaTestFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -869,6 +907,63 @@ impl EditorWindow {
                 eprintln!(
                     "runtime target Common background pixels={} visible_after_foreground={visible_pixels}",
                     background_diagnostic.changed_pixels,
+                );
+            }
+            if alpha_test_sources != 0 {
+                self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+                {
+                    let runtime_draws = &self.runtime_draws;
+                    let runtime_submission = &self.runtime_submission;
+                    let srd_textures = self.srd_textures.as_ref();
+                    let fennel_renderer = self.fennel_renderer.as_mut();
+                    let fennel_atlases = &self.fennel_atlases;
+                    let fennel_atlas_routes = &self.fennel_atlas_routes;
+                    let common_background_layer = self.common_background_layer.as_ref();
+                    let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                        "runtime smoke lost the Composition renderer during alpha-test comparison"
+                            .to_string()
+                    })?;
+                    renderer
+                        .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                            render_preview_runtime_layers(
+                                renderer,
+                                fennel_renderer,
+                                common_background_layer,
+                                runtime_draws,
+                                runtime_submission,
+                                srd_textures,
+                                fennel_atlases,
+                                fennel_atlas_routes,
+                                composition_external,
+                                false,
+                                true,
+                                RuntimeAlphaTestFilter::Only,
+                            )
+                        })
+                        .map_err(|error| {
+                            format!("runtime smoke alpha-test-only draw failed: {error}")
+                        })?;
+                }
+                self.d3d9.end_scene().map_err(|error| error.to_string())?;
+                let comparison = self
+                    .srd_renderer
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "runtime smoke lost its alpha-test comparison target".to_string()
+                    })?
+                    .read_composition_bgra()
+                    .map_err(|error| {
+                        format!("runtime smoke alpha-test comparison readback failed: {error}")
+                    })?;
+                let diagnostic = analyze_composition_readback(
+                    comparison.width,
+                    comparison.height,
+                    &comparison.bgra,
+                    [0x26, 0x22, 0x20],
+                )?;
+                eprintln!(
+                    "runtime target alpha-test sources={alpha_test_sources} changed_pixels={}",
+                    diagnostic.changed_pixels
                 );
             }
             if fennel_sources != 0 {
@@ -899,6 +994,7 @@ impl EditorWindow {
                                 composition_external,
                                 false,
                                 true,
+                                RuntimeAlphaTestFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -953,6 +1049,7 @@ impl EditorWindow {
                                 composition_external,
                                 true,
                                 false,
+                                RuntimeAlphaTestFilter::All,
                             )
                         })
                         .map_err(|error| {
@@ -1812,6 +1909,61 @@ fn load_fennel_resources(
     Ok((runtime_fonts, atlases, atlas_routes))
 }
 
+fn runtime_source_is_alpha_test(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    source: EvidenceRuntimeTargetCommandSource,
+) -> bool {
+    match source {
+        EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {
+            matches!(
+                &draws[runtime_draw_index],
+                EvidenceCompleteRuntimeCastDraw::Image(draw) if draw.blend.alpha_test_enabled
+            )
+        }
+        EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index } => {
+            matches!(
+                &draws[runtime_draw_index],
+                EvidenceCompleteRuntimeCastDraw::SliceCell(cell)
+                    if cell.draw.blend.alpha_test_enabled
+            )
+        }
+        EvidenceRuntimeTargetCommandSource::NumberGlyph { runtime_draw_index } => {
+            matches!(
+                &draws[runtime_draw_index],
+                EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph)
+                    if glyph.draw.blend.alpha_test_enabled
+            )
+        }
+        EvidenceRuntimeTargetCommandSource::FennelBatch { .. } => false,
+    }
+}
+
+fn count_runtime_alpha_test_sources(
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    submission: &[EvidenceMergedRuntimeTargetCommand],
+) -> usize {
+    submission
+        .iter()
+        .flat_map(|command| command.sources.iter().copied())
+        .filter(|source| runtime_source_is_alpha_test(draws, *source))
+        .count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeAlphaTestFilter {
+    All,
+    Only,
+}
+
+impl RuntimeAlphaTestFilter {
+    const fn includes(self, alpha_test_enabled: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only => alpha_test_enabled,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_preview_runtime_layers(
     srd_renderer: &mut SrdDx9Renderer,
@@ -1825,6 +1977,7 @@ fn render_preview_runtime_layers(
     external: SrdDx9ExternalContext,
     render_fennel: bool,
     render_number: bool,
+    alpha_test_filter: RuntimeAlphaTestFilter,
 ) -> windows::core::Result<()> {
     if let Some(background) = common_background {
         render_runtime_target_submission(
@@ -1838,6 +1991,7 @@ fn render_preview_runtime_layers(
             external,
             render_fennel,
             render_number,
+            alpha_test_filter,
         )?;
     }
     render_runtime_target_submission(
@@ -1851,6 +2005,7 @@ fn render_preview_runtime_layers(
         external,
         render_fennel,
         render_number,
+        alpha_test_filter,
     )
 }
 
@@ -1866,15 +2021,17 @@ fn render_runtime_target_submission(
     external: SrdDx9ExternalContext,
     render_fennel: bool,
     render_number: bool,
+    alpha_test_filter: RuntimeAlphaTestFilter,
 ) -> windows::core::Result<()> {
     for command in submission {
         if command.vertex_format == 14 && command.primitive_type == 4 {
             if let Some(strip) = build_evidence_merged_runtime_srd_strip(draws, command, |source| {
-                render_number
+                (render_number
                     || !matches!(
                         source,
                         EvidenceRuntimeTargetCommandSource::NumberGlyph { .. }
-                    )
+                    ))
+                    && alpha_test_filter.includes(runtime_source_is_alpha_test(draws, source))
             })
             .map_err(|error| {
                 windows::core::Error::new(
@@ -1936,6 +2093,9 @@ fn render_runtime_target_submission(
             continue;
         }
         for source in &command.sources {
+            if !alpha_test_filter.includes(runtime_source_is_alpha_test(draws, *source)) {
+                continue;
+            }
             match *source {
                 EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {
                     let Some(EvidenceCompleteRuntimeCastDraw::Image(draw)) =
@@ -2333,6 +2493,14 @@ mod tests {
         let left = [1, 2, 3, 0, 4, 5, 6, 7];
         let right = [1, 2, 3, 255, 4, 5, 7, 7];
         assert_eq!(runtime_rgb_difference(&left, &right), 1);
+    }
+
+    #[test]
+    fn runtime_alpha_test_filter_separates_exact_packet_classes() {
+        assert!(RuntimeAlphaTestFilter::All.includes(false));
+        assert!(RuntimeAlphaTestFilter::All.includes(true));
+        assert!(!RuntimeAlphaTestFilter::Only.includes(false));
+        assert!(RuntimeAlphaTestFilter::Only.includes(true));
     }
 
     #[test]

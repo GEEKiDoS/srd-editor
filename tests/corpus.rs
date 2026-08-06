@@ -40,13 +40,15 @@ use srd_editor::shader_bytecode::{
     FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, SLICE_2D_VARIANT_CB_SIMPLE_KEY,
     SLICE_TEXTURED_2D_SIMPLE_KEY, SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
-    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY, embedded_simple_shader_pair,
+    SLICE_TEXTURED_3D_SIMPLE_KEY, SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
+    embedded_simple_shader_pair,
 };
 use srd_editor::srd_draw::{
     EvidenceCompleteRuntimeCastDraw, EvidenceRuntimeTargetCommandSource, FennelTextFontRole,
     SrdHostDrawContext, SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_animation_set_runtime_cast_draws,
+    build_evidence_complete_animation_set_runtime_srd_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_complete_initial_reference_fennel_draws,
     build_evidence_complete_initial_reference_image_draws,
@@ -667,6 +669,76 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
         merged
             .iter()
             .all(|group| group.renderer_layer_key == 0x8680)
+    );
+}
+
+#[test]
+fn common_background_runtime_keeps_the_shipped_alpha_test_image_path() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document = EditorDocument::load(
+        root.join("surfboard/common/commonBackGround/CHU_UI_Common_BK_00_v11.srd"),
+    )
+    .unwrap();
+    let host = CHUSAN_COMMON_BACKGROUND_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
+    let draws = build_evidence_complete_animation_set_runtime_srd_draws(
+        &document.project,
+        &document.textures,
+        0,
+        1,
+        1.0,
+        host,
+    )
+    .unwrap();
+    let alpha_test = draws
+        .iter()
+        .filter_map(|draw| match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(draw) if draw.blend.alpha_test_enabled => {
+                Some(draw)
+            }
+            EvidenceCompleteRuntimeCastDraw::SliceCell(cell)
+                if cell.draw.blend.alpha_test_enabled =>
+            {
+                Some(&cell.draw)
+            }
+            EvidenceCompleteRuntimeCastDraw::NumberGlyph(glyph)
+                if glyph.draw.blend.alpha_test_enabled =>
+            {
+                Some(&glyph.draw)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "Common ANMS[1] frame 1 alpha-test draws={} nodes={:?} keys={:?}",
+        alpha_test.len(),
+        alpha_test
+            .iter()
+            .map(|draw| (draw.layer_index, draw.node_index))
+            .collect::<Vec<_>>(),
+        alpha_test
+            .iter()
+            .map(|draw| String::from_utf8_lossy(&draw.shader_key))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(alpha_test.len(), 8);
+    assert_eq!(
+        alpha_test
+            .iter()
+            .map(|draw| (draw.layer_index, draw.node_index))
+            .collect::<Vec<_>>(),
+        (10..=17)
+            .map(|node_index| (5, node_index))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        alpha_test
+            .iter()
+            .all(|draw| draw.shader_key == SLICE_TEXTURED_3D_SIMPLE_KEY)
     );
 }
 
