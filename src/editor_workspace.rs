@@ -169,6 +169,29 @@ impl EditorWorkspace {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn configure_preview_for_runtime_smoke(
+        &mut self,
+        scene_index: usize,
+        animation_set_index: usize,
+        animation_frame: i32,
+        player: PreviewPlayerSelection,
+        target: PreviewTargetSelection,
+        present_size: [i32; 2],
+        screen_size: [i32; 2],
+    ) {
+        self.selected_scene = scene_index;
+        self.selected_animation_set = animation_set_index;
+        self.frame = animation_frame;
+        self.preview_player = player;
+        self.preview_target = target;
+        self.preview_present_width = present_size[0];
+        self.preview_present_height = present_size[1];
+        self.preview_screen_width = screen_size[0];
+        self.preview_screen_height = screen_size[1];
+        self.preview_scissor = PreviewScissorSelection::Disabled;
+    }
+
     pub fn selected_scene_fennel_runtime_text_inputs(
         &self,
     ) -> BTreeMap<(usize, usize), FennelSrdRuntimeTextInput> {

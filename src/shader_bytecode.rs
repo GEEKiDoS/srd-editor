@@ -15,6 +15,24 @@ pub const FENNEL_TEXTURED_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
 /// DrawPacket +0x60 bit 7 (`ShapeEnv2D`) set.
 pub const FENNEL_TEXTURED_2D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
     *b"EAMAAABAABGAAAAAAA";
+/// Exact compact Simple-selector key selected by textured 2D SliceCast cells
+/// whose SrImage field_0c contributes the additional pixel-shader branch.
+pub const SLICE_TEXTURED_2D_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"EAEBABBAABCBAAAAAA";
+/// Second exact textured 2D SliceCast key observed in the complete game
+/// corpus. The game's compiler emits the already packaged textured 2D pair
+/// byte-for-byte for this selector variant.
+pub const SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"EAEBABBAABIAAAAAAA";
+/// 3D counterpart of the exact SliceCast selector variant above. The original
+/// compiler emits the already packaged normal textured vertex/pixel pair.
+pub const SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"AAEBABBAABIAAAAAAA";
+/// Exact 2D SliceCast selector variant observed in CourseSelect. Its pixel
+/// bytecode is distinct, so the compact key remains explicit rather than
+/// being folded into a nearby packaged variant.
+pub const SLICE_2D_VARIANT_CB_SIMPLE_KEY: [u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH] =
+    *b"EAEBABBAAACBAAAAAA";
 
 pub const FIRST_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "86669F24505A70D6DB560C6B2838EBA7D262B0206825BA3927658AB5A7112D61";
@@ -24,14 +42,22 @@ pub const FIRST_TEXTURED_FIXTURE_PIXEL_SHADER_SHA256: &str =
     "066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F";
 pub const FIRST_2D_FIXTURE_VERTEX_SHADER_SHA256: &str =
     "A3E0CA2EFA3452A529DDE7E92EB638FAAD4A230DF5A5537D2D50BE53BC045BD4";
+pub const SLICE_TEXTURED_PIXEL_SHADER_SHA256: &str =
+    "23CAC67F21338BC63A62D66DF9D5502AA0ED349C414D9AF73670BD8ADDCDCE65";
+pub const SLICE_VARIANT_CB_PIXEL_SHADER_SHA256: &str =
+    "B674C9D61CBE8B051742BB59C2C42618E027EA03DFE9D1F90839793CBBDDE290";
 
-pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 6] = [
+pub const EMBEDDED_SIMPLE_SHADER_KEYS: [[u8; CEYLON_SIMPLE_SHADER_KEY_LENGTH]; 10] = [
     FIRST_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
     FIRST_2D_FIXTURE_SIMPLE_KEY,
     FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
     FENNEL_TEXTURED_SIMPLE_KEY,
     FENNEL_TEXTURED_2D_SIMPLE_KEY,
+    SLICE_TEXTURED_2D_SIMPLE_KEY,
+    SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
+    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
+    SLICE_2D_VARIANT_CB_SIMPLE_KEY,
 ];
 
 pub struct EmbeddedSimpleShaderPair {
@@ -66,6 +92,22 @@ pub fn embedded_simple_shader_pair(
         FENNEL_TEXTURED_2D_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
             vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
             pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        SLICE_TEXTURED_2D_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &SLICE_TEXTURED_PIXEL_SHADER,
+        }),
+        SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &FIRST_TEXTURED_FIXTURE_PIXEL_SHADER,
+        }),
+        SLICE_2D_VARIANT_CB_SIMPLE_KEY => Some(EmbeddedSimpleShaderPair {
+            vertex_shader: &FIRST_2D_FIXTURE_VERTEX_SHADER,
+            pixel_shader: &SLICE_VARIANT_CB_PIXEL_SHADER,
         }),
         _ => None,
     }
@@ -121,6 +163,30 @@ const FIRST_TEXTURED_FIXTURE_PIXEL_SHADER: [u32; 62] = [
     0x04000058, 0x800F0800, 0x81000001, 0x80E40000, 0xA0550002, 0x0000FFFF,
 ];
 
+const SLICE_TEXTURED_PIXEL_SHADER: [u32; 74] = [
+    0xFFFF0300, 0x0200001F, 0x90000000, 0xA00F0800, 0x05000051, 0xA00F0002, 0xBF800000, 0x3F800000,
+    0x4479F99A, 0x00000000, 0x0200001F, 0x8000000A, 0x900F0000, 0x0200001F, 0x8001000A, 0x90070001,
+    0x0200001F, 0x80000005, 0x90030002, 0x03000042, 0x800F0000, 0x90E40002, 0xA0E40800, 0x03000005,
+    0x800F0000, 0x80E40000, 0x90E40000, 0x03000002, 0x80070000, 0x80E40000, 0x90E40001, 0x03000002,
+    0x80070000, 0x80E40000, 0xA0000002, 0x04000004, 0x80070000, 0x80FF0000, 0x80E40000, 0xA0550002,
+    0x02000001, 0x80080000, 0xA0550002, 0x03000005, 0x80070000, 0x80E40000, 0xA0AA0000, 0x03000002,
+    0x800F0001, 0x81E40000, 0xA0AA0002, 0x04000058, 0x800F0001, 0x80E40001, 0xA0FF0002, 0xA0550002,
+    0x03000002, 0x80310001, 0x80E40001, 0x80550001, 0x03000002, 0x80310001, 0x80E40001, 0x80AA0001,
+    0x03000002, 0x80310001, 0x80E40001, 0x80FF0001, 0x04000058, 0x800F0800, 0x81000001, 0x80E40000,
+    0xA0FF0002, 0x0000FFFF,
+];
+
+const SLICE_VARIANT_CB_PIXEL_SHADER: [u32; 63] = [
+    0xFFFF0300, 0x05000051, 0xA00F0002, 0xBF800000, 0x3F800000, 0x4479F99A, 0x00000000, 0x0200001F,
+    0x8000000A, 0x900F0000, 0x0200001F, 0x8001000A, 0x90070001, 0x02000001, 0x80070000, 0x90E40001,
+    0x03000002, 0x80070000, 0x90E40000, 0x80E40000, 0x03000002, 0x80070000, 0x80E40000, 0xA0000002,
+    0x04000004, 0x80070000, 0x90FF0000, 0x80E40000, 0xA0550002, 0x02000001, 0x80080000, 0xA0550002,
+    0x03000005, 0x80070000, 0x80E40000, 0xA0AA0000, 0x03000002, 0x800F0001, 0x81E40000, 0xA0AA0002,
+    0x04000058, 0x800F0001, 0x80E40001, 0xA0FF0002, 0xA0550002, 0x03000002, 0x80310001, 0x80E40001,
+    0x80550001, 0x03000002, 0x80310001, 0x80E40001, 0x80AA0001, 0x03000002, 0x80310001, 0x80E40001,
+    0x80FF0001, 0x04000058, 0x800F0800, 0x81000001, 0x80E40000, 0xA0FF0002, 0x0000FFFF,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +229,31 @@ mod tests {
         assert_eq!(fennel_two_d.pixel_shader.len() * 4, 248);
         assert_eq!(fennel_two_d.vertex_shader, textured_two_d.vertex_shader);
         assert_eq!(fennel_two_d.pixel_shader, textured_two_d.pixel_shader);
+
+        let slice = embedded_simple_shader_pair(&SLICE_TEXTURED_2D_SIMPLE_KEY).unwrap();
+        assert_eq!(slice.vertex_shader, two_d.vertex_shader);
+        assert_eq!(slice.pixel_shader.len() * 4, 296);
+        assert_ne!(slice.pixel_shader, textured.pixel_shader);
+        assert_eq!(slice.pixel_shader[0], 0xFFFF0300);
+        assert_eq!(slice.pixel_shader.last(), Some(&0x0000FFFF));
+
+        let slice_variant_i =
+            embedded_simple_shader_pair(&SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY).unwrap();
+        assert_eq!(slice_variant_i.vertex_shader, textured_two_d.vertex_shader);
+        assert_eq!(slice_variant_i.pixel_shader, textured_two_d.pixel_shader);
+
+        let slice_variant_i_3d =
+            embedded_simple_shader_pair(&SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY).unwrap();
+        assert_eq!(slice_variant_i_3d.vertex_shader, textured.vertex_shader);
+        assert_eq!(slice_variant_i_3d.pixel_shader, textured.pixel_shader);
+
+        let slice_variant_cb =
+            embedded_simple_shader_pair(&SLICE_2D_VARIANT_CB_SIMPLE_KEY).unwrap();
+        assert_eq!(slice_variant_cb.vertex_shader, two_d.vertex_shader);
+        assert_eq!(slice_variant_cb.pixel_shader.len() * 4, 252);
+        assert_ne!(slice_variant_cb.pixel_shader, pair.pixel_shader);
+        assert_ne!(slice_variant_cb.pixel_shader, slice.pixel_shader);
+        assert_eq!(slice_variant_cb.pixel_shader.last(), Some(&0x0000FFFF));
 
         let mut unsupported = FIRST_FIXTURE_SIMPLE_KEY;
         unsupported[0] = b'B';

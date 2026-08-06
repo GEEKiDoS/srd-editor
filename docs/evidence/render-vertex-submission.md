@@ -71,9 +71,11 @@ vertex_count     = 4
 
 新建 record 随后从 vector 尾部移除并析构；因此 target queue 看到的是合并后的单个 command，不是两个 command 的后期视觉批处理。
 
-Rust 的 `build_evidence_filtered_merged_runtime_target_submission` 已对普通 Image/Fennel 路径复现上述相邻比较、完整 renderer layer key、strip `+2` 与 triangle-list 直接累加，并保留每个合并 record 对应的逻辑 source 列表。不同宿主 `2DLayer`、CATR layer override、NODE `0xA0` 偏移或 RefCast 低字节结果都会阻止错误合并。它只接受当前能够完整构造比较键的路径：单一 SrPlayer/同一 enqueue target 状态、无显式 texture override、无 special-depth，且 stencil 关闭。Stencil 开启时逐提交 sequence 生命周期尚未作为独立 runtime 状态闭合，函数会报错而不是静默少合并。
+Rust 的 `build_evidence_filtered_merged_runtime_target_submission` 已对普通 Image、每个 active Slice cell 和 Fennel 路径复现上述相邻比较、完整 renderer layer key、strip `+2` 与 triangle-list 直接累加，并保留每个合并 record 对应的逻辑 source 列表。不同宿主 `2DLayer`、CATR layer override、NODE `0xA0` 偏移或 RefCast 低字节结果都会阻止错误合并。它只接受当前能够完整构造比较键的路径：单一 SrPlayer/同一 enqueue target 状态、无显式 texture override、无 special-depth，且 stencil 关闭。Stencil 开启时逐提交 sequence 生命周期尚未作为独立 runtime 状态闭合，函数会报错而不是静默少合并。
 
-Common 实际样本 `yellow_loop` 第 0 帧的 100 个普通 draw 全部携带 `0x8680`，并精确合并为 9 个 record；该固定回归同时验证 source 映射总数仍为 100。
+普通编辑器 Composition 已按 planner 的 target group 与 source 顺序混合提交 Image/Slice/Fennel。当前 D3D9Ex backend 在一个已绑定的 Composition pass 内逐 source 上传并 draw；它尚未把逻辑上已合并的多个 format-14 strip 物理拼接成含两个退化连接顶点的单个 vertex buffer draw call。因此 target 顺序和视觉结果已接线，但“实际 draw-call 合并”仍是独立未完成项。
+
+Common 实际样本 `yellow_loop` 第 0 帧现由统一 runtime 枚举产生 241 个普通 draw：100 个 Image 和 141 个 active SliceCell，全部携带 `0x8680`。相邻比较精确合并为 10 个 record，source 数依次为 `[2,1,179,1,4,2,6,2,36,8]`，含退化连接顶点后的 vertex count 依次为 `[10,4,1072,4,22,10,34,10,214,46]`；固定回归同时验证 241 个 source 没有丢失或重排成额外 target record。
 
 ## 绘制包到 IDirect3DDevice9
 
@@ -95,6 +97,6 @@ DrawPrimitive(D3DPT_TRIANGLESTRIP, start_vertex, 2)
 
 ## 仍未闭环
 
-- draw packet 的 shader、blend、depth、stencil、scissor、cull、fill 与 color-write 已分别闭环；普通 Image/Fennel 的相邻 record 合并也已接入逻辑 planner。剩余的是把合并后的统一 submission 接到编辑器真实 D3D9Ex draw，并补齐 stencil sequence/special-depth 等尚未进入 runtime record 的状态。
+- draw packet 的 shader、blend、depth、stencil、scissor、cull、fill 与 color-write 已分别闭环；Image/Slice/Fennel 的相邻 record 合并已接入逻辑 planner，统一 source 顺序也已接到编辑器 D3D9Ex。剩余的是物理拼接合并后的 vertex stream，以及 stencil sequence/special-depth 等尚未进入 runtime record 的状态。
 - Image/Text 双 UV 在 shader 或固定管线中的组合公式。
 - DDS 描述符、D3D9/D3DX9_43 创建参数和二维 SYSTEMMEM staging/`UpdateSurface` 已闭环，见 [`dds-resource-loading.md`](dds-resource-loading.md)；内部格式转换、cube request 和设备丢失/重建仍待闭环。

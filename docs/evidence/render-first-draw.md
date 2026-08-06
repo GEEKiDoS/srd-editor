@@ -57,7 +57,7 @@ draw 同时携带精确 packet、VS `c0..c13`/PS `c0` 固定常量、blend、ras
 - 执行 `DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2)`；
 - 用 state block 恢复编辑器调用前的 D3D9 状态。
 
-material scissor 在二进制中是外部 context，而不是 SRD 属性，所以 renderer API 要求显式传入 `SrdDx9ExternalContext`。独立 smoke 明确使用 disabled scissor；这只是测试宿主输入，不外推为游戏任意调用现场的状态。当前首个 GPU 子集同样排除需要未知基础 alpha function/reference 的 alpha-test 或 stencil draw。
+material scissor 与基础 alpha/stencil command 在二进制中是外部 context，而不是 SRD 属性，所以 renderer API 要求显式传入 `SrdDx9ExternalContext`。独立 smoke 明确使用 disabled scissor，并使用 Material 构造器已证明的 alpha test disabled、reference `0`、comparison `GREATER` 默认值；alpha-test preset 因而可以精确覆盖 enable 并保留这两个基础字段。packet stencil override 的逐提交 sequence 生命周期仍未闭环，当前 GPU 子集对此继续显式拒绝。
 
 `--srd-draw-smoke` 在物理 backbuffer 上先清为 `0xFF202226`。未给出 game host 参数时，它只在 smoke flag 下显式构造“SRD CAM 作为 target Camera、SCN size 作为合成 screen”的诊断 host；该 host 不会用于普通编辑器预览，也不声称等于游戏 target。给出 `--advertise-logo-host` 时，target、present 与 screen source size 都由调用者显式指定。`EndScene` 后通过 `GetRenderTargetData` 验证 Composition 存在非清屏覆盖，并检查 backbuffer 诊断采样发生变化；强制 `ResetEx` 后第二帧重复验证。
 

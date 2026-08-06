@@ -20,7 +20,9 @@ use srd_editor::fennel::{
     layout_fennel_static_flag20, layout_fennel_static_mode1, layout_fennel_static_mode56,
     tokenize_fennel_plain_text,
 };
-use srd_editor::game_host::{CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE};
+use srd_editor::game_host::{
+    CHUSAN_ADVERTISE_LOGO_PLAYER, CHUSAN_COMMON_BACKGROUND_PLAYER, CHUSAN_MAIN_SCENE,
+};
 use srd_editor::image::{ImageDefinition, ImageReferenceChannel};
 use srd_editor::number::NumberDefinition;
 use srd_editor::projection::{Matrix4x4, identity_matrix4x4_game};
@@ -36,14 +38,19 @@ use srd_editor::scene::{Layer, Project, ReferenceTarget};
 use srd_editor::shader::{CEYLON_SIMPLE_SHADER_KEY_LENGTH, CeylonSimpleShaderBits};
 use srd_editor::shader_bytecode::{
     FIRST_2D_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+    FIRST_TEXTURED_FIXTURE_SIMPLE_KEY, SLICE_2D_VARIANT_CB_SIMPLE_KEY,
+    SLICE_TEXTURED_2D_SIMPLE_KEY, SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
+    SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
 };
 use srd_editor::srd_draw::{
-    FennelTextFontRole, SrdHostDrawContext, SrdRendererProjectTargetContext,
-    assign_fennel_font_resource_requests, build_evidence_complete_animation_set_image_draws,
+    EvidenceCompleteRuntimeCastDraw, EvidenceRuntimeTargetCommandSource, FennelTextFontRole,
+    SrdHostDrawContext, SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
+    build_evidence_complete_animation_set_image_draws,
     build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_complete_initial_reference_fennel_draws,
     build_evidence_complete_initial_reference_image_draws,
+    build_evidence_complete_initial_runtime_cast_draws,
     build_evidence_filtered_merged_runtime_target_submission,
     collect_fennel_font_resource_requests,
 };
@@ -568,21 +575,168 @@ fn common_background_host_layer_keys_and_adjacent_merges_match_the_sample() {
         CHUSAN_COMMON_BACKGROUND_PLAYER.initial_srd_target_filter(CHUSAN_MAIN_SCENE),
     )
     .unwrap();
-    assert_eq!(draws.len(), 100);
-    assert_eq!(key_counts, BTreeMap::from([(0x8680, 100)]));
-    assert_eq!(merged.len(), 9);
+    let draw_type_counts = draws.iter().fold([0usize; 3], |mut counts, draw| {
+        match draw {
+            EvidenceCompleteRuntimeCastDraw::Image(_) => counts[0] += 1,
+            EvidenceCompleteRuntimeCastDraw::SliceCell(_) => counts[1] += 1,
+            EvidenceCompleteRuntimeCastDraw::Fennel(_) => counts[2] += 1,
+        }
+        counts
+    });
+    let merged_source_type_counts =
+        merged
+            .iter()
+            .flat_map(|group| &group.sources)
+            .fold([0usize; 3], |mut counts, source| {
+                match source {
+                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::Image { .. } => {
+                        counts[0] += 1
+                    }
+                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::SliceCell {
+                        ..
+                    } => counts[1] += 1,
+                    srd_editor::srd_draw::EvidenceRuntimeTargetCommandSource::FennelBatch {
+                        ..
+                    } => counts[2] += 1,
+                }
+                counts
+            });
+    eprintln!(
+        "Common yellow_loop runtime draws={} types={draw_type_counts:?} keys={key_counts:?} merged={} merged source types={merged_source_type_counts:?} group sizes={:?} vertex counts={:?}",
+        draws.len(),
+        merged.len(),
+        merged
+            .iter()
+            .map(|group| group.sources.len())
+            .collect::<Vec<_>>(),
+        merged
+            .iter()
+            .map(|group| group.vertex_count)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(draws.len(), 241);
+    assert_eq!(draw_type_counts, [100, 141, 0]);
+    assert_eq!(key_counts, BTreeMap::from([(0x8680, 241)]));
+    assert_eq!(merged.len(), 10);
+    assert_eq!(merged_source_type_counts, [100, 141, 0]);
+    assert_eq!(
+        merged
+            .iter()
+            .map(|group| group.sources.len())
+            .collect::<Vec<_>>(),
+        [2, 1, 179, 1, 4, 2, 6, 2, 36, 8]
+    );
+    assert_eq!(
+        merged
+            .iter()
+            .map(|group| group.vertex_count)
+            .collect::<Vec<_>>(),
+        [10, 4, 1072, 4, 22, 10, 34, 10, 214, 46]
+    );
     assert_eq!(
         merged
             .iter()
             .map(|group| group.sources.len())
             .sum::<usize>(),
-        100
+        241
     );
     assert!(
         merged
             .iter()
             .all(|group| group.renderer_layer_key == 0x8680)
     );
+}
+
+#[test]
+fn advertise_warning_frame_routes_fennel_into_the_runtime_target_stream() {
+    let Some(root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let document =
+        EditorDocument::load(root.join("surfboard/advertise/CHU_UI_Advertise_00_v10.srd")).unwrap();
+    assert_eq!(
+        document.project.scenes[0].animation_sets[0].name,
+        b"AS_warning_in"
+    );
+
+    let mut runtime_fonts = BTreeMap::new();
+    for (font_index, font) in document.project.fonts.iter().enumerate() {
+        let name = std::str::from_utf8(&font.name).unwrap();
+        let parsed =
+            RuhunaFont::from_rfz(&fs::read(root.join("A000/font").join(name)).unwrap()).unwrap();
+        let token_base = u32::try_from(font_index + 1).unwrap() << 16;
+        runtime_fonts.insert(
+            font.name.clone(),
+            parsed
+                .build_runtime_font(token_base, |page| token_base | u32::from(page) + 1)
+                .unwrap(),
+        );
+    }
+    let mut font_registry = FennelFontSlotRegistry::default();
+    assign_fennel_font_resource_requests(
+        &mut font_registry,
+        collect_fennel_font_resource_requests(&document.project).unwrap(),
+    );
+    let host = CHUSAN_ADVERTISE_LOGO_PLAYER
+        .host_context_for_target(CHUSAN_MAIN_SCENE, 1080, 1920, [1920, 1080])
+        .unwrap();
+    let draws = build_evidence_complete_animation_set_runtime_cast_draws(
+        &document.project,
+        &document.textures,
+        0,
+        0,
+        24.0,
+        host,
+        &font_registry,
+        &runtime_fonts,
+        false,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let submission = build_evidence_filtered_merged_runtime_target_submission(
+        &draws,
+        &CHUSAN_MAIN_SCENE.scene_pass_profile().unwrap(),
+        CHUSAN_ADVERTISE_LOGO_PLAYER.initial_srd_target_filter(CHUSAN_MAIN_SCENE),
+    )
+    .unwrap();
+    let fennel_sources = submission
+        .iter()
+        .flat_map(|command| &command.sources)
+        .filter(|source| {
+            matches!(
+                source,
+                EvidenceRuntimeTargetCommandSource::FennelBatch { .. }
+            )
+        })
+        .count();
+    let fennel_vertices = submission
+        .iter()
+        .flat_map(|command| &command.sources)
+        .filter_map(|source| match *source {
+            EvidenceRuntimeTargetCommandSource::FennelBatch {
+                runtime_draw_index,
+                batch_index,
+            } => match &draws[runtime_draw_index] {
+                EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
+                    Some(draw.batches[batch_index].vertices.len())
+                }
+                _ => unreachable!(),
+            },
+            _ => None,
+        })
+        .sum::<usize>();
+    eprintln!(
+        "Advertise AS_warning_in frame 24 runtime draws={} target groups={} Fennel sources={} vertices={}",
+        draws.len(),
+        submission.len(),
+        fennel_sources,
+        fennel_vertices
+    );
+    assert_eq!(draws.len(), 22);
+    assert_eq!(submission.len(), 2);
+    assert_eq!(fennel_sources, 20);
+    assert_eq!(fennel_vertices, 3_072);
 }
 
 #[test]
@@ -1014,6 +1168,144 @@ fn audits_initial_visible_2d_fennel_draws_in_the_real_corpus() {
         assert_eq!(copied_reference_draw_count, 604);
         assert_eq!(reference_vertex_count, 54_504);
     }
+}
+
+#[test]
+fn audits_initial_slice_cell_runtime_draws_in_the_real_corpus() {
+    let root = corpus_root();
+    if !root.exists() {
+        eprintln!("skipping: SRD corpus not found at {}", root.display());
+        return;
+    }
+    let Some(game_data_root) = std::env::var_os("GAME_DATA_CORPUS").map(PathBuf::from) else {
+        eprintln!("skipping: GAME_DATA_CORPUS is not set");
+        return;
+    };
+    let mut files = Vec::new();
+    collect_srd_files(&root, &mut files);
+    files.sort();
+    let profile = srd_corpus_profile(files.len());
+    if profile != CorpusProfile::Complete91 {
+        eprintln!("skipping: SliceCell runtime audit requires the complete 91-file corpus");
+        return;
+    }
+    let mut runtime_fonts = BTreeMap::new();
+    let mut cell_draw_count = 0usize;
+    let mut copied_cell_draw_count = 0usize;
+    let mut textured_cell_draw_count = 0usize;
+    let mut untextured_cell_draw_count = 0usize;
+    let mut three_d_cell_draw_count = 0usize;
+    let mut shader_keys = BTreeSet::new();
+
+    for path in files {
+        let file = SrdFile::parse(fs::read(&path).unwrap()).unwrap();
+        let project =
+            Project::from_file(&file).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let textures = TextureList::from_file(&file)
+            .unwrap()
+            .unwrap_or(TextureList {
+                declared_count: 0,
+                textures: Vec::new(),
+            });
+        for font in &project.fonts {
+            if runtime_fonts.contains_key(font.name.as_slice())
+                || !font
+                    .name
+                    .iter()
+                    .map(u8::to_ascii_lowercase)
+                    .collect::<Vec<_>>()
+                    .ends_with(b".rfz")
+            {
+                continue;
+            }
+            let name = std::str::from_utf8(&font.name).unwrap();
+            let parsed = RuhunaFont::from_rfz(
+                &fs::read(game_data_root.join("A000/font").join(name)).unwrap(),
+            )
+            .unwrap();
+            runtime_fonts.insert(
+                font.name.clone(),
+                parsed
+                    .build_runtime_font(1, |page| u32::from(page) + 1)
+                    .unwrap(),
+            );
+        }
+        let mut font_registry = FennelFontSlotRegistry::default();
+        assign_fennel_font_resource_requests(
+            &mut font_registry,
+            collect_fennel_font_resource_requests(&project)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+        );
+        for scene_index in 0..project.scenes.len() {
+            let draws = build_evidence_complete_initial_runtime_cast_draws(
+                &project,
+                &textures,
+                scene_index,
+                identity_host_context(),
+                &font_registry,
+                &runtime_fonts,
+                false,
+                &BTreeMap::new(),
+            )
+            .unwrap_or_else(|error| panic!("{} scene {scene_index}: {error}", path.display()));
+            for draw in draws {
+                let EvidenceCompleteRuntimeCastDraw::SliceCell(cell) = draw else {
+                    continue;
+                };
+                let source_layer =
+                    &project.scenes[cell.draw.scene_index].layers[cell.draw.layer_index];
+                let definition = source_layer.csli_by_node[cell.draw.node_index]
+                    .as_ref()
+                    .expect("SliceCell draw lost its CSLI source");
+                assert!(
+                    definition.cells[cell.cell_index].flags & 0x100 != 0,
+                    "{} emitted inactive SliceCell",
+                    path.display()
+                );
+                let resolved = textures.resolve_slice_cell(definition, cell.cell_index);
+                assert_eq!(cell.draw.texture_bindings[0].is_some(), resolved.is_some());
+                assert_eq!(cell.draw.texture_bindings[1..], [None, None]);
+                shader_keys.insert(cell.draw.shader_key);
+                cell_draw_count += 1;
+                copied_cell_draw_count += usize::from(matches!(
+                    cell.draw.owner,
+                    ReferenceLayerParent::ReferenceInstance(_)
+                ));
+                textured_cell_draw_count += usize::from(resolved.is_some());
+                untextured_cell_draw_count += usize::from(resolved.is_none());
+                three_d_cell_draw_count += usize::from(!cell.draw.is_2d);
+            }
+        }
+    }
+
+    let shader_key_strings = shader_keys
+        .iter()
+        .map(|key| String::from_utf8_lossy(key).into_owned())
+        .collect::<Vec<_>>();
+    eprintln!(
+        "{profile:?}: SliceCell draws={cell_draw_count}, copied={copied_cell_draw_count}, textured={textured_cell_draw_count}, untextured={untextured_cell_draw_count}, 3D={three_d_cell_draw_count}, shader keys={shader_key_strings:?}"
+    );
+    assert_eq!(cell_draw_count, 3_745);
+    assert_eq!(copied_cell_draw_count, 1_314);
+    assert_eq!(textured_cell_draw_count, 3_564);
+    assert_eq!(untextured_cell_draw_count, 181);
+    assert_eq!(three_d_cell_draw_count, 858);
+    assert_eq!(
+        shader_keys,
+        BTreeSet::from([
+            FIRST_TEXTURED_FIXTURE_SIMPLE_KEY,
+            SLICE_TEXTURED_3D_VARIANT_I_SIMPLE_KEY,
+            SLICE_2D_VARIANT_CB_SIMPLE_KEY,
+            FIRST_2D_FIXTURE_SIMPLE_KEY,
+            SLICE_TEXTURED_2D_SIMPLE_KEY,
+            FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY,
+            SLICE_TEXTURED_2D_VARIANT_I_SIMPLE_KEY,
+        ])
+    );
+    assert_eq!(
+        cell_draw_count,
+        textured_cell_draw_count + untextured_cell_draw_count
+    );
 }
 
 #[test]

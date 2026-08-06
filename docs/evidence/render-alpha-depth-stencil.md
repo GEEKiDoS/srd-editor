@@ -15,6 +15,9 @@
 - `ceylon_apply_draw_packet_state` (`0x6CEE30`)
 - `d3d9_map_comparison_function` (`0xE5AF80`)
 - `d3d9_map_stencil_operation` (`0xE5B4B0`)
+- `ceylon::scene::element::Material` 构造器 `sub_E8C7F0`
+- Material command 构造器 `sub_E93070`
+- stencil command 构造器 `sub_E93230`
 - `d3d9_flush_blend_and_alpha_state` (`0xE5D2D0`)
 - `d3d9_flush_depth_state` (`0xE5D740`)
 - `d3d9_flush_stencil_state` (`0xE5DB20`)
@@ -76,6 +79,8 @@ packet `flags+0x0C bit 0x100` 总是决定 RenderState `+0x40` stencil enable。
 当低四位 comparison 为 internal `1` 时，函数另外强制 `RenderState+0x24 = 1` 和 `+0x28 = 128`，即开启 alpha test 并设置 alpha reference；它不改写 `+0x2C` 的基础 alpha comparison。
 
 draw packet 构造器写入的基线 flags 是 `0x00AFE000`。这可解码为 Z enable、Z write enable 和 internal comparison `5`，但它是该构造路径的 packet 初值，不应被扩张成所有调用上下文的全局默认状态。
+
+默认 Material 的基础 alpha/stencil 输入也已由构造链闭环。`sub_E8C7F0` 对 Material `+0x58` 调用 `sub_E93070`；后者写入 alpha test disabled、reference `0`、internal comparison `6`。comparison 表证明 internal `6` 为 D3D9 `GREATER`，所以默认 Material 上 alpha-test preset 的最终条件是 source alpha `> 0`。`sub_E93230` 则把默认 stencil 写为 disabled、comparison/op 字段 `1`、reference/mask/write-mask 为零。Rust 的 `CeylonAlphaStencilState::default_material()` 固化这些构造值；独立编辑器宿主在没有外部自定义 Material 时使用它们，packet stencil override 仍因 sequence 生命周期未闭合而显式拒绝。
 
 ## Internal 枚举到 D3D9
 

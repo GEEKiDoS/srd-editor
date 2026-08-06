@@ -27,15 +27,21 @@ use crate::game_host::{
     CHUSAN_MAIN_SCENE,
 };
 use crate::imgui_dx9::ImguiDx9Renderer;
+use crate::reference_runtime::ReferenceLayerParent;
 use crate::ruhuna::{RuhunaFont, RuhunaRuntimeFont};
+use crate::scene::ReferenceTarget;
 use crate::shader_bytecode::{
     FIRST_FIXTURE_SIMPLE_KEY, FIRST_TEXTURED_2D_FIXTURE_SIMPLE_KEY, embedded_simple_shader_pair,
 };
 use crate::srd_draw::{
-    EvidenceCompleteFennelDraw, EvidenceCompleteSrdDraw, FennelFontResourceAssignment,
-    SrdHostDrawContext, SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
+    EvidenceCompleteFennelDraw, EvidenceCompleteRuntimeCastDraw, EvidenceCompleteSrdDraw,
+    EvidenceMergedRuntimeTargetCommand, EvidenceRuntimeTargetCommandSource,
+    FennelFontResourceAssignment, FennelRuntimeTextCastKey, SrdHostDrawContext,
+    SrdRendererProjectTargetContext, assign_fennel_font_resource_requests,
     build_evidence_complete_animation_set_image_draws,
+    build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
+    build_evidence_filtered_merged_runtime_target_submission,
     collect_fennel_font_resource_requests,
 };
 use crate::transform::Affine3x4;
@@ -54,12 +60,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let srd_fennel_smoke = arguments
         .iter()
         .any(|argument| argument == "--srd-fennel-smoke");
+    let srd_runtime_smoke = parse_runtime_smoke_argument(&arguments)?;
     let dds_device_audit = arguments
         .iter()
         .any(|argument| argument == "--dds-device-audit");
     let smoke_test = srd_draw_smoke
         || srd_texture_smoke
         || srd_fennel_smoke
+        || srd_runtime_smoke.is_some()
         || dds_device_audit
         || arguments
             .iter()
@@ -75,6 +83,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         srd_draw_smoke,
         srd_texture_smoke,
         srd_fennel_smoke,
+        srd_runtime_smoke,
         dds_device_audit,
         chusan_player_host,
         document_path,
@@ -93,6 +102,7 @@ struct EditorApplication {
     srd_draw_smoke: bool,
     srd_texture_smoke: bool,
     srd_fennel_smoke: bool,
+    srd_runtime_smoke: Option<RuntimeSmokeSelection>,
     dds_device_audit: bool,
     chusan_player_host: Option<ChusanPlayerHostArgument>,
     document_path: Option<PathBuf>,
@@ -108,11 +118,19 @@ struct ChusanPlayerHostArgument {
     screen_height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeSmokeSelection {
+    scene_index: usize,
+    animation_set_index: usize,
+    frame: i32,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct EditorSmokeOptions {
     srd_draw: bool,
     srd_texture: bool,
     srd_fennel: bool,
+    srd_runtime: Option<RuntimeSmokeSelection>,
     dds_device_audit: bool,
     chusan_player_host: Option<ChusanPlayerHostArgument>,
 }
@@ -132,6 +150,8 @@ struct EditorWindow {
     srd_renderer: Option<SrdDx9Renderer>,
     srd_textures: Option<SrdD3d9TextureSet>,
     srd_draws: Vec<EvidenceCompleteSrdDraw>,
+    runtime_draws: Vec<EvidenceCompleteRuntimeCastDraw>,
+    runtime_submission: Vec<EvidenceMergedRuntimeTargetCommand>,
     fennel_renderer: Option<FennelDx9Renderer>,
     fennel_atlases: BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
     fennel_atlas_routes: BTreeMap<u32, FennelAtlasRoute>,
@@ -141,6 +161,7 @@ struct EditorWindow {
     verify_srd_pixels: bool,
     verify_textured_pixels: bool,
     verify_fennel_pixels: bool,
+    verify_runtime_pixels: bool,
     verify_hidpi: bool,
     workspace: EditorWorkspace,
     dpi_factor: f64,
@@ -153,6 +174,7 @@ impl EditorApplication {
         srd_draw_smoke: bool,
         srd_texture_smoke: bool,
         srd_fennel_smoke: bool,
+        srd_runtime_smoke: Option<RuntimeSmokeSelection>,
         dds_device_audit: bool,
         chusan_player_host: Option<ChusanPlayerHostArgument>,
         document_path: Option<PathBuf>,
@@ -164,6 +186,7 @@ impl EditorApplication {
             srd_draw_smoke,
             srd_texture_smoke,
             srd_fennel_smoke,
+            srd_runtime_smoke,
             dds_device_audit,
             chusan_player_host,
             document_path,
@@ -183,6 +206,7 @@ impl EditorWindow {
             srd_draw: srd_draw_smoke,
             srd_texture: srd_texture_smoke,
             srd_fennel: srd_fennel_smoke,
+            srd_runtime: srd_runtime_smoke,
             dds_device_audit,
             chusan_player_host,
         } = smoke;
@@ -219,6 +243,36 @@ impl EditorWindow {
             ImguiDx9Renderer::new(&mut imgui, d3d9.device()).map_err(|error| error.to_string())?;
         let workspace_path = (!dds_device_audit).then_some(document_path).flatten();
         let mut workspace = EditorWorkspace::new(build_default_layout, workspace_path);
+        if let Some(runtime) = srd_runtime_smoke {
+            let host = chusan_player_host.ok_or_else(|| {
+                "--srd-runtime-smoke requires --advertise-logo-host or --common-background-host"
+                    .to_string()
+            })?;
+            let player = if host.common_background {
+                PreviewPlayerSelection::CommonBackground
+            } else {
+                PreviewPlayerSelection::AdvertiseLogo
+            };
+            workspace.configure_preview_for_runtime_smoke(
+                runtime.scene_index,
+                runtime.animation_set_index,
+                runtime.frame,
+                player,
+                host.target,
+                [
+                    i32::try_from(host.present_width)
+                        .map_err(|_| "runtime smoke present width exceeds i32".to_string())?,
+                    i32::try_from(host.present_height)
+                        .map_err(|_| "runtime smoke present height exceeds i32".to_string())?,
+                ],
+                [
+                    i32::try_from(host.screen_width)
+                        .map_err(|_| "runtime smoke screen width exceeds i32".to_string())?,
+                    i32::try_from(host.screen_height)
+                        .map_err(|_| "runtime smoke screen height exceeds i32".to_string())?,
+                ],
+            );
+        }
         let require_srd_draw = srd_draw_smoke || srd_texture_smoke;
         let draw_result = if require_srd_draw {
             workspace.document().and_then(|document| {
@@ -493,6 +547,8 @@ impl EditorWindow {
             srd_renderer,
             srd_textures,
             srd_draws,
+            runtime_draws: Vec::new(),
+            runtime_submission: Vec::new(),
             fennel_renderer,
             fennel_atlases,
             fennel_atlas_routes,
@@ -502,6 +558,7 @@ impl EditorWindow {
             verify_srd_pixels: srd_draw_smoke,
             verify_textured_pixels: srd_texture_smoke,
             verify_fennel_pixels: srd_fennel_smoke,
+            verify_runtime_pixels: srd_runtime_smoke.is_some(),
             verify_hidpi: smoke_test,
             workspace,
             dpi_factor,
@@ -589,7 +646,11 @@ impl EditorWindow {
         self.platform
             .prepare_frame(self.imgui.io_mut(), &self.window)
             .map_err(|error| error.to_string())?;
-        if !self.verify_srd_pixels && !self.verify_textured_pixels && !self.verify_fennel_pixels {
+        if self.verify_runtime_pixels
+            || (!self.verify_srd_pixels
+                && !self.verify_textured_pixels
+                && !self.verify_fennel_pixels)
+        {
             self.sync_preview_host();
         }
         if self.verify_hidpi {
@@ -609,6 +670,107 @@ impl EditorWindow {
             } else {
                 SrdDx9ExternalContext::without_scissor()
             };
+        if !self.runtime_submission.is_empty() {
+            let runtime_draws = &self.runtime_draws;
+            let runtime_submission = &self.runtime_submission;
+            let srd_textures = self.srd_textures.as_ref();
+            let fennel_renderer = self.fennel_renderer.as_mut();
+            let fennel_atlases = &self.fennel_atlases;
+            let fennel_atlas_routes = &self.fennel_atlas_routes;
+            let renderer = self
+                .srd_renderer
+                .as_mut()
+                .ok_or_else(|| "Runtime target stream lost the Composition renderer".to_string())?;
+            renderer
+                .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                    render_runtime_target_submission(
+                        renderer,
+                        fennel_renderer,
+                        runtime_draws,
+                        runtime_submission,
+                        srd_textures,
+                        fennel_atlases,
+                        fennel_atlas_routes,
+                        composition_external,
+                        true,
+                    )
+                })
+                .map_err(|error| format!("Runtime target composition draw failed: {error}"))?;
+        }
+        if self.verify_runtime_pixels {
+            let fennel_sources = self
+                .runtime_submission
+                .iter()
+                .flat_map(|command| &command.sources)
+                .filter(|source| {
+                    matches!(
+                        source,
+                        EvidenceRuntimeTargetCommandSource::FennelBatch { .. }
+                    )
+                })
+                .count();
+            if fennel_sources == 0 {
+                return Err("runtime smoke target stream contains no Fennel batch".to_string());
+            }
+            self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let with_fennel = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "runtime smoke lost the Composition renderer".to_string())?
+                .read_composition_bgra()
+                .map_err(|error| format!("runtime smoke readback failed: {error}"))?;
+            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+            {
+                let runtime_draws = &self.runtime_draws;
+                let runtime_submission = &self.runtime_submission;
+                let srd_textures = self.srd_textures.as_ref();
+                let fennel_renderer = self.fennel_renderer.as_mut();
+                let fennel_atlases = &self.fennel_atlases;
+                let fennel_atlas_routes = &self.fennel_atlas_routes;
+                let renderer = self.srd_renderer.as_mut().ok_or_else(|| {
+                    "runtime smoke lost the Composition renderer during comparison".to_string()
+                })?;
+                renderer
+                    .render_runtime_to_composition(CLEAR_COLOR_ARGB, |renderer| {
+                        render_runtime_target_submission(
+                            renderer,
+                            fennel_renderer,
+                            runtime_draws,
+                            runtime_submission,
+                            srd_textures,
+                            fennel_atlases,
+                            fennel_atlas_routes,
+                            composition_external,
+                            false,
+                        )
+                    })
+                    .map_err(|error| {
+                        format!("runtime smoke no-Fennel comparison draw failed: {error}")
+                    })?;
+            }
+            self.d3d9.end_scene().map_err(|error| error.to_string())?;
+            let without_fennel = self
+                .srd_renderer
+                .as_ref()
+                .ok_or_else(|| "runtime smoke lost its comparison target".to_string())?
+                .read_composition_bgra()
+                .map_err(|error| format!("runtime smoke comparison readback failed: {error}"))?;
+            let fennel_changed_pixels = with_fennel
+                .bgra
+                .chunks_exact(4)
+                .zip(without_fennel.bgra.chunks_exact(4))
+                .filter(|(with, without)| with[..3] != without[..3])
+                .count();
+            if fennel_changed_pixels == 0 {
+                return Err(
+                    "runtime smoke Fennel batches changed no Composition RGB pixels".to_string(),
+                );
+            }
+            eprintln!(
+                "runtime target Fennel sources={fennel_sources} changed_pixels={fennel_changed_pixels}"
+            );
+            self.d3d9.begin_scene().map_err(|error| error.to_string())?;
+        }
         if !self.srd_draws.is_empty()
             && let Some(renderer) = &mut self.srd_renderer
         {
@@ -809,6 +971,8 @@ impl EditorWindow {
         self.srd_renderer = None;
         self.srd_textures = None;
         self.srd_draws.clear();
+        self.runtime_draws.clear();
+        self.runtime_submission.clear();
         self.fennel_renderer = None;
         self.fennel_atlases.clear();
         self.fennel_atlas_routes.clear();
@@ -856,6 +1020,8 @@ impl EditorWindow {
         };
         let host = host.map_err(|error| error.to_string())?;
 
+        let selected_runtime_text_inputs =
+            self.workspace.selected_scene_fennel_runtime_text_inputs();
         let document = self
             .workspace
             .document()
@@ -875,31 +1041,90 @@ impl EditorWindow {
                     settings.animation_set_index
                 )
             })?;
-        let mut draws = build_evidence_complete_animation_set_image_draws(
+        let mut font_registry = FennelFontSlotRegistry::default();
+        let assignments = assign_fennel_font_resource_requests(
+            &mut font_registry,
+            collect_fennel_font_resource_requests(&document.project)
+                .map_err(|error| error.to_string())?,
+        );
+        let game_data_root = if assignments.is_empty() {
+            None
+        } else {
+            Some(find_game_data_root(&document.path).ok_or_else(|| {
+                format!(
+                    "Could not locate the game data root above {} for RFZ resources",
+                    document.path.display()
+                )
+            })?)
+        };
+        let (runtime_fonts, fennel_atlases, fennel_atlas_routes) = if assignments.is_empty() {
+            (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+        } else {
+            load_fennel_resources(
+                self.d3d9.device(),
+                game_data_root
+                    .as_ref()
+                    .expect("non-empty assignments require a game data root"),
+                &assignments,
+            )?
+        };
+        let runtime_text_inputs = selected_runtime_text_inputs
+            .into_iter()
+            .map(|((layer_index, node_index), input)| {
+                (
+                    FennelRuntimeTextCastKey {
+                        owner: ReferenceLayerParent::ProjectLayer(ReferenceTarget {
+                            scene_index: settings.scene_index,
+                            layer_index,
+                        }),
+                        node_index,
+                    },
+                    input,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let runtime_draws = build_evidence_complete_animation_set_runtime_cast_draws(
             &document.project,
             &document.textures,
             settings.scene_index,
             settings.animation_set_index,
             settings.animation_frame as f32,
             host,
+            &font_registry,
+            &runtime_fonts,
+            false,
+            &runtime_text_inputs,
         )
         .map_err(|error| error.to_string())?;
-        draws.retain(|draw| target_filter.accepts(draw.packet));
-        if draws.is_empty() {
+        let target_profile = target
+            .scene_pass_profile()
+            .map_err(|error| error.to_string())?;
+        let runtime_submission = build_evidence_filtered_merged_runtime_target_submission(
+            &runtime_draws,
+            &target_profile,
+            target_filter,
+        )
+        .map_err(|error| error.to_string())?;
+        if runtime_submission.is_empty() {
             return Err(format!(
                 "No target-admitted evidence-complete GPU draw for {}",
                 target.name
             ));
         }
-        let required_texture_indices = draws
+        let required_texture_indices = runtime_draws
             .iter()
+            .filter_map(|draw| match draw {
+                EvidenceCompleteRuntimeCastDraw::Image(draw) => Some(draw),
+                EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => Some(&cell.draw),
+                EvidenceCompleteRuntimeCastDraw::Fennel(_) => None,
+            })
             .flat_map(|draw| draw.texture_bindings.iter().flatten())
             .map(|binding| binding.texture_index)
             .collect::<Vec<_>>();
         let textures = if required_texture_indices.is_empty() {
             None
         } else {
-            let game_data_root = find_game_data_root(&document.path).ok_or_else(|| {
+            let texture_root = find_game_data_root(&document.path).ok_or_else(|| {
                 format!(
                     "Could not locate the game data root above {}",
                     document.path.display()
@@ -908,7 +1133,7 @@ impl EditorWindow {
             Some(
                 SrdD3d9TextureSet::load_required(
                     self.d3d9.device(),
-                    &game_data_root,
+                    &texture_root,
                     &document.textures,
                     required_texture_indices,
                 )
@@ -931,7 +1156,19 @@ impl EditorWindow {
         self.composition_texture_id = Some(texture_id);
         self.srd_renderer = Some(renderer);
         self.srd_textures = textures;
-        self.srd_draws = draws;
+        self.srd_draws.clear();
+        self.runtime_draws = runtime_draws;
+        self.runtime_submission = runtime_submission;
+        self.fennel_renderer = self
+            .runtime_draws
+            .iter()
+            .any(|draw| matches!(draw, EvidenceCompleteRuntimeCastDraw::Fennel(_)))
+            .then(|| FennelDx9Renderer::new(self.d3d9.device()))
+            .transpose()
+            .map_err(|error| format!("Failed to create Fennel renderer: {error}"))?;
+        self.fennel_atlases = fennel_atlases;
+        self.fennel_atlas_routes = fennel_atlas_routes;
+        self.fennel_draws.clear();
         Ok(())
     }
 }
@@ -978,6 +1215,43 @@ fn diagnostic_project_camera_smoke_host(
         projection_view,
         target_screen_size,
     )
+}
+
+fn parse_runtime_smoke_argument(
+    arguments: &[String],
+) -> Result<Option<RuntimeSmokeSelection>, String> {
+    let Some(value) = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--srd-runtime-smoke="))
+    else {
+        return Ok(None);
+    };
+    let mut fields = value.split(',');
+    let scene_index = fields
+        .next()
+        .ok_or_else(|| "runtime smoke is missing the scene index".to_string())?
+        .parse::<usize>()
+        .map_err(|error| format!("invalid runtime smoke scene index: {error}"))?;
+    let animation_set_index = fields
+        .next()
+        .ok_or_else(|| "runtime smoke is missing the animation-set index".to_string())?
+        .parse::<usize>()
+        .map_err(|error| format!("invalid runtime smoke animation-set index: {error}"))?;
+    let frame = fields
+        .next()
+        .ok_or_else(|| "runtime smoke is missing the frame".to_string())?
+        .parse::<i32>()
+        .map_err(|error| format!("invalid runtime smoke frame: {error}"))?;
+    if fields.next().is_some() {
+        return Err(
+            "--srd-runtime-smoke must use SCENE_INDEX,ANIMATION_SET_INDEX,FRAME".to_string(),
+        );
+    }
+    Ok(Some(RuntimeSmokeSelection {
+        scene_index,
+        animation_set_index,
+        frame,
+    }))
 }
 
 fn parse_chusan_player_host_argument(
@@ -1141,6 +1415,102 @@ fn load_fennel_resources(
         atlases.insert(assignment.request.name.clone(), atlas);
     }
     Ok((runtime_fonts, atlases, atlas_routes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_runtime_target_submission(
+    srd_renderer: &mut SrdDx9Renderer,
+    mut fennel_renderer: Option<&mut FennelDx9Renderer>,
+    draws: &[EvidenceCompleteRuntimeCastDraw],
+    submission: &[EvidenceMergedRuntimeTargetCommand],
+    textures: Option<&SrdD3d9TextureSet>,
+    atlases: &BTreeMap<Vec<u8>, RuhunaD3d9AtlasSet>,
+    atlas_routes: &BTreeMap<u32, FennelAtlasRoute>,
+    external: SrdDx9ExternalContext,
+    render_fennel: bool,
+) -> windows::core::Result<()> {
+    for command in submission {
+        for source in &command.sources {
+            match *source {
+                EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index } => {
+                    let Some(EvidenceCompleteRuntimeCastDraw::Image(draw)) =
+                        draws.get(runtime_draw_index)
+                    else {
+                        return Err(windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target Image source does not match its draw",
+                        ));
+                    };
+                    srd_renderer.render(std::slice::from_ref(draw), external, textures)?;
+                }
+                EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index } => {
+                    let Some(EvidenceCompleteRuntimeCastDraw::SliceCell(cell)) =
+                        draws.get(runtime_draw_index)
+                    else {
+                        return Err(windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target SliceCell source does not match its draw",
+                        ));
+                    };
+                    srd_renderer.render(std::slice::from_ref(&cell.draw), external, textures)?;
+                }
+                EvidenceRuntimeTargetCommandSource::FennelBatch {
+                    runtime_draw_index,
+                    batch_index,
+                } => {
+                    if !render_fennel {
+                        continue;
+                    }
+                    let Some(EvidenceCompleteRuntimeCastDraw::Fennel(draw)) =
+                        draws.get(runtime_draw_index)
+                    else {
+                        return Err(windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target Fennel source does not match its draw",
+                        ));
+                    };
+                    let batch = draw.batches.get(batch_index).ok_or_else(|| {
+                        windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target Fennel batch index is outside its draw",
+                        )
+                    })?;
+                    let renderer = fennel_renderer.as_deref_mut().ok_or_else(|| {
+                        windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            "Runtime target Fennel source has no D3D9 renderer",
+                        )
+                    })?;
+                    let route = atlas_routes.get(&batch.texture_token).ok_or_else(|| {
+                        windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            format!(
+                                "Fennel texture token {:#010x} has no atlas route",
+                                batch.texture_token
+                            ),
+                        )
+                    })?;
+                    let atlas = atlases.get(route.font_name.as_slice()).ok_or_else(|| {
+                        windows::core::Error::new(
+                            windows::Win32::Foundation::E_INVALIDARG,
+                            format!(
+                                "Fennel atlas {:?} is not loaded",
+                                String::from_utf8_lossy(&route.font_name)
+                            ),
+                        )
+                    })?;
+                    let routed_batch = EvidenceCompleteFennelBatch {
+                        page_index: route.page_index,
+                        is_2d: draw.is_2d,
+                        fixed_constants: draw.fixed_constants,
+                        vertices: &batch.vertices,
+                    };
+                    renderer.render(std::slice::from_ref(&routed_batch), external, atlas)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn render_fennel_draws(
@@ -1311,6 +1681,7 @@ impl ApplicationHandler for EditorApplication {
                                 srd_draw: self.srd_draw_smoke,
                                 srd_texture: self.srd_texture_smoke,
                                 srd_fennel: self.srd_fennel_smoke,
+                                srd_runtime: self.srd_runtime_smoke,
                                 dds_device_audit: self.dds_device_audit,
                                 chusan_player_host: self.chusan_player_host,
                             },
@@ -1474,6 +1845,25 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn runtime_smoke_argument_requires_exact_scene_animation_and_frame_tuple() {
+        let arguments = vec!["--srd-runtime-smoke=2,3,-24".to_string()];
+        assert_eq!(
+            parse_runtime_smoke_argument(&arguments).unwrap(),
+            Some(RuntimeSmokeSelection {
+                scene_index: 2,
+                animation_set_index: 3,
+                frame: -24,
+            })
+        );
+        assert!(parse_runtime_smoke_argument(&[]).unwrap().is_none());
+        assert!(parse_runtime_smoke_argument(&["--srd-runtime-smoke=0,1".to_string()]).is_err());
+        assert!(
+            parse_runtime_smoke_argument(&["--srd-runtime-smoke=0,1,2,3".to_string()]).is_err()
+        );
+        assert!(parse_runtime_smoke_argument(&["--srd-runtime-smoke=x,1,2".to_string()]).is_err());
     }
 
     #[test]

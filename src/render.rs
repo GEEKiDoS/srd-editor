@@ -867,6 +867,27 @@ pub struct CeylonAlphaStencilState {
 }
 
 impl CeylonAlphaStencilState {
+    /// Exact state produced by the default
+    /// `ceylon::scene::element::Material` command constructors before any
+    /// per-material override is applied. `ceylon_apply_draw_packet_state`
+    /// preserves the reference/function when a render preset merely enables
+    /// alpha testing, so presets 1/2/9/12 test source alpha `GREATER` than 0.
+    pub const fn default_material() -> Self {
+        Self {
+            alpha_test_enabled: false,
+            alpha_reference: 0,
+            alpha_function_internal: 6,
+            stencil_enabled: false,
+            stencil_function_internal: 1,
+            stencil_fail_internal: 1,
+            stencil_z_fail_internal: 1,
+            stencil_pass_internal: 1,
+            stencil_reference: 0,
+            stencil_mask: 0,
+            stencil_write_mask: 0,
+        }
+    }
+
     /// Applies the conditional packet override block in
     /// `ceylon_apply_draw_packet_state` to a caller-supplied base RenderState.
     pub fn apply_draw_packet(&mut self, packet: CeylonDrawPacketPresetState) {
@@ -1838,6 +1859,28 @@ mod tests {
         apply_srd_image_alpha_stencil_packet_fields(&mut packet, 1, 8, 0, 0, &mut counter);
         assert_eq!(packet.packed_08, 0x2001);
         assert_eq!(packet.flags_0c, 0x100);
+    }
+
+    #[test]
+    fn default_material_alpha_and_stencil_state_matches_binary_constructors() {
+        let state = CeylonAlphaStencilState::default_material();
+        assert!(!state.alpha_test_enabled);
+        assert_eq!(state.alpha_reference, 0);
+        assert_eq!(
+            state.alpha_function(),
+            Some(D3d9ComparisonFunction::Greater)
+        );
+        assert!(!state.stencil_enabled);
+        assert_eq!(
+            state.stencil_function(),
+            Some(D3d9ComparisonFunction::Always)
+        );
+        assert_eq!(state.stencil_fail(), Some(D3d9StencilOperation::Zero));
+        assert_eq!(state.stencil_z_fail(), Some(D3d9StencilOperation::Zero));
+        assert_eq!(state.stencil_pass(), Some(D3d9StencilOperation::Zero));
+        assert_eq!(state.stencil_reference, 0);
+        assert_eq!(state.stencil_mask, 0);
+        assert_eq!(state.stencil_write_mask, 0);
     }
 
     #[test]

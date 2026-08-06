@@ -5,16 +5,16 @@ use std::ptr;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D9::{
-    D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DPT_TRIANGLELIST, D3DRS_ALPHABLENDENABLE,
-    D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE,
-    D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE,
-    D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE,
-    D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV,
-    D3DSAMP_BORDERCOLOR, D3DSAMP_MAGFILTER, D3DSAMP_MAXANISOTROPY, D3DSAMP_MAXMIPLEVEL,
-    D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_MIPMAPLODBIAS, D3DSBT_ALL, D3DUSAGE_DYNAMIC,
-    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, IDirect3DDevice9, IDirect3DPixelShader9,
-    IDirect3DStateBlock9, IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9,
-    IDirect3DVertexShader9,
+    D3DLOCK_DISCARD, D3DPOOL_DEFAULT, D3DPT_TRIANGLELIST, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC,
+    D3DRS_ALPHAREF, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA,
+    D3DRS_COLORWRITEENABLE, D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE,
+    D3DRS_SCISSORTESTENABLE, D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA,
+    D3DRS_STENCILENABLE, D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU,
+    D3DSAMP_ADDRESSV, D3DSAMP_BORDERCOLOR, D3DSAMP_MAGFILTER, D3DSAMP_MAXANISOTROPY,
+    D3DSAMP_MAXMIPLEVEL, D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_MIPMAPLODBIAS, D3DSBT_ALL,
+    D3DUSAGE_DYNAMIC, D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, IDirect3DDevice9,
+    IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DVertexBuffer9,
+    IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
 };
 use windows::core::{Error, HRESULT, Result};
 
@@ -164,6 +164,12 @@ impl FennelDx9Renderer {
 
         let packet = fennel_default_draw_packet(batch.is_2d);
         let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
+        let mut alpha_stencil = external.alpha_stencil;
+        alpha_stencil.alpha_test_enabled = blend.alpha_test_enabled;
+        alpha_stencil.apply_draw_packet(packet);
+        let alpha_function = alpha_stencil
+            .alpha_function()
+            .ok_or_else(|| Error::new(E_INVALIDARG, "invalid internal Fennel alpha comparison"))?;
         let raster = fennel_default_raster_state(batch.is_2d);
         let depth = CeylonDepthState::from_draw_flags(packet.draw_flags_00);
         let cull = raster
@@ -251,8 +257,14 @@ impl FennelDx9Renderer {
                 .SetRenderState(D3DRS_DESTBLEND, blend.destination_blend as u32)?;
             self.device
                 .SetRenderState(D3DRS_BLENDOP, blend.blend_operation as u32)?;
+            self.device.SetRenderState(
+                D3DRS_ALPHATESTENABLE,
+                u32::from(alpha_stencil.alpha_test_enabled),
+            )?;
             self.device
-                .SetRenderState(D3DRS_ALPHATESTENABLE, u32::from(blend.alpha_test_enabled))?;
+                .SetRenderState(D3DRS_ALPHAREF, alpha_stencil.alpha_reference)?;
+            self.device
+                .SetRenderState(D3DRS_ALPHAFUNC, alpha_function as u32)?;
             self.device.SetRenderState(
                 D3DRS_SEPARATEALPHABLENDENABLE,
                 u32::from(blend.separate_alpha_blend_enabled),

@@ -46,6 +46,17 @@
 
 恢复 CAST 二维标志到 ShapeEnv key 后，二维 sibling `EAEBABBAAAGAAAAAAA` 与 `EAEBABBAABGAAAAAAA` 也已按精确值嵌入。两者共享 384-byte VS，SHA-256 `A3E0CA2EFA3452A529DDE7E92EB638FAAD4A230DF5A5537D2D50BE53BC045BD4`；像素 stage 分别复用上述无贴图/单贴图 PS。该 VS 的 `SSF_2DTRANSFORM=1`，读取 `c10 screenParam`，不读取 `c10..c13 mtxPrjView`。完整 runtime 选择与像素闭环见 [`render-shape-env-2d.md`](render-shape-env-2d.md)。
 
+完整 SliceCast runtime 语料又暴露四个精确 selector，均用同一离线原版 Cg 链编译并由隐藏 D3D9 HAL device 的 `CreateVertexShader/CreatePixelShader` 接受：
+
+| compact key | VS | PS |
+| --- | --- | --- |
+| `EAEBABBAABCBAAAAAA` | 复用上述 2D VS | 296 bytes，SHA-256 `23CAC67F21338BC63A62D66DF9D5502AA0ED349C414D9AF73670BD8ADDCDCE65` |
+| `EAEBABBAABIAAAAAAA` | 复用上述 2D VS | 复用单贴图 PS `066761E3FE149084A9526FDD1A091138B9DC894EAC29FA707D71992E4ED4E23F` |
+| `AAEBABBAABIAAAAAAA` | 复用上述 3D VS | 复用同一单贴图 PS |
+| `EAEBABBAAACBAAAAAA` | 复用上述 2D VS | 252 bytes，SHA-256 `B674C9D61CBE8B051742BB59C2C42618E027EA03DFE9D1F90839793CBBDDE290` |
+
+Rust 只为这些精确 key 注册对应 bytecode；相同 bytecode 的 selector 仍分别保留，避免把 selector 语义折叠成猜测。编辑器 runtime 仍不加载 Cg 或 D3DX。
+
 collection 中唯一的 MultiTex0 mode 9 键 `AAEBABBAADIIEAAAAA` 得到：
 
 | stage | assembly bytes | bytecode bytes | SHA-256 |

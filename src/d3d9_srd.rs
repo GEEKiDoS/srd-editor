@@ -7,20 +7,20 @@ use std::slice;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D9::{
     D3DCLEAR_TARGET, D3DLOCK_DISCARD, D3DLOCKED_RECT, D3DPOOL_DEFAULT, D3DPOOL_SYSTEMMEM,
-    D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP,
-    D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE, D3DRS_CULLMODE, D3DRS_DESTBLEND,
-    D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE, D3DRS_SEPARATEALPHABLENDENABLE,
-    D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE, D3DRS_ZENABLE, D3DRS_ZFUNC,
-    D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER,
-    D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET, D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9,
-    D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9, IDirect3DPixelShader9,
-    IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9, IDirect3DVertexBuffer9,
-    IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
+    D3DPT_TRIANGLESTRIP, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHAFUNC, D3DRS_ALPHAREF,
+    D3DRS_ALPHATESTENABLE, D3DRS_BLENDOP, D3DRS_BLENDOPALPHA, D3DRS_COLORWRITEENABLE,
+    D3DRS_CULLMODE, D3DRS_DESTBLEND, D3DRS_DESTBLENDALPHA, D3DRS_FILLMODE, D3DRS_SCISSORTESTENABLE,
+    D3DRS_SEPARATEALPHABLENDENABLE, D3DRS_SRCBLEND, D3DRS_SRCBLENDALPHA, D3DRS_STENCILENABLE,
+    D3DRS_ZENABLE, D3DRS_ZFUNC, D3DRS_ZWRITEENABLE, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV,
+    D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSBT_ALL, D3DUSAGE_DYNAMIC, D3DUSAGE_RENDERTARGET,
+    D3DUSAGE_WRITEONLY, D3DVERTEXELEMENT9, D3DVIEWPORT9, IDirect3DBaseTexture9, IDirect3DDevice9,
+    IDirect3DPixelShader9, IDirect3DStateBlock9, IDirect3DSurface9, IDirect3DTexture9,
+    IDirect3DVertexBuffer9, IDirect3DVertexDeclaration9, IDirect3DVertexShader9,
 };
 use windows::core::{Error, HRESULT, Interface, Result};
 
 use crate::d3d9_texture::SrdD3d9TextureSet;
-use crate::render::CeylonRenderScissorState;
+use crate::render::{CeylonAlphaStencilState, CeylonRenderScissorState};
 use crate::render::{SRD_D3D9_VERTEX_DECLARATION, SrdRenderVertex};
 use crate::shader::CEYLON_SIMPLE_SHADER_KEY_LENGTH;
 use crate::shader_bytecode::{
@@ -34,6 +34,7 @@ const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057_u32 as i32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SrdDx9ExternalContext {
     pub scissor: CeylonRenderScissorState,
+    pub alpha_stencil: CeylonAlphaStencilState,
 }
 
 impl SrdDx9ExternalContext {
@@ -50,6 +51,7 @@ impl SrdDx9ExternalContext {
                     bottom: 0,
                 },
             },
+            alpha_stencil: CeylonAlphaStencilState::default_material(),
         }
     }
 
@@ -221,6 +223,27 @@ impl SrdDx9Renderer {
         draw()
     }
 
+    /// Mutable counterpart used by the mixed runtime target stream. The
+    /// Composition surface is bound once while SRD format-14 and Fennel
+    /// format-13 commands are submitted in the target planner's order.
+    pub fn render_runtime_to_composition<F>(&mut self, clear_argb: u32, draw: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let target = self
+            .composition_target
+            .as_ref()
+            .ok_or_else(|| Error::new(E_FAIL, "SRD composition target is not available"))?;
+        let surface = target.surface.clone();
+        let size = target.size;
+        let _targets = RenderTargetGuard::bind(&self.device, &surface, size)?;
+        unsafe {
+            self.device
+                .Clear(0, ptr::null(), D3DCLEAR_TARGET as u32, clear_argb, 1.0, 0)?;
+        }
+        draw(self)
+    }
+
     pub fn render(
         &mut self,
         draws: &[EvidenceCompleteSrdDraw],
@@ -243,10 +266,10 @@ impl SrdDx9Renderer {
         external: SrdDx9ExternalContext,
         textures: Option<&SrdD3d9TextureSet>,
     ) -> Result<()> {
-        if draw.blend.alpha_test_enabled || draw.packet.flags_0c & 0x100 != 0 {
+        if draw.packet.flags_0c & 0x100 != 0 {
             return Err(Error::new(
                 E_INVALIDARG,
-                "SRD draw requires an alpha/stencil base context that is not part of the first GPU subset",
+                "SRD draw requires the unported packet stencil override",
             ));
         }
         let pair = embedded_simple_shader_pair(&draw.shader_key).ok_or_else(|| {
@@ -281,6 +304,12 @@ impl SrdDx9Renderer {
             .depth
             .z_function()
             .ok_or_else(|| Error::new(E_INVALIDARG, "invalid internal SRD Z comparison"))?;
+        let mut alpha_stencil = external.alpha_stencil;
+        alpha_stencil.alpha_test_enabled = draw.blend.alpha_test_enabled;
+        alpha_stencil.apply_draw_packet(draw.packet);
+        let alpha_function = alpha_stencil
+            .alpha_function()
+            .ok_or_else(|| Error::new(E_INVALIDARG, "invalid internal SRD alpha comparison"))?;
 
         unsafe {
             self.device.SetVertexDeclaration(declaration)?;
@@ -380,8 +409,12 @@ impl SrdDx9Renderer {
                 .SetRenderState(D3DRS_BLENDOP, draw.blend.blend_operation as u32)?;
             self.device.SetRenderState(
                 D3DRS_ALPHATESTENABLE,
-                u32::from(draw.blend.alpha_test_enabled),
+                u32::from(alpha_stencil.alpha_test_enabled),
             )?;
+            self.device
+                .SetRenderState(D3DRS_ALPHAREF, alpha_stencil.alpha_reference)?;
+            self.device
+                .SetRenderState(D3DRS_ALPHAFUNC, alpha_function as u32)?;
             self.device.SetRenderState(
                 D3DRS_SEPARATEALPHABLENDENABLE,
                 u32::from(draw.blend.separate_alpha_blend_enabled),

@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::attribute::CastAttributeValue;
+use crate::csli::{
+    SliceQuad, add_color_saturating_game, build_slice_render_quad, multiply_color_game,
+    slice_vertex_colors,
+};
 use crate::fennel::{
     FENNEL_DEFAULT_D_VALUE, FENNEL_DEFAULT_REPEAT_SPACE_COUNT, FennelFontSlotRegistry,
     FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelResolvedGlyph,
@@ -40,7 +44,6 @@ use crate::target_pass::{
 };
 use crate::texture::{TextureList, TextureSamplerState};
 use crate::transform::{Affine3x4, SpatialTransform};
-use crate::{csli::add_color_saturating_game, csli::multiply_color_game};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SrdDrawError(pub String);
@@ -91,12 +94,23 @@ pub struct EvidenceCompleteFennelDraw {
     pub batches: Vec<FennelOwnedTextureBatch>,
 }
 
+/// One low-level quad emitted by `srd_render_slice_cast` for an active CSLI
+/// cell. The binary executes `srd_begin_quad_draw` and the matching submission
+/// once per active cell, so cells remain separate runtime draws even when they
+/// belong to the same CAST.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EvidenceCompleteSliceCellDraw {
+    pub cell_index: usize,
+    pub draw: EvidenceCompleteSrdDraw,
+}
+
 /// Draw payloads produced at each CAST render invocation. This preserves the
 /// runtime layer/CAST/RefCast recursion order, but it is not yet the later
 /// renderer target-queue sort/submission order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvidenceCompleteRuntimeCastDraw {
     Image(EvidenceCompleteSrdDraw),
+    SliceCell(EvidenceCompleteSliceCellDraw),
     Fennel(EvidenceCompleteFennelDraw),
 }
 
@@ -104,6 +118,7 @@ impl EvidenceCompleteRuntimeCastDraw {
     pub const fn owner(&self) -> ReferenceLayerParent {
         match self {
             Self::Image(draw) => draw.owner,
+            Self::SliceCell(draw) => draw.draw.owner,
             Self::Fennel(draw) => draw.owner,
         }
     }
@@ -111,6 +126,7 @@ impl EvidenceCompleteRuntimeCastDraw {
     pub const fn node_index(&self) -> usize {
         match self {
             Self::Image(draw) => draw.node_index,
+            Self::SliceCell(draw) => draw.draw.node_index,
             Self::Fennel(draw) => draw.node_index,
         }
     }
@@ -118,6 +134,7 @@ impl EvidenceCompleteRuntimeCastDraw {
     pub const fn renderer_layer_key(&self) -> u32 {
         match self {
             Self::Image(draw) => draw.renderer_layer_key,
+            Self::SliceCell(draw) => draw.draw.renderer_layer_key,
             Self::Fennel(draw) => draw.renderer_layer_key,
         }
     }
@@ -129,6 +146,9 @@ impl EvidenceCompleteRuntimeCastDraw {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceRuntimeTargetCommandSource {
     Image {
+        runtime_draw_index: usize,
+    },
+    SliceCell {
         runtime_draw_index: usize,
     },
     FennelBatch {
@@ -255,6 +275,28 @@ fn build_evidence_adjacent_merge_commands(
                     vertex_count: 4,
                 });
             }
+            EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => {
+                let draw = &cell.draw;
+                validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
+                let textures = draw
+                    .texture_bindings
+                    .map(|binding| binding.map(EvidenceMergeTextureIdentity::Srd));
+                commands.push(EvidenceAdjacentMergeCommand {
+                    source: EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index },
+                    key: EvidenceAdjacentMergeKey {
+                        packet: draw.packet,
+                        renderer_layer_key: draw.renderer_layer_key,
+                        vertex_format: 14,
+                        primitive_type: 4,
+                        textures,
+                        packet_matrix_prefix: packet_matrix_prefix(
+                            draw.is_2d,
+                            draw.fixed_constants.vertex_c0_c3_world,
+                        ),
+                    },
+                    vertex_count: 4,
+                });
+            }
             EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
                 validate_evidence_merge_packet(draw.packet, runtime_draw_index)?;
                 let packet_matrix_prefix =
@@ -365,6 +407,13 @@ fn build_evidence_runtime_target_submission_impl(
                 if admits(draw.packet) {
                     sources.push(EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index });
                     packets.push(draw.packet);
+                }
+            }
+            EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => {
+                if admits(cell.draw.packet) {
+                    sources
+                        .push(EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index });
+                    packets.push(cell.draw.packet);
                 }
             }
             EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
@@ -1130,6 +1179,30 @@ fn build_evidence_complete_runtime_cast_draws_from_runtime(
             &mut packet_current_matrix,
         )? {
             draws.push(EvidenceCompleteRuntimeCastDraw::Image(draw));
+            continue;
+        }
+        if layer.csli_by_node[entry.node_index].is_some() {
+            let cells = build_evidence_complete_slice_cell_draws_for_runtime_cast(
+                textures,
+                entry.owner,
+                entry.source,
+                layer,
+                entry.node_index,
+                entry.renderer_layer_key,
+                layer_worlds.is_2d,
+                cast_world,
+                image_state,
+                host,
+                camera_bridge,
+                project_screen.as_ref(),
+                identity,
+                &mut packet_current_matrix,
+            )?;
+            draws.extend(
+                cells
+                    .into_iter()
+                    .map(EvidenceCompleteRuntimeCastDraw::SliceCell),
+            );
             continue;
         }
         let runtime_text_input = runtime_text_inputs.get(&FennelRuntimeTextCastKey {
@@ -1918,6 +1991,177 @@ fn runtime_image_state_for_owner(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn build_evidence_complete_slice_cell_draws_for_runtime_cast(
+    textures: &TextureList,
+    owner: ReferenceLayerParent,
+    source: ReferenceTarget,
+    layer: &Layer,
+    node_index: usize,
+    renderer_layer_key: u32,
+    is_2d: bool,
+    world: RuntimeWorldState,
+    image_state: crate::image::RuntimeImageState,
+    host: SrdHostDrawContext,
+    camera_bridge: Matrix4x4,
+    project_screen: Option<&(Matrix4x4, [i32; 2])>,
+    identity: Matrix4x4,
+    packet_current_matrix: &mut Matrix4x4,
+) -> Result<Vec<EvidenceCompleteSliceCellDraw>, SrdDrawError> {
+    let Some(definition) = layer.csli_by_node[node_index].as_ref() else {
+        return Ok(Vec::new());
+    };
+    if !world.visible || !world.render_gate {
+        return Ok(Vec::new());
+    }
+
+    let image = ImageDefinition::from_csli_runtime_base(definition);
+    let cast_positions = image
+        .build_quad_with_geometry(image_state.geometry, is_2d)
+        .positions
+        .map(|point| world.matrix.transform_point_game(point));
+    if !runtime_cast_passes_renderer_visibility(cast_positions, is_2d, project_screen)? {
+        return Ok(Vec::new());
+    }
+
+    let mut quads = definition
+        .generate_active_quads_with_geometry(
+            is_2d,
+            image_state.geometry.size,
+            image_state.geometry.origin,
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+    let preset = select_srd_image_render_preset(
+        image.flags,
+        image_state.render_preset_override,
+        false,
+    )
+    .ok_or_else(|| {
+        SrdDrawError(format!(
+            "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast does not select a proven render preset",
+            source.scene_index, source.layer_index
+        ))
+    })?;
+
+    let renderer_layer_prefix = renderer_layer_key & !0xff;
+    let mut renderer_counter = renderer_layer_key as u8;
+    let mut draws = Vec::with_capacity(quads.len());
+    for mut slice_quad in quads.drain(..) {
+        let cell_index = slice_quad.cell_index;
+        let cell = definition.cells.get(cell_index).ok_or_else(|| {
+            SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast cell {cell_index} is outside SLIC",
+                source.scene_index, source.layer_index
+            ))
+        })?;
+
+        let resolved_texture = textures.resolve_slice_cell(definition, cell_index);
+        let (texture_coordinates, texture_binding) = match resolved_texture {
+            Some(resolved) => (
+                resolved.coordinates,
+                Some(EvidenceSrdTextureBinding {
+                    texture_index: resolved.image_index,
+                    sampler: resolved.samplers.select(image.point_sampled()),
+                }),
+            ),
+            None => ([[0.0; 2]; 4], None),
+        };
+
+        let colors = slice_vertex_colors(
+            definition,
+            cell,
+            slice_quad.normalized_cell_coordinates,
+            world.multiply_color,
+            world.additive_color,
+        )
+        .map_err(|error| SrdDrawError(error.to_string()))?;
+        slice_quad.positions = slice_quad
+            .positions
+            .map(|point| world.matrix.transform_point_game(point));
+        let quad = build_slice_render_quad(
+            SliceQuad {
+                cell_index,
+                ..slice_quad
+            },
+            colors,
+            texture_coordinates,
+        );
+
+        let mut fixed_constants = CeylonSrdFixedShaderConstants::initial_for_target(
+            host.target_projection_view,
+            host.target_screen_size,
+        );
+        if is_2d {
+            fixed_constants.vertex_c0_c3_world = identity;
+            fixed_constants.vertex_c4_c7 = identity;
+            *packet_current_matrix = identity;
+        } else {
+            fixed_constants.vertex_c4_c7 = *packet_current_matrix;
+            fixed_constants.vertex_c0_c3_world = camera_bridge;
+            *packet_current_matrix = camera_bridge;
+        }
+
+        let mut packet = CeylonDrawPacketPresetState::srd_renderer_initial();
+        packet.set_render_preset_id(preset);
+        packet.set_srd_quad_is_2d(is_2d);
+        apply_srd_image_field_0c_shader_bits(&mut packet, image_state.field_0c as i32);
+        apply_srd_image_alpha_stencil_packet_fields(
+            &mut packet,
+            image_state.field_10,
+            image_state.field_14,
+            image_state.field_18,
+            0,
+            &mut renderer_counter,
+        );
+        let cell_renderer_layer_key = renderer_layer_prefix | u32::from(renderer_counter);
+        apply_srd_special_depth_packet_fields(&mut packet, false, image_state.field_1c);
+
+        let texture_bindings = [texture_binding, None, None];
+        let shader_key = packet
+            .srd_quad_shader_key([texture_binding.is_some(), false, false])
+            .srd_simple_shader_direct_contributions()
+            .map_err(|error| SrdDrawError(format!("unsupported Simple mapping: {error:?}")))?
+            .compact_key();
+        if embedded_simple_shader_pair(&shader_key).is_none() {
+            return Err(SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast cell {cell_index} selects an unpackaged Simple shader key {:?}",
+                source.scene_index,
+                source.layer_index,
+                String::from_utf8_lossy(&shader_key)
+            )));
+        }
+        let blend = ceylon_d3d9_blend_preset(i32::from(packet.table_preset_id()));
+        if packet.flags_0c & 0x100 != 0 {
+            return Err(SrdDrawError(format!(
+                "SCN[{}]/LAYR[{}]/NODE[{node_index}] SliceCast cell {cell_index} requires the unported stencil sequence byte",
+                source.scene_index, source.layer_index
+            )));
+        }
+        let mut raster = CeylonRasterState::default();
+        raster.apply_draw_packet(packet);
+        draws.push(EvidenceCompleteSliceCellDraw {
+            cell_index,
+            draw: EvidenceCompleteSrdDraw {
+                owner,
+                scene_index: source.scene_index,
+                layer_index: source.layer_index,
+                node_index,
+                is_2d,
+                renderer_layer_key: cell_renderer_layer_key,
+                shader_key,
+                quad,
+                packet,
+                fixed_constants,
+                blend,
+                raster,
+                depth: CeylonDepthState::from_draw_flags(packet.draw_flags_00),
+                texture_bindings,
+            },
+        });
+    }
+    Ok(draws)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_evidence_complete_image_draw_for_runtime_cast(
     textures: &TextureList,
     owner: ReferenceLayerParent,
@@ -2357,11 +2601,13 @@ mod tests {
     use super::*;
     use crate::attribute::{CastAttribute, CastAttributeList};
     use crate::camera::CameraDefinition;
+    use crate::csli::{CrefEntry, CsliDefinition, SlicCell};
     use crate::image::ImageDefinition;
     use crate::reference::ReferenceDefinition;
     use crate::ruhuna::RuhunaRuntimeGlyphRecord;
     use crate::scene::{NodeRecord, RawTransform, Scene};
     use crate::text::{FontDefinition, TextDefinition};
+    use crate::texture::{TextureCrop, TextureDefinition};
 
     fn text_image(node_index: i32, font_index: i32) -> ImageDefinition {
         ImageDefinition {
@@ -2890,6 +3136,9 @@ mod tests {
                 EvidenceCompleteRuntimeCastDraw::Image(_) => {
                     vec![EvidenceRuntimeTargetCommandSource::Image { runtime_draw_index }]
                 }
+                EvidenceCompleteRuntimeCastDraw::SliceCell(_) => {
+                    vec![EvidenceRuntimeTargetCommandSource::SliceCell { runtime_draw_index }]
+                }
                 EvidenceCompleteRuntimeCastDraw::Fennel(draw) => (0..draw.batches.len())
                     .map(
                         |batch_index| EvidenceRuntimeTargetCommandSource::FennelBatch {
@@ -2950,6 +3199,7 @@ mod tests {
                 .iter()
                 .map(|source| match *source {
                     EvidenceRuntimeTargetCommandSource::Image { .. } => 4,
+                    EvidenceRuntimeTargetCommandSource::SliceCell { .. } => 4,
                     EvidenceRuntimeTargetCommandSource::FennelBatch {
                         runtime_draw_index,
                         batch_index,
@@ -2957,7 +3207,8 @@ mod tests {
                         EvidenceCompleteRuntimeCastDraw::Fennel(draw) => {
                             draw.batches[batch_index].vertices.len()
                         }
-                        EvidenceCompleteRuntimeCastDraw::Image(_) => unreachable!(),
+                        EvidenceCompleteRuntimeCastDraw::Image(_)
+                        | EvidenceCompleteRuntimeCastDraw::SliceCell(_) => unreachable!(),
                     },
                 })
                 .sum::<usize>();
@@ -2981,11 +3232,179 @@ mod tests {
         for draw in &runtime_cast_draws {
             let packet = match draw {
                 EvidenceCompleteRuntimeCastDraw::Image(draw) => draw.packet,
+                EvidenceCompleteRuntimeCastDraw::SliceCell(draw) => draw.draw.packet,
                 EvidenceCompleteRuntimeCastDraw::Fennel(draw) => draw.packet,
             };
             assert_eq!(packet.flags_60 & 0x2000, 0);
             assert_eq!(packet.flags_64, 0);
         }
+    }
+
+    #[test]
+    fn slice_cast_emits_one_runtime_draw_per_active_cell() {
+        let cell = |cref_index| SlicCell {
+            flags: 0x100,
+            explicit_width: 0.0,
+            explicit_height: 0.0,
+            field_3a: Some([0xff; 4]),
+            field_33: None,
+            field_44: vec![[0xff; 4]; 4],
+            cref_index,
+        };
+        let csli = CsliDefinition {
+            field_80: 0,
+            width: 20.0,
+            height: 10.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 0,
+            columns: 2,
+            rows: 1,
+            explicit_width_cell_count: 0,
+            explicit_height_cell_count: 0,
+            cref_count: 1,
+            crefs: vec![CrefEntry {
+                image_index: 0,
+                rectangle_index: 0,
+            }],
+            node_index: 0,
+            cells: vec![cell(0), cell(-1)],
+        };
+        let layer = Layer {
+            name: b"slice".to_vec(),
+            flags: 0x100,
+            animation_count: 0,
+            animations: Vec::new(),
+            field_23: Vec::new(),
+            nodes: vec![NodeRecord {
+                type_flags: Some(2),
+                ..node()
+            }],
+            transforms: vec![RawTransform::Trs2(SpatialTransform::default())],
+            image_by_node: vec![None],
+            number_by_node: vec![None],
+            reference_by_node: vec![None],
+            csli_by_node: vec![Some(csli)],
+            cast_attribute_lists: Vec::new(),
+            cast_attribute_list_by_node: vec![None],
+        };
+        let project = Project {
+            name: b"project".to_vec(),
+            declared_scene_count: 1,
+            declared_font_count: 0,
+            camera: CameraDefinition::default(),
+            scenes: vec![Scene {
+                name: b"scene".to_vec(),
+                declared_layer_count: 1,
+                declared_animation_set_count: 0,
+                width: 20.0,
+                height: 10.0,
+                layers: vec![layer],
+                animation_sets: Vec::new(),
+            }],
+            fonts: Vec::new(),
+        };
+        let textures = TextureList {
+            declared_count: 1,
+            textures: vec![TextureDefinition {
+                filename: b"slice".to_vec(),
+                width: 32,
+                height: 32,
+                field_62: 0,
+                crop_count: 1,
+                crops: vec![TextureCrop {
+                    normalized_rectangle: [0.25, 0.5, 0.75, 1.0],
+                }],
+            }],
+        };
+        let draws = build_evidence_complete_initial_runtime_cast_draws(
+            &project,
+            &textures,
+            0,
+            SrdHostDrawContext::new(
+                Affine3x4::IDENTITY,
+                crate::render::SRD_RENDERER_INITIAL_LAYER_KEY,
+                Some(SrdRendererProjectTargetContext::new(
+                    identity_matrix4x4_game(),
+                    [20, 10],
+                )),
+                identity_matrix4x4_game(),
+                [20, 10],
+            ),
+            &FennelFontSlotRegistry::default(),
+            &BTreeMap::new(),
+            false,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(draws.len(), 2);
+        let cells = draws
+            .iter()
+            .map(|draw| match draw {
+                EvidenceCompleteRuntimeCastDraw::SliceCell(cell) => cell,
+                _ => panic!("SliceCast emitted a non-slice runtime draw"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!([cells[0].cell_index, cells[1].cell_index], [0, 1]);
+        assert_eq!(
+            cells[0].draw.quad.vertices.map(|vertex| vertex.position),
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 10.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+            ]
+        );
+        assert_eq!(
+            cells[0]
+                .draw
+                .quad
+                .vertices
+                .map(|vertex| vertex.texture_coordinates),
+            [
+                [[0.25, 0.5]; 2],
+                [[0.25, 1.0]; 2],
+                [[0.75, 0.5]; 2],
+                [[0.75, 1.0]; 2],
+            ]
+        );
+        assert!(cells[0].draw.texture_bindings[0].is_some());
+        assert_eq!(cells[1].draw.texture_bindings, [None; 3]);
+        assert!(
+            cells[1]
+                .draw
+                .quad
+                .vertices
+                .iter()
+                .all(|vertex| vertex.texture_coordinates == [[0.0; 2]; 2])
+        );
+
+        let profile = crate::game_host::CHUSAN_MAIN_SCENE
+            .scene_pass_profile()
+            .unwrap();
+        assert_eq!(
+            build_evidence_runtime_target_submission(&draws, &profile).unwrap(),
+            vec![
+                EvidenceRuntimeTargetCommandSource::SliceCell {
+                    runtime_draw_index: 0,
+                },
+                EvidenceRuntimeTargetCommandSource::SliceCell {
+                    runtime_draw_index: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            build_evidence_filtered_merged_runtime_target_submission(
+                &draws,
+                &profile,
+                crate::game_host::CHUSAN_ADVERTISE_LOGO_PLAYER
+                    .initial_srd_target_filter(crate::game_host::CHUSAN_MAIN_SCENE),
+            )
+            .unwrap()
+            .len(),
+            2
+        );
     }
 
     #[test]

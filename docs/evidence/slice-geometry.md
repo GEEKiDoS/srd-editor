@@ -122,11 +122,13 @@ secondary = saturating_add(CAST additive tint, SLIC 0x33)
 
 每次乘法都调用 `srd_multiply_color_u8` (`0x5FEA70`)，逐通道执行 `u32(a) * u32(b) / 255`；加法调用 `srd_add_color_saturating_u8` (`0x5FEB90`)，和大于等于 255 时写 255。primary/secondary 分别写入 36 字节顶点的 `+12` 和 `+16`。
 
-Rust 已实现这些精确组合器、世界 CAST 乘法色/加法色来源，以及生成 36 字节双 UV 顶点的 `build_slice_render_quad`。
+Rust 已实现这些精确组合器、世界 CAST 乘法色/加法色来源，以及生成 36 字节双 UV 顶点的 `build_slice_render_quad`。`generate_active_quads_with_geometry` 还显式接收 CAST runtime size/origin：`srd_get_cast_csli_cell_rects` 从 CAST `+0x184/+0x188` 取得运行时宽高，交给 `srd_generate_csli_cell_rects` 重排默认单元；因此动画后的 Slice extent 不再错误沿用静态 CSLI 尺寸。
+
+`srd_render_slice_cast` 对每个 active cell 分别调用一次 `srd_begin_quad_draw` (`0xADABB5`) 并在 `0xADAF13` 提交，所以 Rust runtime 保留 `SliceCell` 身份和每 cell 的 renderer layer key，而不是先把整个 CAST 压成一个 quad。CREF 缺失或越界时，原函数仍提交该 cell，只把两组 UV 清零并不绑定纹理；Rust 同样生成 untextured draw，不静默删除。完整 91 文件严格语料得到 3,745 个 SliceCell draw，其中 3,564 textured、181 untextured、858 个 3D draw，共精确出现七个已注册 shader key。
 
 样本方面，5145 个 active SLIC 全部有 `0x3A` 和恰好四个 `0x44`，但全部没有显式 `0x33`。缺省值由 `SrProject` 虚表槽 `+4` 的 `srd_project_allocate_zeroed` (`0xA9F310`) 闭环：它对每次请求的完整分配区执行 `memset(pointer, 0, size)`，然后才返回给 CSLI/SLIC 解析器。因此缺失 `0x3A/0x33/0x44` 对应的运行时字节均为零，包括 104 字节 CSLI 模板复制范围之外的后续单元。Rust 的 runtime color 访问器复现该零默认。
 
 ## 仍未闭环
 
-- DDS 资源建立与设备丢失恢复。
-- shader、混合、深度和裁剪状态；36 字节顶点、双 UV、triangle strip 与最终 `DrawPrimitive` 参数已经闭环。
+- packet stencil sequence 与 special-depth 的完整 runtime 提交状态。
+- planner 已计算的相邻 strip 物理顶点拼接；当前 D3D9Ex 在正确 target/source 顺序内逐 cell 提交。

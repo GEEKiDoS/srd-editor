@@ -197,6 +197,19 @@ impl CsliDefinition {
 
     #[allow(clippy::assign_op_pattern)]
     pub fn generate_cell_rects(&self) -> Result<Vec<GeneratedCellRect>, CsliError> {
+        self.generate_cell_rects_with_size([self.width, self.height])
+    }
+
+    /// Reproduces `srd_get_cast_csli_cell_rects ->
+    /// srd_generate_csli_cell_rects` with the current SrImage width/height at
+    /// CAST `+0x184/+0x188`. The parsed explicit cell widths/heights and their
+    /// first-row/first-column sums stay unchanged while animation channels
+    /// 11/12 can replace the remaining distributable extent.
+    #[allow(clippy::assign_op_pattern)]
+    pub fn generate_cell_rects_with_size(
+        &self,
+        runtime_size: [f32; 2],
+    ) -> Result<Vec<GeneratedCellRect>, CsliError> {
         let expected = self.expected_cell_count();
         if self.cells.len() != expected {
             return Err(CsliError(format!(
@@ -231,8 +244,8 @@ impl CsliDefinition {
             ((i32::from(self.columns) - i32::from(self.explicit_width_cell_count)) as f32).max(1.0);
         let denominator_y =
             ((i32::from(self.rows) - i32::from(self.explicit_height_cell_count)) as f32).max(1.0);
-        let default_width = (self.width - first_row_explicit_width) / denominator_x;
-        let default_height = (self.height - first_column_explicit_height) / denominator_y;
+        let default_width = (runtime_size[0] - first_row_explicit_width) / denominator_x;
+        let default_height = (runtime_size[1] - first_column_explicit_height) / denominator_y;
 
         let mut generated = Vec::with_capacity(expected);
         let mut y = 0.0f32;
@@ -267,22 +280,42 @@ impl CsliDefinition {
     }
 
     pub fn generate_active_quads(&self, axis_mode: bool) -> Result<Vec<SliceQuad>, CsliError> {
-        let origin = self.runtime_origin_offset();
-        let inverse_width = 1.0f32 / self.width;
-        let inverse_height = 1.0f32 / self.height;
+        self.generate_active_quads_with_geometry(
+            axis_mode,
+            [self.width, self.height],
+            self.runtime_origin_offset(),
+        )
+    }
+
+    /// Builds the same active cell quads using the current SrImage geometry.
+    /// `runtime_origin` is passed separately because origin modes are
+    /// recomputed when animation replaces width/height, while custom origins
+    /// remain literal.
+    pub fn generate_active_quads_with_geometry(
+        &self,
+        axis_mode: bool,
+        runtime_size: [f32; 2],
+        runtime_origin: [f32; 2],
+    ) -> Result<Vec<SliceQuad>, CsliError> {
+        let inverse_width = 1.0f32 / runtime_size[0];
+        let inverse_height = 1.0f32 / runtime_size[1];
         let mut quads = Vec::new();
 
-        for (cell_index, cell) in self.generate_cell_rects()?.into_iter().enumerate() {
+        for (cell_index, cell) in self
+            .generate_cell_rects_with_size(runtime_size)?
+            .into_iter()
+            .enumerate()
+        {
             if !cell.active {
                 continue;
             }
 
             // Preserve the operation grouping used by SrSliceCast's virtual
             // quad builder at 0xADB2B0.
-            let left = cell.x - origin[0];
+            let left = cell.x - runtime_origin[0];
             let right = left + cell.width;
-            let far_y = (cell.height - origin[1]) + cell.y;
-            let near_y = cell.y - origin[1];
+            let far_y = (cell.height - runtime_origin[1]) + cell.y;
+            let near_y = cell.y - runtime_origin[1];
             let (first_y, second_y) = if axis_mode {
                 (near_y, far_y)
             } else {
@@ -724,6 +757,51 @@ mod tests {
                 [8.0, 4.0, 0.0],
                 [8.0, -4.0, 0.0],
             ]
+        );
+    }
+
+    #[test]
+    fn runtime_extent_reflows_default_cells_and_normalized_coordinates() {
+        let definition = CsliDefinition {
+            field_80: 0,
+            width: 10.0,
+            height: 8.0,
+            custom_origin: [0.0, 0.0],
+            field_44: [[0xff; 4]; 4],
+            origin_mode: 4,
+            columns: 2,
+            rows: 1,
+            explicit_width_cell_count: 1,
+            explicit_height_cell_count: 0,
+            cref_count: 0,
+            crefs: Vec::new(),
+            node_index: 0,
+            cells: vec![cell(0x101, 4.0, 0.0), cell(0x100, 0.0, 0.0)],
+        };
+
+        let rects = definition
+            .generate_cell_rects_with_size([20.0, 12.0])
+            .unwrap();
+        assert_eq!(rects[0].width, 4.0);
+        assert_eq!(rects[1].x, 4.0);
+        assert_eq!(rects[1].width, 16.0);
+        assert_eq!(rects[1].height, 12.0);
+
+        let quads = definition
+            .generate_active_quads_with_geometry(true, [20.0, 12.0], [10.0, 6.0])
+            .unwrap();
+        assert_eq!(
+            quads[1],
+            SliceQuad {
+                cell_index: 1,
+                positions: [
+                    [-6.0, -6.0, 0.0],
+                    [-6.0, 6.0, 0.0],
+                    [10.0, -6.0, 0.0],
+                    [10.0, 6.0, 0.0],
+                ],
+                normalized_cell_coordinates: [[0.2, 0.0], [0.2, 1.0], [1.0, 0.0], [1.0, 1.0],],
+            }
         );
     }
 
