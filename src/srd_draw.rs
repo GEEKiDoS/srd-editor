@@ -8,13 +8,13 @@ use crate::csli::{
 };
 use crate::fennel::{
     FENNEL_DEFAULT_D_VALUE, FENNEL_DEFAULT_REPEAT_SPACE_COUNT, FennelFontSlotRegistry,
-    FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelResolvedGlyph,
-    FennelSrdDrawPreparation, FennelSrdDrawPreparationInput, FennelStaticTextProperties,
-    build_fennel_normal_vertex_batches, build_fennel_plain_record_stream_with_font_slots,
-    build_fennel_srd_repeated_text, fennel_default_draw_packet, fennel_font_param_effect_color,
-    fennel_srd_font_style, layout_fennel_static_srd_explicit_flags,
-    layout_fennel_static_srd_font_param, measure_fennel_srd_text_size_mode0,
-    prepare_fennel_srd_draw, prepare_fennel_srd_runtime_text,
+    FennelFontSlotRequest, FennelNormalDrawInput, FennelOwnedTextureBatch, FennelRenderVertex,
+    FennelResolvedGlyph, FennelSrdDrawPreparation, FennelSrdDrawPreparationInput,
+    FennelStaticTextProperties, build_fennel_normal_vertex_batches,
+    build_fennel_plain_record_stream_with_font_slots, build_fennel_srd_repeated_text,
+    fennel_default_draw_packet, fennel_font_param_effect_color, fennel_srd_font_style,
+    layout_fennel_static_srd_explicit_flags, layout_fennel_static_srd_font_param,
+    measure_fennel_srd_text_size_mode0, prepare_fennel_srd_draw, prepare_fennel_srd_runtime_text,
 };
 use crate::image::{
     ImageDefinition, ImageReferenceChannel, SrdTextureBindingSource,
@@ -193,6 +193,13 @@ pub struct EvidenceMergedRuntimeSrdStrip<'a> {
     pub vertices: Vec<SrdRenderVertex>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvidenceMergedRuntimeFennelList<'a> {
+    pub state: &'a EvidenceCompleteFennelDraw,
+    pub texture_token: u32,
+    pub vertices: Vec<FennelRenderVertex>,
+}
+
 /// Materializes one merged format-14/type-4 command using the exact connector
 /// copies at `ceylon_enqueue_draw_packet` `0x670E19..0x670E3D`. At every
 /// boundary the previous last vertex and next first vertex are duplicated,
@@ -289,6 +296,79 @@ fn append_srd_quad_strip_vertices(
         destination.push(quad[0]);
     }
     destination.extend_from_slice(quad);
+}
+
+/// Materializes one format-13/type-3 command. The binary merge branch at
+/// `0x670E66` only adds the new vertex count because batch vertices are already
+/// contiguous; no connector or reordering is introduced.
+pub fn build_evidence_merged_runtime_fennel_list<'a>(
+    draws: &'a [EvidenceCompleteRuntimeCastDraw],
+    command: &EvidenceMergedRuntimeTargetCommand,
+) -> Result<EvidenceMergedRuntimeFennelList<'a>, SrdDrawError> {
+    if command.vertex_format != 13 || command.primitive_type != 3 {
+        return Err(SrdDrawError(format!(
+            "runtime target command is format {}/primitive {}, not a Fennel triangle list",
+            command.vertex_format, command.primitive_type
+        )));
+    }
+
+    let mut state = None;
+    let mut texture_token = None;
+    let mut vertices = Vec::with_capacity(command.vertex_count);
+    for source in command.sources.iter().copied() {
+        let EvidenceRuntimeTargetCommandSource::FennelBatch {
+            runtime_draw_index,
+            batch_index,
+        } = source
+        else {
+            return Err(SrdDrawError(
+                "format-13 Fennel list contains an SRD quad source".to_string(),
+            ));
+        };
+        let Some(EvidenceCompleteRuntimeCastDraw::Fennel(draw)) = draws.get(runtime_draw_index)
+        else {
+            return Err(SrdDrawError(format!(
+                "runtime target Fennel source {runtime_draw_index} does not match its draw"
+            )));
+        };
+        let batch = draw.batches.get(batch_index).ok_or_else(|| {
+            SrdDrawError(format!(
+                "runtime target Fennel batch {runtime_draw_index}/{batch_index} is outside its draw"
+            ))
+        })?;
+        if draw.packet != command.packet || draw.renderer_layer_key != command.renderer_layer_key {
+            return Err(SrdDrawError(format!(
+                "runtime Fennel draw {runtime_draw_index} no longer matches its merged command state"
+            )));
+        }
+        if let Some(expected) = texture_token {
+            if batch.texture_token != expected {
+                return Err(SrdDrawError(format!(
+                    "merged Fennel command changes texture token from {expected:#010x} to {:#010x}",
+                    batch.texture_token
+                )));
+            }
+        } else {
+            state = Some(draw);
+            texture_token = Some(batch.texture_token);
+        }
+        vertices.extend_from_slice(&batch.vertices);
+    }
+
+    let state = state.ok_or_else(|| SrdDrawError("merged Fennel command is empty".to_string()))?;
+    let texture_token = texture_token.expect("non-empty Fennel command has a texture token");
+    if vertices.len() != command.vertex_count {
+        return Err(SrdDrawError(format!(
+            "materialized Fennel list has {} vertices but planner recorded {}",
+            vertices.len(),
+            command.vertex_count
+        )));
+    }
+    Ok(EvidenceMergedRuntimeFennelList {
+        state,
+        texture_token,
+        vertices,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

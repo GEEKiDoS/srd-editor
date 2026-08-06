@@ -52,7 +52,8 @@ use srd_editor::srd_draw::{
     build_evidence_complete_initial_reference_image_draws,
     build_evidence_complete_initial_runtime_cast_draws,
     build_evidence_filtered_merged_runtime_target_submission,
-    build_evidence_merged_runtime_srd_strip, collect_fennel_font_resource_requests,
+    build_evidence_merged_runtime_fennel_list, build_evidence_merged_runtime_srd_strip,
+    collect_fennel_font_resource_requests,
 };
 use srd_editor::target_pass::build_evidence_srd_scene_submission_indices;
 use srd_editor::texture::TextureList;
@@ -754,6 +755,19 @@ fn advertise_warning_frame_routes_fennel_into_the_runtime_target_stream() {
     assert_eq!(submission.len(), 2);
     assert_eq!(fennel_sources, 20);
     assert_eq!(fennel_vertices, 3_072);
+    let fennel_commands = submission
+        .iter()
+        .filter(|command| command.vertex_format == 13 && command.primitive_type == 3)
+        .collect::<Vec<_>>();
+    assert_eq!(fennel_commands.len(), 1);
+    assert_eq!(fennel_commands[0].sources.len(), 20);
+    assert_eq!(
+        build_evidence_merged_runtime_fennel_list(&draws, fennel_commands[0])
+            .unwrap()
+            .vertices
+            .len(),
+        3_072
+    );
 }
 
 #[test]

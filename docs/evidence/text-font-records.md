@@ -527,7 +527,7 @@ Fennel packet 的 `draw_flags_00 = 0x02AFE003` 设置了 `0x00800000`，因此 `
 
 真实语料初始帧审计得到 551 个可见 2D Fennel draw、34326 个顶点。独立 `--srd-fennel-smoke` 对 `CHU_UI_Advertise_00_v10.srd` 仍为 1 draw、834 vertices、两个 atlas batch；D3D9Ex Composition 在强制 `ResetEx` 前后均得到 40920 个 changed pixels、`white_pixels=0`、bbox `(651,396)..(1271,683)` 和 FNV-1a `7B466FC4B4E0EC9A`。哈希仅作为当前设备上的稳定诊断值，不定义为跨 GPU 像素规范。
 
-普通编辑器路径现已不再停留于该独立 smoke。对用户截图对应的 scene 0、`AS_warning_in`、frame 24、AdvertiseLogo/MainScene、present `1080x1920`、screenParam `1920x1080`，统一 runtime builder 精确产生 22 个 source、2 个 target group，其中 20 个是 Fennel source、共 3072 个字体顶点。隐藏 `--srd-runtime-smoke=0,0,24` 在同一个 Composition pass 中先渲染完整 Image/Slice/Number/Fennel stream，再关闭 Fennel 重绘并比较 RGB；两次（强制 `ResetEx` 前后）均有 73588 个像素因这 20 个 Fennel source 而变化。这证明文字已经进入正常预览的 D3D9Ex target stream，而不是只在字体专项窗口中成立。
+普通编辑器路径现已不再停留于该独立 smoke。对用户截图对应的 scene 0、`AS_warning_in`、frame 24、AdvertiseLogo/MainScene、present `1080x1920`、screenParam `1920x1080`，统一 runtime builder 精确产生 22 个 source、2 个 target group，其中 20 个是 Fennel source、共 3072 个字体顶点；这 20 个 source 的 packet/layer/atlas token 相同，现已物理拼成一次 3072 顶点 triangle-list draw。隐藏 `--srd-runtime-smoke=0,0,24` 在同一个 Composition pass 中先渲染完整 Image/Slice/Number/Fennel stream，再关闭 Fennel 重绘并比较 RGB；两次（强制 `ResetEx` 前后）均有 73588 个像素因这条合并 list 而变化。这证明文字已经进入正常预览的 D3D9Ex target stream，而不是只在字体专项窗口中成立。
 
 外部 Ruhuna 字形仍不是一条可以随意替换的 ImGui 文本路径。编辑器将上传 RFZ 内嵌 DDS atlas 并提交游戏布局记录对应的 glyph quad；不会使用系统字体冒充。
 

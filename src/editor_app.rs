@@ -42,7 +42,8 @@ use crate::srd_draw::{
     build_evidence_complete_animation_set_runtime_cast_draws,
     build_evidence_complete_initial_fennel_draws, build_evidence_complete_initial_image_draws,
     build_evidence_filtered_merged_runtime_target_submission,
-    build_evidence_merged_runtime_srd_strip, collect_fennel_font_resource_requests,
+    build_evidence_merged_runtime_fennel_list, build_evidence_merged_runtime_srd_strip,
+    collect_fennel_font_resource_requests,
 };
 use crate::transform::Affine3x4;
 
@@ -1522,6 +1523,50 @@ fn render_runtime_target_submission(
                     textures,
                 )?;
             }
+            continue;
+        }
+        if command.vertex_format == 13 && command.primitive_type == 3 {
+            if !render_fennel {
+                continue;
+            }
+            let list =
+                build_evidence_merged_runtime_fennel_list(draws, command).map_err(|error| {
+                    windows::core::Error::new(
+                        windows::Win32::Foundation::E_INVALIDARG,
+                        error.to_string(),
+                    )
+                })?;
+            let renderer = fennel_renderer.as_deref_mut().ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    "Merged Fennel target command has no D3D9 renderer",
+                )
+            })?;
+            let route = atlas_routes.get(&list.texture_token).ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "Fennel texture token {:#010x} has no atlas route",
+                        list.texture_token
+                    ),
+                )
+            })?;
+            let atlas = atlases.get(route.font_name.as_slice()).ok_or_else(|| {
+                windows::core::Error::new(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                    format!(
+                        "Fennel atlas {:?} is not loaded",
+                        String::from_utf8_lossy(&route.font_name)
+                    ),
+                )
+            })?;
+            let batch = EvidenceCompleteFennelBatch {
+                page_index: route.page_index,
+                is_2d: list.state.is_2d,
+                fixed_constants: list.state.fixed_constants,
+                vertices: &list.vertices,
+            };
+            renderer.render(std::slice::from_ref(&batch), external, atlas)?;
             continue;
         }
         for source in &command.sources {
